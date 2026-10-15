@@ -1,7 +1,7 @@
 {
   "name": "gui-cetz",
   "displayName": "GUI CeTZ",
-  "description": "Edit simple CeTZ diagrams with the Draw.io VS Code editor while preserving Typst source.",
+  "description": "Edit simple CeTZ shapes and preview advanced CeTZ diagrams in Draw.io while preserving Typst source.",
   "version": "0.1.0",
   "publisher": "tkrhsmt",
   "license": "MIT",

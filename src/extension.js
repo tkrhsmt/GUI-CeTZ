@@ -4,6 +4,7 @@ const path = require('path');
 const { locateCanvases } = require('./scanner');
 const { parseCanvas } = require('./diagram');
 const { xmlForDiagram, patchesFromXml } = require('./drawio');
+const { renderCanvas, imageDiagram } = require('./preview');
 
 const sessions = new Map();
 function key(uri) { return uri.toString(); }
@@ -38,18 +39,27 @@ async function updateDiagramDocument(session, xml) {
   } finally { session.writingDiagram = false; }
 }
 async function syncFromSource(session) {
+  const generation = session.syncGeneration = (session.syncGeneration || 0) + 1;
   const doc = await documentForSession(session);
   const text = doc.getText();
   const diagram = usableDiagram(text, session.index);
-  await updateDiagramDocument(session, xmlForDiagram(text, diagram));
+  const preview = diagram.unsupported.length > 0;
+  const xml = preview ? imageDiagram(await renderCanvas(text, diagram.canvas, session.sourceUri.fsPath)) : xmlForDiagram(text, diagram);
+  if (generation !== session.syncGeneration || (await documentForSession(session)).version !== doc.version) return;
+  await updateDiagramDocument(session, xml);
   session.sourceVersion = doc.version;
   session.diagram = diagram;
+  session.preview = preview;
 }
 async function syncToSource(session) {
   if (session.writingDiagram || session.writingSource) return;
   const gui = await vscode.workspace.openTextDocument(session.diagramUri);
   const xml = gui.getText();
   if (xml === session.lastXml) return;
+  if (session.preview) {
+    await syncFromSource(session);
+    return;
+  }
   const source = await documentForSession(session);
   if (source.version !== session.sourceVersion) {
     await syncFromSource(session);
@@ -86,8 +96,8 @@ async function openGui() {
   }
   await syncFromSource(session);
   await vscode.commands.executeCommand('vscode.openWith', uri, 'hediet.vscode-drawio-text', vscode.ViewColumn.Beside);
-  if (session.diagram.unsupported.length)
-    vscode.window.showInformationMessage(`CeTZ: ${session.diagram.unsupported.length} shape call(s) use unsupported expressions and remain source-only.`);
+  if (session.preview)
+    vscode.window.showInformationMessage('CeTZ: This canvas is shown as a Typst-rendered preview because it contains operations that cannot be safely edited as Draw.io shapes. Edit it in Typst.');
 }
 function report(error) { vscode.window.showErrorMessage('CeTZ: ' + (error instanceof Error ? error.message : String(error))); }
 function activate(context) {

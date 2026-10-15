@@ -121,12 +121,16 @@ function namedArg(text, args, name) {
 function parseCanvas(text, canvasIndex = 0) {
   const canvas = locateCanvases(text)[canvasIndex];
   if (!canvas) return null;
-  const elements = [], unsupported = [];
+  const elements = [], unsupported = canvas.advancedOptions ? ['canvas options at ' + canvas.start] : [];
   const kinds = new Set(['rect', 'circle', 'line', 'content', 'polygon']);
-  const otherDrawingNames = new Set(['arc', 'grid', 'bezier', 'bezier-through', 'n-star', 'rect-around',
-    'hobby', 'catmull', 'mark', 'merge-path', 'compound-path', 'set-style', 'stroke', 'fill']);
+  const otherDrawingNames = new Set(['arc', 'arc-through', 'grid', 'bezier', 'bezier-through', 'n-star', 'rect-around',
+    'hobby', 'catmull', 'mark', 'merge-path', 'compound-path', 'boolean', 'hide', 'intersections',
+    'group', 'anchor', 'scope', 'copy-anchors', 'set-ctx', 'get-ctx', 'for-each-anchor', 'on-layer',
+    'floating', 'set-style', 'stroke', 'fill', 'register-mark', 'set-to', 'on-xy', 'on-xz', 'on-zy',
+    'register-coordinate-resolver']);
   const transformNames = new Set(['translate', 'scale']);
   const unsafeNames = new Set(['rotate', 'set-transform', 'set-origin', 'move-to', 'set-viewport', 'ortho', 'perspective']);
+  const dynamicNames = new Set(['for', 'if', 'while', 'let', 'context']);
   let transform = { sx: 1, sy: 1, tx: 0, ty: 0 }, unsafe = false;
   for (let i = canvas.bodyStart; i < canvas.bodyEnd; i++) {
     if (text[i] === '"') { i = skipQuoted(text, i) - 1; continue; }
@@ -140,6 +144,7 @@ function parseCanvas(text, canvasIndex = 0) {
     if (!match) continue;
     const name = match[0], open = skipTrivia(text, i + name.length);
     if (/[\w.]/.test(text[i - 1] || '')) { i += name.length - 1; continue; }
+    if (dynamicNames.has(name)) unsupported.push(name + ' at ' + i);
     if ((transformNames.has(name) || unsafeNames.has(name)) && text[open] === '(') {
       const end = closing(text, open, '(', ')');
       if (end >= 0 && end < canvas.bodyEnd) {
@@ -152,7 +157,8 @@ function parseCanvas(text, canvasIndex = 0) {
       unsafe = true;
     }
     if (!kinds.has(name) || text[open] !== '(') {
-      if (otherDrawingNames.has(name) && text[open] === '(') unsupported.push(name + ' at ' + i);
+      if (otherDrawingNames.has(name) && text[open] === '(' || text[open] === '(' && !dynamicNames.has(name))
+        unsupported.push(name + ' at ' + i);
       i += name.length - 1; continue;
     }
     const end = closing(text, open, '(', ')');
@@ -181,6 +187,7 @@ function parseCanvas(text, canvasIndex = 0) {
       radius = radiusRange ? radiusArg(text, radiusRange) : { x: { value: 1 }, y: { value: 1 }, circular: true, implicit: true };
       angle = angleArg(text, namedArg(text, args, 'angle'));
     }
+    const fillRange = namedArg(text, args, 'fill'), strokeRange = namedArg(text, args, 'stroke');
     if (unsafe || points.some(p => !p) || (name === 'line' && points.length < 2) ||
         (name === 'rect' && (positional.length !== 2 || !corner || corner.value < 0)) ||
         (name === 'line' && (!mark || (namedArg(text, args, 'close') && !/^\s*(?:true|false)\s*$/.test(text.slice(...rangePair(namedArg(text, args, 'close'))))))) ||
@@ -193,7 +200,7 @@ function parseCanvas(text, canvasIndex = 0) {
       elements.push({ id: 'cetz-' + canvasIndex + '-' + elements.length, kind: name,
         start: i, end: end + 1, points, radius: radius?.circular ? radius.x : undefined,
         radii: radius, corner, sides, angle, label, close, mark, transform: { ...transform },
-        fill: namedArg(text, args, 'fill'), stroke: namedArg(text, args, 'stroke'),
+        fill: fillRange, stroke: strokeRange,
         markRange: namedArg(text, args, 'mark'), name: namedArg(text, args, 'name') });
     }
     i = end;

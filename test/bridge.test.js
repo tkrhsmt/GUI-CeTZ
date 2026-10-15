@@ -5,6 +5,10 @@ const zlib = require('node:zlib');
 const { locateCanvases } = require('../src/scanner');
 const { parseCanvas } = require('../src/diagram');
 const { xmlForDiagram, patchesFromXml, readCells } = require('../src/drawio');
+const { renderCanvas, imageDiagram } = require('../src/preview');
+const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 
 function apply(text, patches) {
   return [...patches].sort((a, b) => b.start - a.start).reduce((s, p) => s.slice(0, p.start) + p.text + s.slice(p.end), text);
@@ -24,6 +28,14 @@ test('locates real canvases, ignoring strings and nested comments', () => {
   assert.equal(locateCanvases(text).length, 1);
   assert.equal(parseCanvas(text).elements.length, 3);
 });
+test('finds canvases with length and other canvas options', () => {
+  const text = '#cetz.canvas(length: 5mm, { import cetz.draw: *; circle((0, 0)) }, padding: 1)';
+  const canvases = locateCanvases(text);
+  assert.equal(canvases.length, 1);
+  assert.equal(canvases[0].advancedOptions, true);
+  assert.match(text.slice(canvases[0].bodyStart, canvases[0].bodyEnd), /circle/);
+  assert.ok(parseCanvas(text).unsupported.length);
+});
 test('exports three shape cells and edits only coordinate literals', () => {
   const model = parseCanvas(source);
   const xml = xmlForDiagram(source, model);
@@ -39,7 +51,7 @@ test('does not edit expression-based shapes', () => {
   const text = '#cetz.canvas({ let x = 3; rect((x, 0), (4, 2)); circle((1, 1), radius: 1) })';
   const model = parseCanvas(text);
   assert.equal(model.elements.length, 1);
-  assert.equal(model.unsupported.length, 1);
+  assert.ok(model.unsupported.length >= 1);
 });
 test('accepts compressed Draw.io diagrams', () => {
   const xml = xmlForDiagram(source, parseCanvas(source));
@@ -149,4 +161,68 @@ test('rejects Draw.io styling that would not be written to Typst', () => {
   const model = parseCanvas(text), xml = xmlForDiagram(text, model);
   assert.throws(() => patchesFromXml(text, model, xml.replace('rounded=0;', 'rounded=0;shadow=1;')), /shadow/);
   assert.throws(() => patchesFromXml(text, model, xml.replace('rounded=0;', 'ellipse;')), /kind/);
+});
+test('round trips literal stroke thickness and dash', () => {
+  const text = '#cetz.canvas({ line((0, 0), (2, 0), stroke: (paint: red, thickness: 2pt, dash: "dashed")) })';
+  const model = parseCanvas(text), xml = xmlForDiagram(text, model);
+  assert.match(xml, /strokeColor=#ff0000;strokeWidth=5\.6444;dashed=1;dashPattern=3 3;/);
+  const changed = xml.replace('strokeWidth=5.6444', 'strokeWidth=11.2889').replace('dashPattern=3 3', 'dashPattern=1 2');
+  assert.match(apply(text, patchesFromXml(text, model, changed)), /stroke: \(paint: rgb\("#ff0000"\), thickness: 4pt, dash: "dotted"\)/);
+});
+test('renders complex CeTZ operations using Typst as a locked image', async () => {
+  const text = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n  set-style(stroke: (paint: blue, thickness: 2pt, dash: "dashed"))\n  group({ rect((0, 0), (2, 1)); arc((1, 1), start: 0deg, stop: 180deg) })\n})';
+  const diagram = parseCanvas(text);
+  assert.ok(diagram.unsupported.length >= 2);
+  const svg = await renderCanvas(text, diagram.canvas, path.resolve('examples/extended.typ'));
+  const xml = imageDiagram(svg);
+  assert.match(xml, /id="preview-image"/);
+  assert.match(xml, /movable=0;resizable=0;editable=0/);
+  assert.match(xml, /data:image\/svg\+xml,/);
+});
+test('routes the requested advanced draw operations through Typst', () => {
+  const names = ['arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier', 'hobby', 'catmull',
+    'merge-path', 'compound-path', 'boolean', 'hide', 'intersections', 'group', 'anchor', 'scope',
+    'copy-anchors', 'set-ctx', 'get-ctx', 'for-each-anchor', 'on-layer', 'floating', 'set-style',
+    'fill', 'stroke', 'register-mark', 'set-transform', 'rotate', 'set-origin', 'move-to', 'set-to',
+    'set-viewport', 'ortho', 'perspective', 'on-xy', 'on-xz', 'on-zy', 'register-coordinate-resolver'];
+  for (const name of names) {
+    const model = parseCanvas(`#cetz.canvas({ ${name}() })`);
+    assert.ok(model.unsupported.length, `${name} must use Typst rendering`);
+  }
+});
+test('renders only the selected canvas when earlier canvases exist', async () => {
+  const text = '#import "@preview/cetz:0.5.2"\n' +
+    '#cetz.canvas({ import cetz.draw: *; rect((0, 0), (20, 20)) })\n' +
+    '#cetz.canvas({ import cetz.draw: *; arc((0, 0), start: 0deg, stop: 90deg) })';
+  const svg = await renderCanvas(text, parseCanvas(text, 1).canvas, path.resolve('examples/advanced.typ'));
+  const width = Number(/viewBox="0 0 ([\d.]+)/.exec(svg)[1]);
+  assert.ok(width < 100, `the previous 20-unit canvas leaked into the preview: ${width}`);
+});
+test('keeps definitions but omits preceding prose from the preview', async () => {
+  const text = '#import "@preview/cetz:0.5.2"\nA long paragraph before the canvas.\n' +
+    '#let r = (\n  1 + 1\n)\n' +
+    '#cetz.canvas({ import cetz.draw: *; arc((0, 0), start: 0deg, stop: 90deg, radius: r) })';
+  const svg = await renderCanvas(text, parseCanvas(text).canvas, path.resolve('examples/advanced.typ'));
+  const width = Number(/viewBox="0 0 ([\d.]+)/.exec(svg)[1]);
+  assert.ok(width < 100, `preceding prose leaked into the preview: ${width}`);
+  assert.ok(width > 50, `the multiline radius definition was lost: ${width}`);
+});
+test('compiles the advanced example into a Draw.io preview', async () => {
+  const file = path.resolve('examples/advanced.typ');
+  const source = fs.readFileSync(file, 'utf8');
+  const diagram = parseCanvas(source);
+  assert.ok(diagram.unsupported.length > 0);
+  const xml = imageDiagram(await renderCanvas(source, diagram.canvas, file));
+  assert.match(xml, /id="preview-image"/);
+  assert.match(xml, /image=data:image\/svg\+xml,%3Csvg/);
+});
+test('resolves local imports next to the source file', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gui-cetz-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'settings.typ'), '#let radius = 1\n');
+    const text = '#import "@preview/cetz:0.5.2"\n#import "settings.typ": radius\n' +
+      '#cetz.canvas({ import cetz.draw: *; arc((0, 0), start: 0deg, stop: 90deg, radius: radius) })';
+    const svg = await renderCanvas(text, parseCanvas(text).canvas, path.join(dir, 'main.typ'));
+    assert.match(svg, /^<svg\b/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

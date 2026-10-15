@@ -1,0 +1,5 @@
+{
+  "hediet.vscode-drawio.plugins": [
+    { "file": "${workspaceFolder}/src/cetz-drawio-plugin.js" }
+  ]
+}

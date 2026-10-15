@@ -1,5 +1,6 @@
 'use strict';
 const zlib = require('zlib');
+const { color, stroke: parseStroke, typstColor, typstStroke, dashStyle, fromDrawio, PX_PER_PT } = require('./style');
 
 const SCALE = 80, ORIGIN_X = 160, ORIGIN_Y = 400;
 const px = x => ORIGIN_X + x * SCALE;
@@ -18,9 +19,7 @@ function attrs(tag) {
 }
 function literalColor(source, range) {
   if (!range) return undefined;
-  const value = source.slice(range.start, range.end).trim();
-  const map = { red: '#ff0000', blue: '#0000ff', green: '#00aa00', black: '#000000', white: '#ffffff', yellow: '#ffff00', gray: '#808080', orange: '#ffa500', purple: '#800080', none: 'none' };
-  return map[value] || (/^rgb\("#[0-9a-fA-F]{6}"\)$/.test(value) ? value.slice(5, 12).toLowerCase() : undefined);
+  return color(source.slice(range.start, range.end));
 }
 function styleMap(style) {
   const out = {};
@@ -40,7 +39,7 @@ function xmlForDiagram(source, diagram) {
   const cells = diagram.elements.map(element => {
     const p = element.points[0], q = element.points[1];
     const fill = literalColor(source, element.fill);
-    const stroke = literalColor(source, element.stroke);
+    const stroke = element.stroke && parseStroke(source.slice(element.stroke.start, element.stroke.end));
     const edge = element.kind === 'line' || element.kind === 'polygon';
     let style = edge ? 'rounded=0;html=1;' :
       element.kind === 'circle' ? 'ellipse;whiteSpace=wrap;html=1;' :
@@ -56,7 +55,8 @@ function xmlForDiagram(source, diagram) {
     style += `fillColor=${fill || 'none'};`;
     if (edge)
       style += `startArrow=${element.mark?.start || 'none'};endArrow=${element.mark?.end || 'none'};`;
-    if (stroke) style += `strokeColor=${stroke};`;
+    if (stroke?.color) style += `strokeColor=${stroke.color};`;
+    if (stroke) style += `strokeWidth=${round(stroke.width * PX_PER_PT)};${dashStyle(stroke.dash)}`;
     if (element.kind === 'content') style += 'strokeColor=none;';
     let geometry;
     if (edge) {
@@ -121,11 +121,6 @@ function readAllCells(xml) {
 }
 function readCells(xml) { return new Map([...readAllCells(xml)].filter(([id]) => id.startsWith('cetz-'))); }
 
-function typstColor(value) {
-  if (!value || value === 'none') return 'none';
-  if (!/^#[0-9a-fA-F]{6}$/.test(value)) throw new Error('Only solid RGB colors can be synchronized to CeTZ.');
-  return `rgb("${value.toLowerCase()}")`;
-}
 function plainLabel(label) {
   if (/[\[\]\\#*$<>]/.test(label)) throw new Error('Draw.io text must be plain Typst content.');
   return label;
@@ -134,8 +129,8 @@ function newCall(item, transform) {
   const style = styleMap(item.cell.style), g = item.geometry;
   const colorArgs = [];
   if (style.fillColor && style.fillColor !== 'none') colorArgs.push(`fill: ${typstColor(style.fillColor)}`);
-  if (style.strokeColor && style.strokeColor !== '#000000')
-    colorArgs.push(`stroke: ${typstColor(style.strokeColor)}`);
+  if (style.strokeColor && style.strokeColor !== '#000000' || style.strokeWidth || style.dashed === '1')
+    colorArgs.push(`stroke: ${typstStroke(style.strokeColor || '#000000', Number(style.strokeWidth || PX_PER_PT) / PX_PER_PT, fromDrawio(style))}`);
   const fmt = n => String(round(n));
   const point = p => `(${fmt(p[0])}, ${fmt(p[1])})`;
   if (item.cell.edge === '1') {
@@ -269,7 +264,7 @@ function patchesFromXml(source, diagram, xml) {
     }
     const currentStyle = styleMap(item.cell.style);
     const originalStyle = styleMap(originalCells.get(element.id).cell.style);
-    const handled = new Set(['fillColor', 'strokeColor', 'startArrow', 'endArrow', 'rounded', 'arcSize']);
+    const handled = new Set(['fillColor', 'strokeColor', 'strokeWidth', 'dashed', 'dashPattern', 'startArrow', 'endArrow', 'rounded', 'arcSize']);
     for (const property of new Set([...Object.keys(currentStyle), ...Object.keys(originalStyle)])) {
       if (handled.has(property)) continue;
       if ((currentStyle[property] || '') !== (originalStyle[property] || ''))
@@ -305,7 +300,7 @@ function patchesFromXml(source, diagram, xml) {
       if (element.corner.implicit) insert(element.end - 1, `, radius: ${round(arc)}%`);
       else patches.push({ start: element.corner.start, end: element.corner.end, text: `${round(arc)}%` });
     }
-    for (const property of ['fillColor', 'strokeColor']) {
+    for (const property of ['fillColor']) {
       if ((currentStyle[property] || '') === (originalStyle[property] || '')) continue;
       if (property === 'fillColor' && element.kind === 'line')
         throw new Error('Open lines cannot be filled in CeTZ.');
@@ -317,6 +312,15 @@ function patchesFromXml(source, diagram, xml) {
       const replacement = typstColor(currentStyle[property]);
       if (range) patches.push({ start: range.start, end: range.end, text: replacement });
       else insert(element.end - 1, `, ${property === 'fillColor' ? 'fill' : 'stroke'}: ${replacement}`);
+    }
+    if (['strokeColor', 'strokeWidth', 'dashed', 'dashPattern'].some(p => (currentStyle[p] || '') !== (originalStyle[p] || ''))) {
+      if (element.kind === 'content') throw new Error('Content needs a frame before its stroke can be edited.');
+      const range = element.stroke;
+      if (range && !parseStroke(source.slice(range.start, range.end)))
+        throw new Error('This stroke is controlled by a Typst expression; edit it in the source.');
+      const replacement = typstStroke(currentStyle.strokeColor || '#000000', Number(currentStyle.strokeWidth || PX_PER_PT) / PX_PER_PT, fromDrawio(currentStyle));
+      if (range) patches.push({ start: range.start, end: range.end, text: replacement });
+      else insert(element.end - 1, `, stroke: ${replacement}`);
     }
     if (element.kind !== 'rect' && (currentStyle.rounded !== originalStyle.rounded || currentStyle.arcSize !== originalStyle.arcSize))
       throw new Error('Corner rounding cannot be synchronized for this CeTZ element.');

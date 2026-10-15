@@ -5,7 +5,7 @@
       "name": "Run GUI CeTZ Extension",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--new-window", "--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}"]
+      "args": ["${workspaceFolder}/.vscode/dev.code-workspace", "--extensionDevelopmentPath=${workspaceFolder}"]
     }
   ]
 }

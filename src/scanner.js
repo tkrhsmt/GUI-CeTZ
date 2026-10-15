@@ -70,12 +70,22 @@ function locateCanvases(text) {
     if (!text.startsWith('cetz.canvas', i) || /[\w.]/.test(text[i - 1] || '') || /\w/.test(text[i + 11] || '')) continue;
     const paren = skipTrivia(text, i + 11);
     if (text[paren] !== '(') continue;
-    const brace = skipTrivia(text, paren + 1);
-    if (text[brace] !== '{') continue;
-    const end = closing(text, brace, '{', '}');
-    if (end < 0 || text[skipTrivia(text, end + 1)] !== ')') continue;
-    result.push({ start: i, bodyStart: brace + 1, bodyEnd: end, end: skipTrivia(text, end + 1) + 1 });
-    i = end;
+    const callEnd = closing(text, paren, '(', ')');
+    if (callEnd < 0) continue;
+    const args = splitArgs(text, paren + 1, callEnd);
+    let body = null;
+    for (const arg of args) {
+      let brace = skipTrivia(text, arg.start);
+      if (/^body\s*:/.test(text.slice(brace, arg.end)))
+        brace = skipTrivia(text, brace + /^body\s*:/.exec(text.slice(brace, arg.end))[0].length);
+      if (text[brace] !== '{') continue;
+      const end = closing(text, brace, '{', '}');
+      if (end >= 0 && !text.slice(end + 1, arg.end).trim()) body = { brace, end };
+    }
+    if (!body) continue;
+    result.push({ start: i, bodyStart: body.brace + 1, bodyEnd: body.end,
+      end: callEnd + 1, advancedOptions: args.length !== 1 || skipTrivia(text, args[0].start) !== body.brace });
+    i = callEnd;
   }
   return result;
 }
