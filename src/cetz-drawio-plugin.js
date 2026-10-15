@@ -59,6 +59,7 @@ Draw.loadPlugin(function (ui) {
     if (type === 'select') values.forEach(function (entry) {
       var option = document.createElement('option');
       option.value = entry[0]; option.textContent = entry[1]; input.appendChild(option);
+      if (entry[0] === 'custom') option.disabled = true;
     });
     else {
       input.type = type; input.min = '0.25'; input.step = '0.25';
@@ -70,13 +71,15 @@ Draw.loadPlugin(function (ui) {
       var graph = ui.editor.graph;
       var cells = graph.getSelectionCells();
       if (!cells.length) return;
+      if ((key === 'cetzStartMark' || key === 'cetzEndMark') && input.value === 'custom') return;
       if (isEditablePreview()) {
         var selected = cells[0];
         var point = /^cetz-point-(\d+)-\d+$/.exec(selected.id || '');
         if (point) selected = graph.getModel().getCell('cetz-edit-' + point[1]);
         if (!selected || !/^cetz-edit-\d+$/.test(selected.id || '')) return;
         var previewKeys = { fillColor: 'cetzFillColor', strokeColor: 'cetzStrokeColor',
-          strokeWidth: 'cetzStrokeWidth', dash: 'cetzDash' };
+          strokeWidth: 'cetzStrokeWidth', dash: 'cetzDash',
+          cetzStartMark: 'cetzStartMark', cetzEndMark: 'cetzEndMark' };
         if (!previewKeys[key]) return;
         graph.getModel().beginUpdate();
         try { graph.setCellStyles(previewKeys[key], input.value, [selected]); }
@@ -107,6 +110,14 @@ Draw.loadPlugin(function (ui) {
     ['dash-dotted', 'Dash dot']], 'dash');
   var start = field('Start', 'select', [['none', 'None'], ['classic', 'Arrow'], ['diamond', 'Diamond']], 'startArrow');
   var end = field('End', 'select', [['none', 'None'], ['classic', 'Arrow'], ['diamond', 'Diamond']], 'endArrow');
+  var markNames = ['triangle', 'stealth', 'curved-stealth', 'bar', 'ellipse', 'circle',
+    'bracket', 'diamond', 'rect', 'hook', 'straight', 'barbed', 'plus', 'x', 'star',
+    'parenthesis'];
+  var markOptions = [['none', 'None']].concat(markNames.map(function (name) { return [name, name]; }),
+    [['custom', 'Custom (Typst)']]);
+  var markStart = field('Start mark', 'select', markOptions, 'cetzStartMark');
+  var markEnd = field('End mark', 'select', markOptions, 'cetzEndMark');
+  markStart.style.width = markEnd.style.width = '145px';
   var graph = ui.editor.graph;
   var cetzMenu = null;
   function sendHistoryAction(name) {
@@ -137,8 +148,11 @@ Draw.loadPlugin(function (ui) {
   }
   ensureCetzMenu();
   var original = {
-    deletable: graph.isCellDeletable, cloneable: graph.isCellCloneable,
-    connectable: graph.isCellConnectable, popup: graph.popupMenuHandler && graph.popupMenuHandler.isEnabled,
+    deletable: graph.isCellDeletable, selectable: graph.isCellSelectable,
+    cloneable: graph.isCellCloneable, visible: graph.isCellVisible,
+    connectable: graph.isCellConnectable, snapDelta: graph.snapDelta,
+    updateHint: graph.graphHandler && graph.graphHandler.updateHint,
+    popup: graph.popupMenuHandler && graph.popupMenuHandler.isEnabled,
     undo: ui.actions.get('undo').funct, redo: ui.actions.get('redo').funct,
     undoEnabled: ui.actions.get('undo').isEnabled, redoEnabled: ui.actions.get('redo').isEnabled
   };
@@ -157,6 +171,29 @@ Draw.loadPlugin(function (ui) {
     else original.redo.apply(this, arguments);
   };
   var activeMode = false;
+  var lastPreviewStyle = null;
+  var lastEditCount = 0;
+  function isTemplate(cell) {
+    return !!cell && /(?:^|;)cetzTemplate=[\w-]+(?:;|$)/.test(cell.style || '');
+  }
+  function clearRenderedTemplates() {
+    if (!isEditablePreview()) {
+      lastPreviewStyle = null;
+      lastEditCount = 0;
+      return;
+    }
+    var model = graph.getModel();
+    var cells = model.cells || {};
+    var previewImage = model.getCell('cetz-preview-image');
+    var style = previewImage && previewImage.style;
+    var editCount = Object.keys(cells).filter(function (id) { return /^cetz-edit-\d+$/.test(id); }).length;
+    if (lastPreviewStyle != null && style !== lastPreviewStyle && editCount > lastEditCount) {
+      var templates = Object.keys(cells).map(function (id) { return cells[id]; }).filter(isTemplate);
+      if (templates.length) graph.removeCells(templates, false);
+    }
+    lastPreviewStyle = style;
+    lastEditCount = editCount;
+  }
   var hiddenPalettes = new Map();
   function setDisplay(element, visible) {
     if (element) element.style.display = visible ? '' : 'none';
@@ -194,6 +231,15 @@ Draw.loadPlugin(function (ui) {
   function isPreview() { return !!graph.getModel().getCell('preview-image') ||
     !!graph.getModel().getCell('cetz-preview-background'); }
   function isEditablePreview() { return !!graph.getModel().getCell('cetz-preview-background'); }
+  function cetzAnchor(cell) {
+    if (!cell) return null;
+    if (/^cetz-point-\d+-\d+$/.test(cell.id || '')) return { x: 7, y: 7 };
+    if (/^cetz-edit-\d+$/.test(cell.id || '')) {
+      var style = graph.getCellStyle(cell);
+      return { x: Number(style.cetzSnapOffsetX) || 0, y: Number(style.cetzSnapOffsetY) || 0 };
+    }
+    return null;
+  }
   function updateControls() {
     var cell = graph.getSelectionCell();
     var previewCell = false;
@@ -211,13 +257,16 @@ Draw.loadPlugin(function (ui) {
       stroke.value = /^#[0-9a-f]{6}$/i.test(style.cetzStrokeColor) ? style.cetzStrokeColor : '#000000';
       width.value = style.cetzStrokeWidth || '1';
       dash.value = style.cetzDash || 'solid';
+      markStart.value = style.cetzStartMark || 'none';
+      markEnd.value = style.cetzEndMark || 'none';
       fill.parentNode.style.display = ['rect', 'circle', 'polygon', 'n-star', 'rect-around',
         'merge-path', 'compound-path'].includes(style.cetzKind) ? '' : 'none';
       stroke.parentNode.style.display = '';
       width.parentNode.style.display = '';
       dash.parentNode.style.display = '';
-      start.parentNode.style.display = 'none';
-      end.parentNode.style.display = 'none';
+      start.parentNode.style.display = end.parentNode.style.display = 'none';
+      markStart.parentNode.style.display = markEnd.parentNode.style.display =
+        style.cetzKind === 'line' ? '' : 'none';
       return;
     }
     fill.value = /^#[0-9a-f]{6}$/i.test(style.fillColor) ? style.fillColor : '#ffffff';
@@ -237,6 +286,7 @@ Draw.loadPlugin(function (ui) {
     dash.parentNode.style.display = content ? 'none' : '';
     start.parentNode.style.display = edge ? '' : 'none';
     end.parentNode.style.display = edge ? '' : 'none';
+    markStart.parentNode.style.display = markEnd.parentNode.style.display = 'none';
   }
   function update() {
     var active = isCetz(), preview = active && isPreview();
@@ -244,15 +294,66 @@ Draw.loadPlugin(function (ui) {
     if (active && !activeMode) {
       graph.isCellDeletable = function (cell) {
         return !!cell && !['0', '1', 'preview-image', 'cetz-preview-background'].includes(cell.id) &&
-          !/^cetz-(?:point|guide)-/.test(cell.id);
+          !/^cetz-(?:point|guide|axis|origin)-/.test(cell.id) && cell.id !== 'cetz-preview-image';
       };
-      graph.isCellCloneable = function () { return false; };
+      graph.isCellSelectable = function (cell) {
+        return !!cell && !['preview-image', 'cetz-preview-background'].includes(cell.id) &&
+          !/^cetz-(?:guide|axis|origin)-/.test(cell.id) && cell.id !== 'cetz-preview-image' &&
+          !isTemplate(cell) &&
+          original.selectable.apply(this, arguments);
+      };
+      graph.isCellCloneable = function (cell) {
+        return isTemplate(cell) && !graph.getModel().contains(cell);
+      };
+      graph.isCellVisible = function (cell) {
+        return !(isTemplate(cell) && graph.getModel().contains(cell)) &&
+          original.visible.apply(this, arguments);
+      };
       graph.isCellConnectable = function () { return false; };
+      if (original.snapDelta) graph.snapDelta = function (delta, bounds) {
+        var cells = graph.getSelectionCells();
+        var cell = isEditablePreview() && cells.length === 1 ? cells[0] : null;
+        var anchor = cetzAnchor(cell);
+        var x = anchor ? anchor.x : 0, y = anchor ? anchor.y : 0;
+        if (x || y) {
+          var scale = graph.view && graph.view.scale || 1;
+          var adjusted = { x: bounds.x + x * scale, y: bounds.y + y * scale,
+            width: bounds.width, height: bounds.height };
+          var args = Array.prototype.slice.call(arguments);
+          args[1] = adjusted;
+          return original.snapDelta.apply(this, args);
+        }
+        return original.snapDelta.apply(this, arguments);
+      };
+      if (original.updateHint) graph.graphHandler.updateHint = function () {
+        original.updateHint.apply(this, arguments);
+        if (!isEditablePreview() || !this.hint || !this.bounds) return;
+        var cells = graph.getSelectionCells();
+        var anchor = cells.length === 1 ? cetzAnchor(cells[0]) : null;
+        if (!anchor) return;
+        var background = graph.getModel().getCell('cetz-preview-background');
+        var style = background && graph.getCellStyle(background);
+        var originX = Number(style && style.cetzOriginX);
+        var originY = Number(style && style.cetzOriginY);
+        var unitX = Number(style && style.cetzUnitX);
+        var unitY = Number(style && style.cetzUnitY);
+        if (![originX, originY, unitX, unitY].every(Number.isFinite) || unitX <= 0 || unitY <= 0) return;
+        var view = graph.view, scale = view.scale || 1, translate = view.translate || { x: 0, y: 0 };
+        var modelX = (this.bounds.x + this.currentDx) / scale - translate.x + anchor.x;
+        var modelY = (this.bounds.y + this.currentDy) / scale - translate.y + anchor.y;
+        var x = Math.round((modelX - originX) / unitX * 4) / 4;
+        var y = Math.round((originY - modelY) / unitY * 4) / 4;
+        this.hint.textContent = 'CeTZ (' + x + ', ' + y + ')';
+      };
       if (graph.popupMenuHandler) graph.popupMenuHandler.isEnabled = function () { return false; };
     } else if (!active && activeMode) {
       graph.isCellDeletable = original.deletable;
+      graph.isCellSelectable = original.selectable;
       graph.isCellCloneable = original.cloneable;
+      graph.isCellVisible = original.visible;
       graph.isCellConnectable = original.connectable;
+      graph.snapDelta = original.snapDelta;
+      if (graph.graphHandler) graph.graphHandler.updateHint = original.updateHint;
       if (graph.popupMenuHandler) graph.popupMenuHandler.isEnabled = original.popup;
     }
     var changed = active !== activeMode;
@@ -264,6 +365,7 @@ Draw.loadPlugin(function (ui) {
     setDisplay(basicPair[0], active && !preview); setDisplay(basicPair[1], active && !preview);
     setDisplay(previewBasicPair[0], active && preview); setDisplay(previewBasicPair[1], active && preview);
     setDisplay(advancedPair[0], active); setDisplay(advancedPair[1], active);
+    clearRenderedTemplates();
     updateControls();
   }
   ui.editor.addListener('fileLoaded', update);

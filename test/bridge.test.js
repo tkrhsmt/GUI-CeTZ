@@ -8,6 +8,7 @@ const { xmlForDiagram, patchesFromXml, readCells, readAllCells } = require('../s
 const { renderCanvas, imageDiagram } = require('../src/preview');
 const { renderEditable, patchesFromEditable, locateEditableCalls } = require('../src/advanced');
 const { renderDiagram } = require('../src/render-diagram');
+const { MARK_NAMES, sideValues, sideEdits } = require('../src/marks');
 const { SHAPES, insertionFor, templateInsertions } = require('../src/templates');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -15,6 +16,16 @@ const os = require('node:os');
 
 function apply(text, patches) {
   return [...patches].sort((a, b) => b.start - a.start).reduce((s, p) => s.slice(0, p.start) + p.text + s.slice(p.end), text);
+}
+function snappedMove(rendered, pixels) {
+  return Math.round(pixels / (rendered.calibration.unitX * 2.5) * 4) / 4 * rendered.calibration.unitX * 2.5;
+}
+function snappedHandle(rendered, geometry, dx, dy) {
+  const c = rendered.calibration;
+  const x = Math.round((+geometry.x + 7 + dx - c.originX) / (c.unitX * 2.5) * 4) / 4;
+  const y = Math.round((c.originY - +geometry.y - 7 - dy) / (c.unitY * 2.5) * 4) / 4;
+  return { x: c.originX + x * c.unitX * 2.5 - 7,
+    y: c.originY - y * c.unitY * 2.5 - 7 };
 }
 const source = `#import "@preview/cetz:0.4.2"
 #let accent = blue.lighten(80%)
@@ -142,6 +153,47 @@ test('round trips line arrowheads as CeTZ marks', () => {
   const changed = xml.replace('startArrow=none;', 'startArrow=diamond;');
   assert.match(apply(text, patchesFromXml(text, model, changed)), /mark: \(start: "<>", end: ">"\)/);
 });
+test('CeTZ mark names and shorthands resolve without losing other mark options', () => {
+  assert.equal(MARK_NAMES.length, 16);
+  for (const name of MARK_NAMES)
+    assert.deepEqual(sideValues(`(start: "${name}", end: "${name}")`),
+      { start: name, end: name });
+  assert.deepEqual(sideValues('(symbol: ">", end: "<>", length: 2pt)'),
+    { start: 'triangle', end: 'diamond' });
+  assert.equal(sideEdits('(symbol: ">", end: "<>", length: 2pt)', { start: 'bar' }),
+    '(symbol: ">", end: "<>", length: 2pt, start: "bar")');
+});
+test('all built-in marks can be selected on editable line endpoints', async () => {
+  const lines = MARK_NAMES.map((name, index) =>
+    `line((0, ${index}), (2, ${index}), mark: (start: "${name}", end: "${name}"))`).join('\n');
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' + lines + '\n})';
+  const file = path.resolve('examples/advanced.typ');
+  const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
+  for (let i = 0; i < MARK_NAMES.length; i++) {
+    const style = readAllCells(rendered.xml).get(`cetz-edit-${i}`).cell.style;
+    assert.match(style, new RegExp(`cetzStartMark=${MARK_NAMES[i]};`));
+    assert.match(style, new RegExp(`cetzEndMark=${MARK_NAMES[i]};`));
+  }
+  const changed = rendered.xml.replace('cetzStartMark=triangle;', 'cetzStartMark=curved-stealth;');
+  const updated = apply(source, patchesFromEditable(source, rendered, changed, readAllCells));
+  assert.match(updated, /line\(\(0, 0\), \(2, 0\), mark: \(start: "curved-stealth", end: "triangle"\)\)/);
+  const refreshed = await renderEditable(updated, parseCanvas(updated).canvas, file);
+  assert.match(readAllCells(refreshed.xml).get('cetz-edit-0').cell.style,
+    /cetzStartMark=curved-stealth;/);
+});
+test('line mark edits preserve the other endpoint and mark options', async () => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
+    'line((0, 0), (2, 0))\n' +
+    'line((0, 1), (2, 1), mark: (symbol: ">", length: 2pt))\n})';
+  const file = path.resolve('examples/advanced.typ');
+  const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
+  const changed = rendered.xml.replace('cetzEndMark=none;', 'cetzEndMark=parenthesis;')
+    .replace('cetzStartMark=triangle;', 'cetzStartMark=bar;');
+  const updated = apply(source, patchesFromEditable(source, rendered, changed, readAllCells));
+  assert.match(updated, /line\(\(0, 0\), \(2, 0\), mark: \(end: "parenthesis"\)\)/);
+  assert.match(updated, /mark: \(symbol: ">", length: 2pt, start: "bar"\)/);
+  await renderEditable(updated, parseCanvas(updated).canvas, file);
+});
 test('turns a new rectangle label into separate CeTZ content', () => {
   const text = '#cetz.canvas({ import cetz.draw: * })';
   const xml = xmlForDiagram(text, parseCanvas(text));
@@ -183,6 +235,7 @@ test('renders complex CeTZ operations using Typst as a locked image', async () =
   assert.ok(diagram.unsupported.length >= 2);
   const svg = await renderCanvas(text, diagram.canvas, path.resolve('examples/extended.typ'));
   const xml = imageDiagram(svg);
+  assert.match(xml, /<diagram id="cetz-canvas" name="CeTZ preview">/);
   assert.match(xml, /id="preview-image"/);
   assert.match(xml, /<mxGraphModel grid="1"/);
   assert.doesNotMatch(svg, /<path fill="#ffffff" fill-rule="nonzero" d="M 0 0v /);
@@ -266,8 +319,119 @@ test('primitive-only and mixed canvases use the same Typst-backed Draw.io cells'
     assert.match(updated, /rect\(\([\d.]+, 0\),\s*\([\d.]+, 1\), fill: red\)/);
     const refreshed = await renderDiagram(updated, parseCanvas(updated).canvas, file);
     const after = readAllCells(refreshed.xml).get('cetz-edit-0').geometry;
-    assert.ok(Math.abs(+after.x - +original.x - 20) < 0.02);
+    assert.ok(Math.abs(+after.x - +original.x - snappedMove(result.editable, 20)) < 0.5);
   }
+});
+test('Draw.io grid lines and source coordinates follow CeTZ quarter units', async () => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
+    'rect((0, 0), (2, 1))\n})';
+  const file = path.resolve('examples/advanced.typ');
+  const rendered = await renderDiagram(source, parseCanvas(source).canvas, file);
+  const calibration = rendered.editable.calibration;
+  const gridSize = Number(/<mxGraphModel[^>]*gridSize="([^"]+)"/.exec(rendered.xml)[1]);
+  assert.ok(Math.abs(gridSize * 4 - calibration.unitX * 2.5) < 0.0001);
+  assert.ok(Math.abs(calibration.originX / gridSize - Math.round(calibration.originX / gridSize)) < 0.00001);
+  assert.ok(Math.abs(calibration.originY / gridSize - Math.round(calibration.originY / gridSize)) < 0.00001);
+  const background = readAllCells(rendered.xml).get('cetz-preview-background').geometry;
+  const backgroundStyle = readAllCells(rendered.xml).get('cetz-preview-background').cell.style;
+  assert.match(backgroundStyle, new RegExp(`cetzOriginX=${calibration.originX};`));
+  assert.match(backgroundStyle, new RegExp(`cetzOriginY=${calibration.originY};`));
+  assert.ok(Math.abs(Number(/cetzUnitX=([\d.]+);/.exec(backgroundStyle)[1]) - calibration.unitX * 2.5) < 0.00001);
+  assert.ok(Math.abs(Number(/cetzUnitY=([\d.]+);/.exec(backgroundStyle)[1]) - calibration.unitY * 2.5) < 0.00001);
+  for (const id of ['cetz-axis-x', 'cetz-axis-y', 'cetz-axis-x-label',
+    'cetz-axis-y-label', 'cetz-origin-dot', 'cetz-axis-origin-label'])
+    assert.ok(readAllCells(rendered.xml).get(id), id);
+  assert.match(rendered.xml, new RegExp(`<mxCell id="cetz-axis-x"[\\s\\S]*?<mxPoint x="[^"]+" y="${calibration.originY}" as="sourcePoint"`));
+  assert.match(rendered.xml, new RegExp(`<mxCell id="cetz-axis-y"[\\s\\S]*?<mxPoint x="${calibration.originX}" y="[^"]+" as="sourcePoint"`));
+  assert.match(rendered.xml, /id="cetz-axis-origin-label" value="\(0, 0\)"/);
+  assert.ok(Math.abs(+background.x + calibration.zero.x * 2.5 - calibration.originX) < 0.0001);
+  assert.ok(Math.abs(+background.y + calibration.zero.y * 2.5 - calibration.originY) < 0.0001);
+  const rectStyle = readAllCells(rendered.xml).get('cetz-edit-0').cell.style;
+  const anchorY = Number(/cetzSnapOffsetY=([\d.]+);/.exec(rectStyle)[1]);
+  assert.ok(Math.abs(anchorY - calibration.unitY * 2.5) < 0.0001);
+  const moved = rendered.xml.replace(/(<mxCell id="cetz-edit-0"[\s\S]*?<mxGeometry x=")([\d.]+)/,
+    (_, head, x) => head + (Number(x) + gridSize));
+  const updated = apply(source, patchesFromEditable(source, rendered.editable, moved, readAllCells));
+  assert.match(updated, /rect\(\(0\.25, 0\),\s*\(2\.25, 1\)\)/);
+  assert.doesNotMatch(updated, /rect\([^\n]*\d+\.\d{3,}/);
+});
+test('a changed Typst drawing updates its preview image cell during live merge', async () => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 0))\n})';
+  const file = path.resolve('examples/advanced.typ');
+  const before = await renderEditable(source, parseCanvas(source).canvas, file);
+  const step = before.calibration.unitX * 2.5 / 4;
+  const dragged = before.xml.replace(/(<mxCell id="cetz-point-0-1"[\s\S]*?<mxGeometry x=")([\d.]+)/,
+    (_, head, x) => head + (Number(x) + step));
+  const afterSource = apply(source, patchesFromEditable(source, before, dragged, readAllCells));
+  assert.match(afterSource, /line\(\(0, 0\),\s*\(2\.25, 0\)\)/);
+  const after = await renderEditable(afterSource, parseCanvas(afterSource).canvas, file);
+  assert.match(before.xml, /<diagram id="cetz-canvas" name="CeTZ shapes">/);
+  assert.match(after.xml, /<diagram id="cetz-canvas" name="CeTZ shapes">/);
+  const oldImage = readAllCells(before.xml).get('cetz-preview-image');
+  const newImage = readAllCells(after.xml).get('cetz-preview-image');
+  assert.ok(oldImage);
+  assert.ok(newImage);
+  assert.notEqual(oldImage.cell.style, newImage.cell.style);
+  assert.ok(readAllCells(after.xml).get('cetz-preview-background'));
+  const damaged = before.xml.replace('image=data:image/svg+xml,', 'image=data:image/svg+xml,broken');
+  assert.throws(() => patchesFromEditable(source, before, damaged, readAllCells), /preview image/);
+});
+test('the preview expands when a control point moves beyond its old image bounds', async () => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 0))\n})';
+  const file = path.resolve('examples/advanced.typ');
+  const before = await renderEditable(source, parseCanvas(source).canvas, file);
+  const imageBefore = readAllCells(before.xml).get('cetz-preview-image').geometry;
+  const endpointX = before.calibration.originX + 8 * before.calibration.unitX * 2.5 - 7;
+  const dragged = before.xml.replace(/(<mxCell id="cetz-point-0-1"[\s\S]*?<mxGeometry x=")([\d.]+)/,
+    (_, head) => head + endpointX);
+  const afterSource = apply(source, patchesFromEditable(source, before, dragged, readAllCells));
+  assert.match(afterSource, /line\(\(0, 0\),\s*\(8, 0\)\)/);
+  const after = await renderEditable(afterSource, parseCanvas(afterSource).canvas, file);
+  const cells = readAllCells(after.xml);
+  const imageAfter = cells.get('cetz-preview-image').geometry;
+  const pointAfter = cells.get('cetz-point-0-1').geometry;
+  const pageWidth = Number(/pageWidth="([^"]+)"/.exec(after.xml)[1]);
+  assert.ok(+imageAfter.width > +imageBefore.width);
+  assert.ok(+pointAfter.x + 7 >= +imageAfter.x);
+  assert.ok(+pointAfter.x + 7 <= +imageAfter.x + +imageAfter.width);
+  assert.ok(pageWidth > +imageAfter.x + +imageAfter.width);
+  const negativeSource = afterSource.replace('(8, 0)', '(-8, 8)');
+  const negative = await renderEditable(negativeSource, parseCanvas(negativeSource).canvas, file);
+  const negativeCells = readAllCells(negative.xml);
+  const negativeImage = negativeCells.get('cetz-preview-image').geometry;
+  const negativePoint = negativeCells.get('cetz-point-0-1').geometry;
+  assert.ok(+negativeImage.x >= 160 && +negativeImage.y >= 160);
+  assert.ok(+negativePoint.x >= 0 && +negativePoint.y >= 0);
+  assert.ok(Number(/pageWidth="([^"]+)"/.exec(negative.xml)[1]) >
+    +negativeImage.x + +negativeImage.width);
+  assert.ok(Number(/pageHeight="([^"]+)"/.exec(negative.xml)[1]) >
+    +negativeImage.y + +negativeImage.height);
+});
+test('an empty canvas uses the same coordinate grid and accepts a shape template', async () => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n})';
+  const file = path.resolve('examples/advanced.typ');
+  const rendered = await renderDiagram(source, parseCanvas(source).canvas, file);
+  assert.deepEqual(rendered.editable.calls, []);
+  assert.match(rendered.xml, /<mxGraphModel grid="1" gridSize="[\d.]+"/);
+  const template = '<mxCell id="new-circle" value="" style="cetzTemplate=circle;" vertex="1" parent="1"><mxGeometry x="500" y="500" width="80" height="80" as="geometry"/></mxCell>';
+  const inserted = rendered.xml.replace('</root>', template + '</root>');
+  const updated = apply(source, patchesFromEditable(source, rendered.editable, inserted, readAllCells));
+  assert.match(updated, /circle\(\(0, 0\), radius: 1\)/);
+});
+test('palette insertion regenerates the image and adds an editable shape', async () => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 0))\n})';
+  const file = path.resolve('examples/advanced.typ');
+  const before = await renderEditable(source, parseCanvas(source).canvas, file);
+  const template = '<mxCell id="palette-circle" value="" style="ellipse;cetzTemplate=circle;" vertex="1" parent="1"><mxGeometry x="500" y="500" width="80" height="80" as="geometry"/></mxCell>';
+  const inserted = before.xml.replace('</root>', template + '</root>');
+  const updated = apply(source, patchesFromEditable(source, before, inserted, readAllCells));
+  assert.match(updated, /circle\(\(0, 0\), radius: 1\)/);
+  const after = await renderEditable(updated, parseCanvas(updated).canvas, file);
+  assert.ok(readAllCells(after.xml).get('cetz-edit-1'));
+  assert.ok(readAllCells(after.xml).get('cetz-preview-image'));
+  assert.notEqual(readAllCells(before.xml).get('cetz-preview-image').cell.style,
+    readAllCells(after.xml).get('cetz-preview-image').cell.style);
+  assert.equal(readAllCells(after.xml).has('palette-circle'), false);
 });
 test('the primitive example keeps relative rectangles and polygons editable', async () => {
   const file = path.resolve('examples/extended.typ');
@@ -301,7 +465,7 @@ test('moves and deletes basic primitives in a Typst-rendered Draw.io preview', a
     assert.doesNotMatch(updated, /scope\(\{/);
     const rerendered = await renderEditable(updated, parseCanvas(updated).canvas, file);
     const after = readAllCells(rerendered.xml).get('cetz-edit-1');
-    assert.ok(Math.abs(Number(after.geometry.x) - Number(cell.geometry.x) - 20) < 0.02, call);
+    assert.ok(Math.abs(Number(after.geometry.x) - Number(cell.geometry.x) - snappedMove(rendered, 20)) < 0.5, call);
     const resized = rendered.xml.replace(/(<mxCell id="cetz-edit-1"[\s\S]*?width=")([\d.]+)/,
       (_, prefix, width) => prefix + (Number(width) * 1.5));
     if (call.startsWith('content')) {
@@ -312,7 +476,7 @@ test('moves and deletes basic primitives in a Typst-rendered Draw.io preview', a
       if (call.startsWith('circle')) assert.match(resizedSource, /radius: \(1\.5, 1\)/);
       const resizedRender = await renderEditable(resizedSource, parseCanvas(resizedSource).canvas, file);
       const resizedCell = readAllCells(resizedRender.xml).get('cetz-edit-1');
-      assert.ok(Math.abs(Number(resizedCell.geometry.width) - Number(cell.geometry.width) * 1.5) < 0.02, call);
+      assert.ok(Math.abs(Number(resizedCell.geometry.width) - Number(cell.geometry.width) * 1.5) < 0.5, call);
     }
     const removed = rendered.xml.replace(/<mxCell id="cetz-edit-1"[\s\S]*?<\/mxCell>/, '');
     const deleted = apply(source, patchesFromEditable(source, rendered, removed, readAllCells));
@@ -333,7 +497,7 @@ test('flattens an existing generated scope into literal circle arguments on edit
   assert.match(updated, /circle\(\([\d.]+, 2\), radius: 2\)/);
   const rerendered = await renderEditable(updated, parseCanvas(updated).canvas, file);
   const after = readAllCells(rerendered.xml).get('cetz-edit-1');
-  assert.ok(Math.abs(Number(after.geometry.x) - Number(before.geometry.x) - 20) < 0.02);
+  assert.ok(Math.abs(Number(after.geometry.x) - Number(before.geometry.x) - snappedMove(rendered, 20)) < 0.5);
 });
 test('drags individual curve and line points by editing only their CeTZ coordinates', async () => {
   const file = path.resolve('examples/advanced.typ');
@@ -364,8 +528,9 @@ test('drags individual curve and line points by editing only their CeTZ coordina
     const rerendered = await renderEditable(updated, parseCanvas(updated).canvas, file);
     const afterCells = readAllCells(rerendered.xml);
     const after = afterCells.get('cetz-point-1-2');
-    assert.ok(Math.abs(Number(after.geometry.x) - Number(before.geometry.x) - 20) < 0.02, call);
-    assert.ok(Math.abs(Number(after.geometry.y) - Number(before.geometry.y) + 10) < 0.02, call);
+    const target = snappedHandle(rendered, before.geometry, 20, -10);
+    assert.ok(Math.abs(Number(after.geometry.x) - target.x) < 0.6, call);
+    assert.ok(Math.abs(Number(after.geometry.y) - target.y) < 0.6, call);
     assert.equal(afterCells.get('cetz-point-1-0').geometry.x, cells.get('cetz-point-1-0').geometry.x, call);
     assert.throws(() => patchesFromEditable(source, rendered,
       rendered.xml.replace('id="cetz-point-1-2" value="" style=', 'id="cetz-point-1-2" value="changed" style='),
@@ -385,7 +550,8 @@ test('editing a Bezier control point also removes an older generated scope', asy
   assert.doesNotMatch(updated, /scope\(\{|translate\(|scale\(/);
   const rerendered = await renderEditable(updated, parseCanvas(updated).canvas, file);
   const after = readAllCells(rerendered.xml).get('cetz-point-0-2');
-  assert.ok(Math.abs(Number(after.geometry.x) - Number(before.geometry.x) - 20) < 0.02);
+  const target = snappedHandle(rendered, before.geometry, 20, 0);
+  assert.ok(Math.abs(Number(after.geometry.x) - target.x) < 0.6);
 });
 test('arc position, center, and endpoint handles update the corresponding arguments', async () => {
   const file = path.resolve('examples/advanced.typ');
@@ -417,8 +583,9 @@ test('arc position, center, and endpoint handles update the corresponding argume
     }
     const rerendered = await renderEditable(updated, parseCanvas(updated).canvas, file);
     const after = readAllCells(rerendered.xml).get(`cetz-point-0-${index}`);
-    assert.ok(Math.abs(Number(after.geometry.x) - Number(before.geometry.x) - 20) < 0.02, String(index));
-    assert.ok(Math.abs(Number(after.geometry.y) - Number(before.geometry.y) + 10) < 0.02, String(index));
+    const target = snappedHandle(rendered, before.geometry, 20, -10);
+    assert.ok(Math.abs(Number(after.geometry.x) - target.x) < 1, String(index));
+    assert.ok(Math.abs(Number(after.geometry.y) - target.y) < 1, String(index));
   }
 });
 test('arc endpoint editing preserves an elliptical radius', async () => {
@@ -433,7 +600,8 @@ test('arc endpoint editing preserves an elliptical radius', async () => {
   assert.match(updated, /radius: \([\d.]+, [\d.]+\)/);
   const rerendered = await renderEditable(updated, parseCanvas(updated).canvas, file);
   const after = readAllCells(rerendered.xml).get('cetz-point-0-2');
-  assert.ok(Math.abs(Number(after.geometry.x) - Number(before.geometry.x) - 20) < 0.02);
+  const target = snappedHandle(rendered, before.geometry, 20, 0);
+  assert.ok(Math.abs(Number(after.geometry.x) - target.x) < 1);
 });
 test('arc handles coincide with the anchors rendered by CeTZ', async () => {
   const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
@@ -447,8 +615,8 @@ test('arc handles coincide with the anchors rendered by CeTZ', async () => {
     const marker = new RegExp(`<path\\b[^>]*fill="${fill}"[^>]*>`).exec(rendered.calibration.svg)?.[0];
     assert.ok(marker, fill);
     const position = /transform="translate\(([^)]+)\)"/.exec(marker)[1].trim().split(/[\s,]+/).map(Number);
-    const expectedX = 500 + (position[0] + rendered.calibration.unitX * 0.03 - rendered.calibration.zero.x) * 2.5;
-    const expectedY = 500 + (position[1] + rendered.calibration.unitY * 0.03 - rendered.calibration.zero.y) * 2.5;
+    const expectedX = rendered.calibration.originX + (position[0] + rendered.calibration.unitX * 0.03 - rendered.calibration.zero.x) * 2.5;
+    const expectedY = rendered.calibration.originY + (position[1] + rendered.calibration.unitY * 0.03 - rendered.calibration.zero.y) * 2.5;
     const handle = cells.get(`cetz-point-0-${index}`).geometry;
     assert.ok(Math.abs(+handle.x + 7 - expectedX) < 0.1, `${fill} x`);
     assert.ok(Math.abs(+handle.y + 7 - expectedY) < 0.1, `${fill} y`);
@@ -490,7 +658,7 @@ test('moves each advanced CeTZ shape independently in Draw.io', async () => {
     assert.equal(locateEditableCalls(updated, parseCanvas(updated).canvas).length, 1, shape.label);
     const rerendered = await renderEditable(updated, parseCanvas(updated).canvas, file);
     const after = readAllCells(rerendered.xml).get('cetz-edit-0');
-    assert.ok(Math.abs(Number(after.geometry.x) - Number(before.geometry.x) - 10) < 0.02, shape.label);
+    assert.ok(Math.abs(Number(after.geometry.x) - Number(before.geometry.x) - snappedMove(rendered, 10)) < 0.5, shape.label);
   }
 });
 test('adds and deletes individual shapes in an advanced Draw.io canvas', async () => {

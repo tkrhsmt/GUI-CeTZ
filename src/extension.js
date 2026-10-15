@@ -44,7 +44,10 @@ async function updateDiagramDocument(session, xml) {
 async function refreshGuiView(session) {
   const doc = await vscode.workspace.openTextDocument(session.diagramUri);
   await doc.save();
-  await vscode.commands.executeCommand('workbench.action.webview.reloadWebviewAction');
+  // Editable previews replace the SVG cell during Draw.io's live document merge.
+  // Keep the full reload for locked previews, which have no editable image cell.
+  if (!session.editable)
+    await vscode.commands.executeCommand('workbench.action.webview.reloadWebviewAction');
 }
 async function applySourcePatches(session, source, patches) {
   if (!patches.length) return;
@@ -138,7 +141,7 @@ async function openGui() {
   }
   await syncFromSource(session);
   await vscode.commands.executeCommand('vscode.openWith', uri, 'hediet.vscode-drawio-text', vscode.ViewColumn.Beside);
-  if (!session.editable)
+  if (!session.editable || !session.editable.calls.length)
     vscode.window.showInformationMessage('CeTZ: This canvas has no directly editable literal shapes. The Typst preview is available; add shapes from the CeTZ palette or edit the source.');
 }
 async function insertShape() {

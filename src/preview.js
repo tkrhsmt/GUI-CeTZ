@@ -79,7 +79,7 @@ function imageDiagram(svg) {
   const width = Math.max(1, Number(size[1]) * 2.5);
   const height = Math.max(1, Number(size[2]) * 2.5);
   const image = `data:image/svg+xml,${encodeURIComponent(svg)}`;
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<mxfile host="GUI-CeTZ"><diagram name="CeTZ preview"><mxGraphModel grid="1" page="0" pageWidth="${width}" pageHeight="${height}"><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="preview-image" value="" style="shape=image;imageAspect=1;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;image=${image};" vertex="1" parent="1" connectable="0"><mxGeometry x="0" y="0" width="${width}" height="${height}" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<mxfile host="GUI-CeTZ"><diagram id="cetz-canvas" name="CeTZ preview"><mxGraphModel grid="1" page="0" pageWidth="${width}" pageHeight="${height}"><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="preview-image" value="" style="shape=image;imageAspect=1;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;image=${image};" vertex="1" parent="1" connectable="0"><mxGeometry x="0" y="0" width="${width}" height="${height}" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>\n`;
 }
 
 module.exports = { renderCanvas, imageDiagram };

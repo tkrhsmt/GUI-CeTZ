@@ -4,18 +4,23 @@ const { closing, skipTrivia, splitArgs } = require('./scanner');
 const { renderCanvas } = require('./preview');
 const { templateInsertions } = require('./templates');
 const { color: parseColor, stroke: parseStroke, typstColor, typstStroke } = require('./style');
+const { sideValues, sideEdits } = require('./marks');
 
 const EDITABLE = new Set(['arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier', 'hobby',
   'catmull', 'merge-path', 'compound-path', 'rect', 'circle', 'content', 'line', 'polygon']);
 const NUMBER = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)';
-const BASE_X = 500, BASE_Y = 500;
+const TARGET_ORIGIN = 500;
+const GRID_FRACTIONS = 4;
 const POINT = new RegExp(`\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)`, 'g');
 const POINT_HANDLE_NAMES = new Set(['bezier', 'hobby', 'catmull', 'line']);
 const POINT_HANDLE_SIZE = 14;
 const WRAPPER = new RegExp(`^scope\\(\\{\\s*translate\\(x:\\s*(${NUMBER}),\\s*y:\\s*(${NUMBER})\\)\\s*scale\\(x:\\s*(${NUMBER}),\\s*y:\\s*(${NUMBER})\\)\\s*`);
-const round = n => Number(n.toFixed(5));
+const round = n => Number(n.toFixed(2));
+const pixel = n => Number(n.toFixed(5));
+const snapCoordinate = n => round(Math.round(n * GRID_FRACTIONS) / GRID_FRACTIONS);
 const FILLABLE = new Set(['rect', 'circle', 'polygon', 'n-star', 'rect-around', 'merge-path', 'compound-path']);
-const STYLE_KEYS = new Set(['cetzFillColor', 'cetzStrokeColor', 'cetzStrokeWidth', 'cetzDash']);
+const STYLE_KEYS = new Set(['cetzFillColor', 'cetzStrokeColor', 'cetzStrokeWidth', 'cetzDash',
+  'cetzStartMark', 'cetzEndMark']);
 
 function namedArgument(text, name) {
   const open = skipTrivia(text, /^[\w-]+/.exec(text)?.[0].length || 0);
@@ -38,7 +43,9 @@ function editableStyle(call) {
     cetzFillColor: FILLABLE.has(call.name) && parseColor(fill) !== 'none' ? parseColor(fill) || '#ffffff' : '#ffffff',
     cetzStrokeColor: parsedStroke?.color && parsedStroke.color !== 'none' ? parsedStroke.color : '#000000',
     cetzStrokeWidth: parsedStroke?.width || 1,
-    cetzDash: parsedStroke?.dash || 'solid' };
+    cetzDash: parsedStroke?.dash || 'solid',
+    ...(call.name === 'line' ? Object.fromEntries(Object.entries(sideValues(namedArgument(call.call, 'mark')?.value))
+      .map(([side, value]) => [`cetz${side[0].toUpperCase()}${side.slice(1)}Mark`, value])) : {}) };
 }
 
 function styleMap(style) {
@@ -70,7 +77,7 @@ function rewriteEditableStyle(call, beforeStyle, afterStyle) {
   if (!changed.length) return null;
   const edits = [];
   let appended = '';
-  if (changed.some(key => key !== 'cetzFillColor')) {
+  if (changed.some(key => ['cetzStrokeColor', 'cetzStrokeWidth', 'cetzDash'].includes(key))) {
     const arg = namedArgument(call.call, 'stroke');
     if (!arg || arg.value != null && !parseStroke(arg.value))
       throw new Error('Edit this CeTZ stroke expression in Typst.');
@@ -88,6 +95,23 @@ function rewriteEditableStyle(call, beforeStyle, afterStyle) {
     if (arg.value == null) appended += `, fill: ${replacement}`;
     else edits.push({ start: arg.start, end: arg.valueEnd, text: replacement });
   }
+  if (changed.includes('cetzStartMark') || changed.includes('cetzEndMark')) {
+    if (call.name !== 'line') throw new Error('CeTZ marks can only be edited on lines.');
+    const changes = {};
+    if (changed.includes('cetzStartMark')) changes.start = afterStyle.cetzStartMark;
+    if (changed.includes('cetzEndMark')) changes.end = afterStyle.cetzEndMark;
+    const arg = namedArgument(call.call, 'mark');
+    if (!arg || arg.value == null) {
+      const sides = ['start', 'end'].filter(side => afterStyle[`cetz${side[0].toUpperCase()}${side.slice(1)}Mark`] !== 'none')
+        .map(side => `${side}: "${afterStyle[`cetz${side[0].toUpperCase()}${side.slice(1)}Mark`]}"`);
+      if (sides.length) appended += `, mark: (${sides.join(', ')})`;
+    } else if (arg.value === 'none') {
+      const sides = ['start', 'end'].filter(side => afterStyle[`cetz${side[0].toUpperCase()}${side.slice(1)}Mark`] !== 'none')
+        .map(side => `${side}: "${afterStyle[`cetz${side[0].toUpperCase()}${side.slice(1)}Mark`]}"`);
+      edits.push({ start: arg.start, end: arg.valueEnd,
+        text: sides.length ? `(${sides.join(', ')})` : 'none' });
+    } else edits.push({ start: arg.start, end: arg.valueEnd, text: sideEdits(arg.value, changes) });
+  }
   if (appended) edits.push({ start: namedArgument(call.call, 'stroke').end,
     end: namedArgument(call.call, 'stroke').end, text: appended });
   return edits.sort((a, b) => b.start - a.start).reduce((value, edit) =>
@@ -96,7 +120,8 @@ function rewriteEditableStyle(call, beforeStyle, afterStyle) {
 
 function rewriteLiteralCall(call, transform) {
   const edits = [];
-  const { tx, ty, sx, sy } = transform;
+  const { sx, sy } = transform;
+  const tx = snapCoordinate(transform.tx), ty = snapCoordinate(transform.ty);
   const uniform = Math.abs(sx - sy) < 0.00001;
   function replace(range, value) { edits.push({ start: range.start, end: range.end, text: value }); }
   function rewritePoint(range) {
@@ -392,31 +417,65 @@ function calibration(svg) {
 
 async function renderEditable(source, canvas, filePath) {
   const calls = locateEditableCalls(source, canvas);
-  if (!calls.length) return null;
   const markers = '\nrect((0, 0), (0.01, 0.01), fill: rgb("#010203"), stroke: none)\n' +
     'rect((1, 1), (1.01, 1.01), fill: rgb("#040506"), stroke: none)\n';
   const calibrated = source.slice(0, canvas.bodyEnd) + markers + source.slice(canvas.bodyEnd);
   const updatedCanvas = { ...canvas, bodyEnd: canvas.bodyEnd + markers.length, end: canvas.end + markers.length };
   const result = calibration(await renderCanvas(calibrated, updatedCanvas, filePath));
+  result.gridSize = pixel(result.unitX * 2.5 / GRID_FRACTIONS);
+  result.originX = pixel(Math.round(TARGET_ORIGIN / result.gridSize) * result.gridSize);
+  result.originY = pixel(Math.round(TARGET_ORIGIN / result.gridSize) * result.gridSize);
   const size = /<svg\b[^>]*viewBox="[^"]*?\s([\d.]+)\s([\d.]+)"/.exec(result.svg);
   if (!size) throw new Error('Typst SVG has no viewBox.');
   const width = +size[1] * 2.5, height = +size[2] * 2.5;
   const image = `data:image/svg+xml,${encodeURIComponent(result.svg)}`;
-  const background = `<mxCell id="cetz-preview-background" value="" style="shape=image;imageAspect=1;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;image=${image};" vertex="1" parent="1" connectable="0"><mxGeometry x="${round(BASE_X - result.zero.x * 2.5)}" y="${round(BASE_Y - result.zero.y * 2.5)}" width="${width}" height="${height}" as="geometry"/></mxCell>`;
+  // Leave room for the axes when Typst expands its SVG into negative CeTZ coordinates.
+  const margin = 200;
+  result.originX = pixel(result.originX + Math.max(0,
+    Math.ceil((margin - (result.originX - result.zero.x * 2.5)) / result.gridSize)) * result.gridSize);
+  result.originY = pixel(result.originY + Math.max(0,
+    Math.ceil((margin - (result.originY - result.zero.y * 2.5)) / result.gridSize)) * result.gridSize);
+  const backgroundX = result.originX - result.zero.x * 2.5;
+  const backgroundY = result.originY - result.zero.y * 2.5;
+  const background = `<mxCell id="cetz-preview-background" value="" style="shape=rect;fillColor=none;strokeColor=none;opacity=0;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;selectable=0;pointerEvents=0;cetzOriginX=${result.originX};cetzOriginY=${result.originY};cetzUnitX=${pixel(result.unitX * 2.5)};cetzUnitY=${pixel(result.unitY * 2.5)};" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(backgroundX)}" y="${pixel(backgroundY)}" width="${width}" height="${height}" as="geometry"/></mxCell>`;
+  const previewImage = `<mxCell id="cetz-preview-image" value="" style="shape=image;imageAspect=1;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;selectable=0;pointerEvents=0;image=${image};" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(backgroundX)}" y="${pixel(backgroundY)}" width="${width}" height="${height}" as="geometry"/></mxCell>`;
+  const axisLeft = pixel(Math.min(backgroundX, result.originX) - 160);
+  const axisRight = pixel(Math.max(backgroundX + width, result.originX) + 160);
+  const axisTop = pixel(Math.min(backgroundY, result.originY) - 160);
+  const axisBottom = pixel(Math.max(backgroundY + height, result.originY) + 160);
+  const pageWidth = pixel(axisRight + 64), pageHeight = pixel(axisBottom + 64);
+  function axis(id, color, x1, y1, x2, y2) {
+    return `<mxCell id="cetz-axis-${id}" value="" style="edgeStyle=none;strokeColor=${color};strokeWidth=2;strokeOpacity=65;startArrow=none;endArrow=classic;endSize=8;movable=0;deletable=0;selectable=0;pointerEvents=0;" edge="1" parent="1" connectable="0"><mxGeometry relative="1" as="geometry"><mxPoint x="${x1}" y="${y1}" as="sourcePoint"/><mxPoint x="${x2}" y="${y2}" as="targetPoint"/></mxGeometry></mxCell>`;
+  }
+  function axisLabel(id, value, color, x, y, width) {
+    return `<mxCell id="cetz-axis-${id}-label" value="${value}" style="text;html=0;strokeColor=none;fillColor=none;fontColor=${color};fontStyle=1;fontSize=12;align=center;verticalAlign=middle;movable=0;resizable=0;deletable=0;selectable=0;pointerEvents=0;" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x)}" y="${pixel(y)}" width="${width}" height="20" as="geometry"/></mxCell>`;
+  }
+  const axes = axis('x', '#c2410c', axisLeft, result.originY, axisRight, result.originY) +
+    axis('y', '#1d4ed8', result.originX, axisBottom, result.originX, axisTop) +
+    axisLabel('x', 'x', '#c2410c', axisRight - 24, result.originY + 5, 20) +
+    axisLabel('y', 'y', '#1d4ed8', result.originX + 5, axisTop + 5, 20) +
+    `<mxCell id="cetz-origin-dot" value="" style="ellipse;fillColor=#1f2937;strokeColor=#ffffff;strokeWidth=1;movable=0;resizable=0;deletable=0;selectable=0;pointerEvents=0;" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(result.originX - 4)}" y="${pixel(result.originY - 4)}" width="8" height="8" as="geometry"/></mxCell>` +
+    axisLabel('origin', '(0, 0)', '#1f2937', result.originX + 7, result.originY + 7, 48);
   const handles = calls.map((call, i) => {
     const b = boundsFor(call);
     if (!b) return '';
-    const x = BASE_X + b.x * result.unitX * 2.5;
-    const y = BASE_Y - (b.y + b.height) * result.unitY * 2.5;
+    const x = result.originX + b.x * result.unitX * 2.5;
+    const y = result.originY - (b.y + b.height) * result.unitY * 2.5;
     const w = b.width * result.unitX * 2.5, h = b.height * result.unitY * 2.5;
     call.geometry = { x, y, width: w, height: h };
-    const settings = Object.entries(editableStyle(call)).map(([key, value]) => `${key}=${value};`).join('');
-    return `<mxCell id="cetz-edit-${i}" value="" style="rounded=0;fillColor=#ffffff;fillOpacity=1;strokeColor=#4f79ff;strokeOpacity=35;dashed=1;connectable=0;deletable=0;rotatable=0;${settings}" vertex="1" parent="1" connectable="0"><mxGeometry x="${round(x)}" y="${round(y)}" width="${round(w)}" height="${round(h)}" as="geometry"/></mxCell>`;
+    const firstPoint = [...call.call.matchAll(POINT)][0];
+    const snap = firstPoint ? {
+      cetzSnapOffsetX: pixel((call.transform.tx + call.transform.sx * +firstPoint[1] - b.x) * result.unitX * 2.5),
+      cetzSnapOffsetY: pixel((b.y + b.height - call.transform.ty - call.transform.sy * +firstPoint[2]) * result.unitY * 2.5)
+    } : {};
+    const settings = Object.entries({ ...editableStyle(call), ...snap })
+      .map(([key, value]) => `${key}=${value};`).join('');
+    return `<mxCell id="cetz-edit-${i}" value="" style="rounded=0;fillColor=#ffffff;fillOpacity=1;strokeColor=#4f79ff;strokeOpacity=35;dashed=1;connectable=0;deletable=0;rotatable=0;${settings}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x)}" y="${pixel(y)}" width="${pixel(w)}" height="${pixel(h)}" as="geometry"/></mxCell>`;
   }).join('');
   function screenPoint(call, point) {
     return {
-      x: BASE_X + (call.transform.tx + call.transform.sx * point.x) * result.unitX * 2.5,
-      y: BASE_Y - (call.transform.ty + call.transform.sy * point.y) * result.unitY * 2.5
+      x: result.originX + (call.transform.tx + call.transform.sx * point.x) * result.unitX * 2.5,
+      y: result.originY - (call.transform.ty + call.transform.sy * point.y) * result.unitY * 2.5
     };
   }
   const pointHandles = calls.map((call, i) => {
@@ -425,7 +484,7 @@ async function renderEditable(source, canvas, filePath) {
       const { x, y } = screenPoint(call, point);
       const color = call.name === 'bezier' && j >= 2 || call.name === 'arc' && j >= 1
         ? '#e28b23' : '#2563eb';
-      return `<mxCell id="cetz-point-${i}-${j}" value="" style="ellipse;fillColor=#ffffff;strokeColor=${color};strokeWidth=2;resizable=0;deletable=0;rotatable=0;connectable=0;" vertex="1" parent="1" connectable="0"><mxGeometry x="${round(x - POINT_HANDLE_SIZE / 2)}" y="${round(y - POINT_HANDLE_SIZE / 2)}" width="${POINT_HANDLE_SIZE}" height="${POINT_HANDLE_SIZE}" as="geometry"/></mxCell>`;
+      return `<mxCell id="cetz-point-${i}-${j}" value="" style="ellipse;fillColor=#ffffff;strokeColor=${color};strokeWidth=2;resizable=0;deletable=0;rotatable=0;connectable=0;" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x - POINT_HANDLE_SIZE / 2)}" y="${pixel(y - POINT_HANDLE_SIZE / 2)}" width="${POINT_HANDLE_SIZE}" height="${POINT_HANDLE_SIZE}" as="geometry"/></mxCell>`;
     }).join('');
   }).join('');
   const guides = calls.map((call, i) => {
@@ -433,10 +492,10 @@ async function renderEditable(source, canvas, filePath) {
       : call.name === 'arc' && call.points.length === 3 ? [[1, 0], [1, 2]] : [];
     return pairs.map(([start, end], j) => {
       const a = screenPoint(call, call.points[start]), b = screenPoint(call, call.points[end]);
-      return `<mxCell id="cetz-guide-${i}-${j}" value="" style="edgeStyle=none;dashed=1;dashPattern=3 3;strokeColor=#e28b23;strokeOpacity=55;startArrow=none;endArrow=none;movable=0;deletable=0;selectable=0;" edge="1" parent="1" connectable="0"><mxGeometry relative="1" as="geometry"><mxPoint x="${round(a.x)}" y="${round(a.y)}" as="sourcePoint"/><mxPoint x="${round(b.x)}" y="${round(b.y)}" as="targetPoint"/></mxGeometry></mxCell>`;
+      return `<mxCell id="cetz-guide-${i}-${j}" value="" style="edgeStyle=none;dashed=1;dashPattern=3 3;strokeColor=#e28b23;strokeOpacity=55;startArrow=none;endArrow=none;movable=0;deletable=0;selectable=0;" edge="1" parent="1" connectable="0"><mxGeometry relative="1" as="geometry"><mxPoint x="${pixel(a.x)}" y="${pixel(a.y)}" as="sourcePoint"/><mxPoint x="${pixel(b.x)}" y="${pixel(b.y)}" as="targetPoint"/></mxGeometry></mxCell>`;
     }).join('');
   }).join('');
-  return { calls, canvas, xml: `<?xml version="1.0" encoding="UTF-8"?>\n<mxfile host="GUI-CeTZ"><diagram name="CeTZ shapes"><mxGraphModel grid="1" page="0" pageWidth="${width}" pageHeight="${height}"><root><mxCell id="0"/><mxCell id="1" parent="0"/>${background}${handles}${guides}${pointHandles}</root></mxGraphModel></diagram></mxfile>\n`,
+  return { calls, canvas, xml: `<?xml version="1.0" encoding="UTF-8"?>\n<mxfile host="GUI-CeTZ"><diagram id="cetz-canvas" name="CeTZ shapes"><mxGraphModel grid="1" gridSize="${result.gridSize}" page="0" pageWidth="${pageWidth}" pageHeight="${pageHeight}"><root><mxCell id="0"/><mxCell id="1" parent="0"/>${background}${previewImage}${axes}${handles}${guides}${pointHandles}</root></mxGraphModel></diagram></mxfile>\n`,
     calibration: result };
 }
 
@@ -451,6 +510,9 @@ function patchesFromEditable(source, rendered, xml, readCells) {
     : value;
   if (!background || JSON.stringify(canonical(background)) !== JSON.stringify(canonical(original.get('cetz-preview-background'))))
     throw new Error('The CeTZ preview background cannot be edited.');
+  if (JSON.stringify(canonical(cells.get('cetz-preview-image'))) !==
+    JSON.stringify(canonical(original.get('cetz-preview-image'))))
+    throw new Error('The CeTZ preview image cannot be edited.');
   for (let i = 0; i < rendered.calls.length; i++) {
     const call = rendered.calls[i], id = `cetz-edit-${i}`;
     const item = cells.get(id), before = original.get(id);
@@ -496,8 +558,10 @@ function patchesFromEditable(source, rendered, xml, readCells) {
       const flattened = call.transform.tx || call.transform.ty || call.transform.sx !== 1 || call.transform.sy !== 1
         ? rewriteLiteralCall(call.call, call.transform) : call.call;
       const coordinates = pointMoves.map(move => ({ index: move.index,
-        x: (move.x + POINT_HANDLE_SIZE / 2 - BASE_X) / (rendered.calibration.unitX * 2.5),
-        y: (BASE_Y - move.y - POINT_HANDLE_SIZE / 2) / (rendered.calibration.unitY * 2.5) }));
+        x: snapCoordinate((move.x + POINT_HANDLE_SIZE / 2 - rendered.calibration.originX) /
+          (rendered.calibration.unitX * 2.5)),
+        y: snapCoordinate((rendered.calibration.originY - move.y - POINT_HANDLE_SIZE / 2) /
+          (rendered.calibration.unitY * 2.5)) }));
       let replacement;
       if (call.name === 'arc') {
         const point = coordinates[0];
@@ -515,8 +579,8 @@ function patchesFromEditable(source, rendered, xml, readCells) {
     if (!boxChanged) continue;
     const sx = +b.width / +a.width, sy = +b.height / +a.height;
     const dx = +b.x - sx * +a.x, dy = +b.y - sy * +a.y;
-    const tx = call.transform.tx * sx + (dx + (sx - 1) * BASE_X) / (rendered.calibration.unitX * 2.5);
-    const ty = call.transform.ty * sy + ((1 - sy) * BASE_Y - dy) / (rendered.calibration.unitY * 2.5);
+    const tx = call.transform.tx * sx + (dx + (sx - 1) * rendered.calibration.originX) / (rendered.calibration.unitX * 2.5);
+    const ty = call.transform.ty * sy + ((1 - sy) * rendered.calibration.originY - dy) / (rendered.calibration.unitY * 2.5);
     const replacement = rewriteLiteralCall(call.call, { tx, ty, sx: call.transform.sx * sx, sy: call.transform.sy * sy });
     patches.push({ start: call.start, end: call.end, text: replacement });
   }
