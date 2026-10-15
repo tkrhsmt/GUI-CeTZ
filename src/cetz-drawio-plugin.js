@@ -1,24 +1,16 @@
-/* global Draw */
+/* global Draw, mxCell, mxGeometry */
 // Loaded by Draw.io Integration only after its normal plugin trust prompt.
 Draw.loadPlugin(function (ui) {
   var sidebar = ui.sidebar;
   if (!sidebar) return;
 
-  sidebar.addPaletteFunctions('cetz-primitives', 'CeTZ primitives', true, [
-    sidebar.createVertexTemplateEntry('rounded=0;whiteSpace=wrap;html=1;', 120, 80, '', 'rect'),
-    sidebar.createVertexTemplateEntry('ellipse;whiteSpace=wrap;html=1;', 80, 80, '', 'circle'),
-    sidebar.createVertexTemplateEntry('text;html=0;whiteSpace=wrap;align=center;verticalAlign=middle;strokeColor=none;', 120, 36, 'Text', 'content'),
-    sidebar.createEdgeTemplateEntry('rounded=0;html=1;startArrow=none;endArrow=none;', 120, 60, '', 'line')
-  ]);
-  sidebar.addPaletteFunctions('cetz-preview-primitives', 'CeTZ primitives', true, [
-    sidebar.createVertexTemplateEntry('rounded=0;cetzTemplate=rect;', 120, 80, '', 'rect'),
-    sidebar.createVertexTemplateEntry('ellipse;cetzTemplate=circle;', 80, 80, '', 'circle'),
-    sidebar.createVertexTemplateEntry('text;cetzTemplate=content;', 120, 36, 'Text', 'content'),
-    sidebar.createEdgeTemplateEntry('rounded=0;startArrow=none;endArrow=none;cetzTemplate=line;', 120, 60, '', 'line')
-  ]);
   var shapeNames = ['arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier',
     'hobby', 'catmull', 'merge-path', 'compound-path'];
   var shapeGlyphs = {
+    rect: '<rect x="10" y="10" width="44" height="28" rx="2"/>',
+    circle: '<circle cx="32" cy="24" r="17"/>',
+    content: '<rect x="8" y="10" width="48" height="28" rx="3" stroke="#93c5fd"/><path d="M18 18 H46 M18 25 H41 M18 32 H35"/>',
+    line: '<path d="M8 36 L25 11 L42 28 L56 12"/><circle cx="8" cy="36" r="2" fill="#ffffff"/><circle cx="56" cy="12" r="2" fill="#ffffff"/>',
     arc: '<path d="M10 34 A22 22 0 0 1 54 34"/><circle cx="32" cy="34" r="2" fill="#e28b23" stroke="none"/>',
     mark: '<path d="M9 34 H48 M39 25 L51 34 L39 43"/>',
     'n-star': '<path d="M32 5 L38 20 L54 20 L41 30 L46 45 L32 36 L18 45 L23 30 L10 20 L26 20 Z"/>',
@@ -36,6 +28,60 @@ Draw.loadPlugin(function (ui) {
       shapeGlyphs[name] + '</g></svg>';
     return 'data:image/svg+xml,' + encodeURIComponent(svg);
   }
+  var originalShowTooltip = sidebar.showTooltip;
+  if (originalShowTooltip) sidebar.showTooltip = function (element) {
+    if (!element.cetzPrimitiveIcon || typeof mxCell === 'undefined' ||
+        typeof mxGeometry === 'undefined') return originalShowTooltip.apply(this, arguments);
+    // The palette thumbnail is an icon; show that same icon in Draw.io's own
+    // delayed preview while keeping the actual drag template untouched.
+    var preview = new mxCell('', new mxGeometry(0, 0, 80, 60),
+      'shape=image;imageAspect=1;image=' + element.cetzPrimitiveIcon + ';');
+    preview.vertex = true;
+    var args = Array.prototype.slice.call(arguments);
+    args[1] = [preview]; args[2] = 80; args[3] = 60; args[5] = false;
+    return originalShowTooltip.apply(this, args);
+  };
+  function iconEntry(factory, name) {
+    return function (content) {
+      var element = factory(content);
+      if (!element) return element;
+      // Keep the original template and its drag behavior; replace only its thumbnail.
+      element.renderThumbFn = function () {};
+      element.textContent = '';
+      element.style.display = 'inline-flex';
+      element.style.alignItems = 'center';
+      element.style.justifyContent = 'center';
+      element.style.flexDirection = 'column';
+      var icon = document.createElement('img');
+      element.cetzPrimitiveIcon = shapeIcon(name);
+      icon.src = element.cetzPrimitiveIcon;
+      icon.alt = '';
+      icon.draggable = false;
+      icon.style.cssText = 'display:block;width:38px;height:30px;object-fit:contain;pointer-events:none;';
+      element.appendChild(icon);
+      if (sidebar.sidebarTitles) {
+        var title = document.createElement('span');
+        title.textContent = name;
+        title.style.cssText = 'font:10px sans-serif;white-space:nowrap;pointer-events:none;';
+        element.appendChild(title);
+      }
+      // Draw.io uses an empty native title so its own delayed preview can appear.
+      element.setAttribute('title', '');
+      return element;
+    };
+  }
+  sidebar.addPaletteFunctions('cetz-primitives', 'CeTZ primitives', true, [
+    iconEntry(sidebar.createVertexTemplateEntry('rounded=0;whiteSpace=wrap;html=1;', 120, 80, '', 'rect'), 'rect'),
+    iconEntry(sidebar.createVertexTemplateEntry('ellipse;whiteSpace=wrap;html=1;', 80, 80, '', 'circle'), 'circle'),
+    iconEntry(sidebar.createVertexTemplateEntry('text;html=0;whiteSpace=wrap;align=center;verticalAlign=middle;strokeColor=none;', 120, 36, 'Text', 'content'), 'content'),
+    iconEntry(sidebar.createEdgeTemplateEntry('rounded=0;html=1;startArrow=none;endArrow=none;', 120, 60, '', 'line'), 'line')
+  ]);
+  sidebar.addPaletteFunctions('cetz-preview-primitives', 'CeTZ primitives', true, [
+    iconEntry(sidebar.createVertexTemplateEntry('rounded=0;cetzTemplate=rect;', 120, 80, '', 'rect'), 'rect'),
+    iconEntry(sidebar.createVertexTemplateEntry('ellipse;cetzTemplate=circle;', 80, 80, '', 'circle'), 'circle'),
+    iconEntry(sidebar.createVertexTemplateEntry('text;cetzTemplate=content;', 120, 36, 'Text', 'content'), 'content'),
+    iconEntry(sidebar.createEdgeTemplateEntry('rounded=0;startArrow=none;endArrow=none;cetzTemplate=line;', 120, 60, '', 'line'), 'line')
+  ]);
   sidebar.addPaletteFunctions('cetz-advanced', 'CeTZ shapes', true,
     shapeNames.map(function (name) {
       return sidebar.createVertexTemplateEntry(

@@ -32,9 +32,10 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     general: [element(''), element('block')],
     scratchpad: [element(''), element('')]
   };
-  const vertexTemplates = [];
+  const vertexTemplates = [], edgeTemplates = [], paletteFns = {};
   let fileTitle = 'example.cetz-1.drawio', preview = false, editablePreview = false;
   let graphEnabled = false, rulerDestroyed = false, rulerVisible = false;
+  let tooltipArgs;
   let fileLoaded;
   let selectionChanged, modelChanged, selectedCell = null, changedStyle = null, snappedBounds = null;
   const removedTemplates = [];
@@ -80,12 +81,18 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   const ui = {
     sidebar: {
       wrapper, container, palettes,
-      addPaletteFunctions(id) { palettes[id] = [element(), element()]; },
+      addPaletteFunctions(id, title, expanded, fns) {
+        palettes[id] = [element(), element()]; paletteFns[id] = fns;
+      },
       createVertexTemplateEntry(style, width, height, value, title) {
         vertexTemplates.push({ style, width, height, value, title });
-        return function () {};
+        return function () { return element(); };
       },
-      createEdgeTemplateEntry() { return function () {}; }
+      createEdgeTemplateEntry(style, width, height, value, title) {
+        edgeTemplates.push({ style, width, height, value, title });
+        return function () { return element(); };
+      },
+      showTooltip(...args) { tooltipArgs = args; }
     },
     editor: { graph, addListener(name, callback) { if (name === 'fileLoaded') fileLoaded = callback; } },
     actions: { get(name) { return actions[name]; } },
@@ -108,6 +115,12 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   const context = {
     Draw: { loadPlugin(callback) { callback(ui); } },
     document: { createElement() { return element(); } },
+    mxCell: class { constructor(value, geometry, style) {
+      this.value = value; this.geometry = geometry; this.style = style;
+    } },
+    mxGeometry: class { constructor(x, y, width, height) {
+      Object.assign(this, { x, y, width, height });
+    } },
     mxVertexHandler: VertexHandler,
     mxEvent: { LABEL_HANDLE: -1, ROTATION_HANDLE: -2 },
     MutationObserver: class { observe() {} }, setTimeout(callback) { callback(); }
@@ -123,6 +136,24 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     assert.ok(image, icon.title);
     assert.match(decodeURIComponent(image), /<svg[^>]+viewBox="0 0 64 48"/);
   }
+  for (const palette of ['cetz-primitives', 'cetz-preview-primitives']) {
+    const entries = paletteFns[palette].map(factory => factory());
+    const images = entries.map(entry => entry.children[0].src);
+    assert.equal(new Set(images).size, 4);
+    assert.ok(images.every(src => src.startsWith('data:image/svg+xml,')));
+    assert.ok(images.every(src => decodeURIComponent(src).includes('stroke="#2563eb"')));
+    assert.ok(entries.every(entry => entry.renderThumbFn && entry.children[0].draggable === false));
+    assert.ok(entries.every(entry => entry.title === ''));
+    ui.sidebar.showTooltip(entries[0], [{ style: 'original' }], 120, 80, 'rect', true);
+    assert.match(tooltipArgs[1][0].style, /^shape=image;imageAspect=1;image=data:image\/svg\+xml,/);
+    assert.equal(tooltipArgs[2], 80);
+    assert.equal(tooltipArgs[3], 60);
+    assert.equal(tooltipArgs[5], false);
+  }
+  assert.match(vertexTemplates[0].style, /^rounded=0;/);
+  assert.match(vertexTemplates[3].style, /cetzTemplate=rect;/);
+  assert.match(edgeTemplates[0].style, /^rounded=0;html=1;/);
+  assert.match(edgeTemplates[1].style, /cetzTemplate=line;/);
   assert.equal(palettes.general[0].style.display, 'none');
   assert.equal(palettes.general[1].style.display, 'none');
   assert.equal(palettes.scratchpad[0].style.display, 'none');
