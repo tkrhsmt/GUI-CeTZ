@@ -221,6 +221,24 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.equal(pointSnap.x, 20);
   assert.equal(pointSnap.y, -10);
   assert.equal(snappedBounds, null);
+  selectedCell = { id: 'cetz-point-0-1', style: 'ellipse;cetzArcStartX=100;cetzArcStartY=100;' +
+    'cetzArcEndX=180;cetzArcEndY=100;cetzArcAspect=1;' };
+  const arcSnap = graph.snapDelta({ x: 15, y: 13 },
+    { x: 133, y: 53, width: 14, height: 14 });
+  assert.ok(Math.abs(arcSnap.x) < 0.001);
+  assert.ok(Math.abs(arcSnap.y - 13) < 0.001);
+  selectedCell.style = 'ellipse;cetzArcStartX=100;cetzArcStartY=100;' +
+    'cetzArcEndX=180;cetzArcEndY=140;cetzArcAspect=2;';
+  const ellipseSnap = graph.snapDelta({ x: 12, y: -6 },
+    { x: 143, y: 63, width: 14, height: 14 });
+  const projectedX = 143 + ellipseSnap.x + 7;
+  const projectedY = 63 + ellipseSnap.y + 7;
+  const startDistance = (projectedX - 100) ** 2 + ((projectedY - 100) / 2) ** 2;
+  const endDistance = (projectedX - 180) ** 2 + ((projectedY - 140) / 2) ** 2;
+  assert.ok(Math.abs(startDistance - endDistance) < 0.001);
+  graph.graphHandler.updateHint();
+  assert.match(graph.graphHandler.hint.textContent, /^CeTZ arc center .* endpoints fixed$/);
+  selectedCell = pointCell;
   graph.graphHandler.updateHint();
   assert.equal(graph.graphHandler.hint.textContent, 'CeTZ (1, 1)');
   const resizeHandler = new VertexHandler();

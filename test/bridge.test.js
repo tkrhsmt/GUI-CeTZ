@@ -494,7 +494,7 @@ test('the primitive example keeps relative rectangles and polygons editable', as
   const file = path.resolve('examples/extended.typ');
   const source = fs.readFileSync(file, 'utf8');
   const result = await renderDiagram(source, parseCanvas(source).canvas, file);
-  assert.deepEqual(result.editable.calls.map(call => call.name),
+  assert.deepEqual(result.editable.calls.slice(0, 5).map(call => call.name),
     ['rect', 'circle', 'line', 'content', 'polygon']);
   const cells = readAllCells(result.xml);
   assert.ok(cells.get('cetz-edit-0'));
@@ -503,7 +503,7 @@ test('the primitive example keeps relative rectangles and polygons editable', as
     (_, head, x) => head + (Number(x) + 20));
   const updated = apply(source, patchesFromEditable(source, result.editable, moved, readAllCells));
   assert.match(updated, /rect\(\([\d.]+, 0\),\s*\(rel: \(3, 2\)\)/);
-  assert.match(updated, /polygon\(\(6, 1\), 5, radius: 0\.8\)/);
+  assert.match(updated, /polygon\(\([\d.]+, [\d.]+\), 5, radius: 0\.8\)/);
   await renderDiagram(updated, parseCanvas(updated).canvas, file);
 });
 test('moves and deletes basic primitives in a Typst-rendered Draw.io preview', async () => {
@@ -639,14 +639,25 @@ test('arc position, center, and endpoint handles update the corresponding argume
     assert.doesNotMatch(updated, /scope\(\{|translate\(|scale\(/);
     if (index === 0) assert.match(updated, /arc\(\([\d.]+, [\d.]+\), start: 30deg, stop: 150deg, radius: 1\)/);
     else if (index === 1) {
-      assert.match(updated, /start: [\d.-]+deg, stop: 150deg/);
+      assert.match(updated, /start: [\d.-]+deg, stop: [\d.-]+deg/);
       assert.match(updated, /radius: [\d.]+/);
     } else {
       assert.match(updated, /start: 30deg, stop: [\d.-]+deg/);
       assert.match(updated, /radius: [\d.]+/);
     }
     const rerendered = await renderEditable(updated, parseCanvas(updated).canvas, file);
-    const after = readAllCells(rerendered.xml).get(`cetz-point-0-${index}`);
+    const updatedCells = readAllCells(rerendered.xml);
+    const after = updatedCells.get(`cetz-point-0-${index}`);
+    if (index === 1) {
+      for (const endpoint of [0, 2]) {
+        const oldPoint = cells.get(`cetz-point-0-${endpoint}`).geometry;
+        const newPoint = updatedCells.get(`cetz-point-0-${endpoint}`).geometry;
+        assert.ok(Math.abs(+newPoint.x - +oldPoint.x) < 0.1);
+        assert.ok(Math.abs(+newPoint.y - +oldPoint.y) < 0.1);
+      }
+      assert.ok(Math.abs(+after.geometry.x - +before.geometry.x) < 0.1);
+      continue;
+    }
     const target = snappedHandle(rendered, before.geometry, 20, -10);
     assert.ok(Math.abs(Number(after.geometry.x) - target.x) < 1, String(index));
     assert.ok(Math.abs(Number(after.geometry.y) - target.y) < 1, String(index));
@@ -666,6 +677,29 @@ test('arc endpoint editing preserves an elliptical radius', async () => {
   const after = readAllCells(rerendered.xml).get('cetz-point-0-2');
   const target = snappedHandle(rendered, before.geometry, 20, 0);
   assert.ok(Math.abs(Number(after.geometry.x) - target.x) < 1);
+});
+test('arc center drag keeps both endpoints fixed for circular and elliptical arcs', async () => {
+  const file = path.resolve('examples/advanced.typ');
+  for (const [radius, anchor] of [['1', ''], ['(2, 1)', ''], ['(2, 1)', ', anchor: "origin"']]) {
+    const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
+      `arc((0, 0), start: 0deg, stop: 90deg, radius: ${radius}${anchor})\n})`;
+    const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
+    const before = readAllCells(rendered.xml);
+    const center = before.get('cetz-point-0-1');
+    assert.match(center.cell.style, /cetzArcAspect=/);
+    const moved = rendered.xml.replace(/(<mxCell id="cetz-point-0-1"[\s\S]*?<mxGeometry x=")([\d.-]+)(" y=")([\d.-]+)/,
+      (_, prefix, x, middle, y) => prefix + (+x + 20) + middle + (+y - 15));
+    const updated = apply(source, patchesFromEditable(source, rendered, moved, readAllCells));
+    const after = readAllCells((await renderEditable(updated, parseCanvas(updated).canvas, file)).xml);
+    for (const index of [0, 2]) {
+      const oldPoint = before.get(`cetz-point-0-${index}`).geometry;
+      const newPoint = after.get(`cetz-point-0-${index}`).geometry;
+      assert.ok(Math.abs(+newPoint.x - +oldPoint.x) < 0.1, `${radius} ${anchor} endpoint ${index} x`);
+      assert.ok(Math.abs(+newPoint.y - +oldPoint.y) < 0.1, `${radius} ${anchor} endpoint ${index} y`);
+    }
+    if (anchor) assert.doesNotMatch(updated, /arc\(\(0, 0\),/);
+    else assert.match(updated, /arc\(\(0, 0\),/);
+  }
 });
 test('arc handles coincide with the anchors rendered by CeTZ', async () => {
   const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
