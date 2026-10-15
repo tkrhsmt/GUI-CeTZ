@@ -63,8 +63,9 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
     popupMenuHandler: { isEnabled() { return true; } }
   };
   const originalHint = function () { this.hint = { textContent: 'Draw.io coordinates' }; };
+  const originalUseGuides = function () { return true; };
   graph.graphHandler = { graph, updateHint: originalHint, bounds: { x: 533, y: 453 },
-    currentDx: 0, currentDy: 0 };
+    currentDx: 0, currentDy: 0, useGuidesForEvent: originalUseGuides };
   class VertexHandler {}
   const originalVertexHint = function () { this.hint = { textContent: 'Draw.io size' }; };
   VertexHandler.prototype.updateHint = originalVertexHint;
@@ -158,9 +159,11 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   assert.equal(changedStyle.key, 'cetzStartMark');
   assert.equal(changedStyle.value, 'curved-stealth');
   selectedCell = pointCell;
-  graph.snapDelta({ x: 0, y: 0 }, { x: 10, y: 20, width: 14, height: 14 });
-  assert.equal(snappedBounds.x, 17);
-  assert.equal(snappedBounds.y, 27);
+  assert.equal(graph.graphHandler.useGuidesForEvent(), false);
+  const pointSnap = graph.snapDelta({ x: 16, y: -7 }, { x: 533, y: 453, width: 14, height: 14 });
+  assert.equal(pointSnap.x, 20);
+  assert.equal(pointSnap.y, -10);
+  assert.equal(snappedBounds, null);
   graph.graphHandler.updateHint();
   assert.equal(graph.graphHandler.hint.textContent, 'CeTZ (1, 1)');
   const resizeHandler = new VertexHandler();
@@ -171,6 +174,10 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   assert.equal(resizeHandler.hint.textContent, 'CeTZ bounds (1, 1), size (2, 1)');
   graph.view.scale = 2;
   graph.view.translate = { x: 3, y: -2 };
+  const zoomedPointSnap = graph.snapDelta({ x: 32, y: -14 },
+    { x: 1072, y: 902, width: 28, height: 28 });
+  assert.equal(zoomedPointSnap.x, 40);
+  assert.equal(zoomedPointSnap.y, -20);
   graph.graphHandler.bounds = { x: 1072, y: 902 };
   graph.graphHandler.currentDx = 20;
   graph.graphHandler.updateHint();
@@ -206,6 +213,7 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   graph.view.scale = 1;
   graph.view.translate = { x: 0, y: 0 };
   selectedCell = editCell;
+  assert.equal(graph.graphHandler.useGuidesForEvent(), true);
   graph.snapDelta({ x: 0, y: 0 }, { x: 10, y: 20, width: 40, height: 40 });
   assert.equal(snappedBounds.x, 45);
   assert.equal(snappedBounds.y, 40);
@@ -223,6 +231,7 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   assert.equal(palettes['cetz-advanced'][0].style.display, 'none');
   assert.equal(moreShapes.style.display, 'flex');
   assert.equal(graph.graphHandler.updateHint, originalHint);
+  assert.equal(graph.graphHandler.useGuidesForEvent, originalUseGuides);
   resizeHandler.updateHint();
   assert.equal(resizeHandler.hint.textContent, 'Draw.io size');
   assert.equal(graph.isCellSelectable({ id: 'cetz-axis-x' }), true);

@@ -154,6 +154,7 @@ Draw.loadPlugin(function (ui) {
     cloneable: graph.isCellCloneable, visible: graph.isCellVisible,
     connectable: graph.isCellConnectable, snapDelta: graph.snapDelta,
     updateHint: graph.graphHandler && graph.graphHandler.updateHint,
+    useGuidesForEvent: graph.graphHandler && graph.graphHandler.useGuidesForEvent,
     popup: graph.popupMenuHandler && graph.popupMenuHandler.isEnabled,
     undo: ui.actions.get('undo').funct, redo: ui.actions.get('redo').funct,
     undoEnabled: ui.actions.get('undo').isEnabled, redoEnabled: ui.actions.get('redo').isEnabled
@@ -346,9 +347,29 @@ Draw.loadPlugin(function (ui) {
           original.visible.apply(this, arguments);
       };
       graph.isCellConnectable = function () { return false; };
+      if (original.useGuidesForEvent) graph.graphHandler.useGuidesForEvent = function () {
+        var cells = graph.getSelectionCells();
+        if (isEditablePreview() && cells.length === 1 &&
+          /^cetz-point-\d+-\d+$/.test(cells[0].id || '')) return false;
+        return original.useGuidesForEvent.apply(this, arguments);
+      };
       if (original.snapDelta) graph.snapDelta = function (delta, bounds) {
         var cells = graph.getSelectionCells();
         var cell = isEditablePreview() && cells.length === 1 ? cells[0] : null;
+        if (cell && /^cetz-point-\d+-\d+$/.test(cell.id || '')) {
+          var frame = cetzFrame();
+          if (frame) {
+            var scale = graph.view.scale || 1;
+            var translate = graph.view.translate || { x: 0, y: 0 };
+            var centerX = (bounds.x + delta.x) / scale - translate.x + 7;
+            var centerY = (bounds.y + delta.y) / scale - translate.y + 7;
+            var x = frame.originX + quarter((centerX - frame.originX) / frame.unitX) * frame.unitX;
+            var y = frame.originY - quarter((frame.originY - centerY) / frame.unitY) * frame.unitY;
+            delta.x = (x + translate.x - 7) * scale - bounds.x;
+            delta.y = (y + translate.y - 7) * scale - bounds.y;
+            return delta;
+          }
+        }
         var anchor = cetzAnchor(cell);
         var x = anchor ? anchor.x : 0, y = anchor ? anchor.y : 0;
         if (x || y) {
@@ -385,6 +406,7 @@ Draw.loadPlugin(function (ui) {
       graph.isCellConnectable = original.connectable;
       graph.snapDelta = original.snapDelta;
       if (graph.graphHandler) graph.graphHandler.updateHint = original.updateHint;
+      if (graph.graphHandler) graph.graphHandler.useGuidesForEvent = original.useGuidesForEvent;
       if (graph.popupMenuHandler) graph.popupMenuHandler.isEnabled = original.popup;
     }
     var changed = active !== activeMode;
