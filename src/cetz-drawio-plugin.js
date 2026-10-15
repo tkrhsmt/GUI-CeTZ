@@ -494,28 +494,30 @@ Draw.loadPlugin(function (ui) {
         var cells = graph.getSelectionCells();
         var cell = isEditablePreview() && cells.length === 1 ? cells[0] : null;
         if (cell && /^cetz-point-\d+-\d+$/.test(cell.id || '')) {
+          var arcStyle = graph.getCellStyle(cell);
+          var arcHandle = arcStyle.cetzArcHandle;
           var frame = cetzFrame();
           if (frame) {
             var scale = graph.view.scale || 1;
             var translate = graph.view.translate || { x: 0, y: 0 };
             var centerX = (bounds.x + delta.x) / scale - translate.x + 7;
             var centerY = (bounds.y + delta.y) / scale - translate.y + 7;
-            var arcStyle = graph.getCellStyle(cell);
-            var arc = ['cetzArcStartX', 'cetzArcStartY', 'cetzArcEndX',
-              'cetzArcEndY', 'cetzArcAspect'].map(function (key) { return Number(arcStyle[key]); });
-            if (arc.every(Number.isFinite) && arc[4] > 0) {
-              var sx = arc[0], sy = arc[1] / arc[4], ex = arc[2], ey = arc[3] / arc[4];
-              var mx = (sx + ex) / 2, my = (sy + ey) / 2;
-              var chordX = ex - sx, chordY = ey - sy;
-              var length2 = chordX * chordX + chordY * chordY;
-              if (length2 > 0.00000001) {
-                var position = ((centerX - mx) * -chordY +
-                  (centerY / arc[4] - my) * chordX) / length2;
-                var projectedX = mx - chordY * position;
-                var projectedY = (my + chordX * position) * arc[4];
-                delta.x = (projectedX + translate.x - 7) * scale - bounds.x;
-                delta.y = (projectedY + translate.y - 7) * scale - bounds.y;
-                return delta;
+            if (arcHandle === 'end') {
+              var ellipse = ['cetzArcCenterX', 'cetzArcCenterY', 'cetzArcRadiusX',
+                'cetzArcRadiusY'].map(function (key) { return Number(arcStyle[key]); });
+              if (ellipse.every(Number.isFinite) && ellipse[2] > 0 && ellipse[3] > 0) {
+                var dx = (centerX - ellipse[0]) / ellipse[2];
+                var dy = (centerY - ellipse[1]) / ellipse[3];
+                if (Math.hypot(dx, dy) > 0.001) {
+                  // One-degree steps keep the endpoint on the arc and its
+                  // written stop angle free of long decimal fractions.
+                  var angle = Math.round(Math.atan2(dy, dx) * 180 / Math.PI) * Math.PI / 180;
+                  centerX = ellipse[0] + ellipse[2] * Math.cos(angle);
+                  centerY = ellipse[1] + ellipse[3] * Math.sin(angle);
+                  delta.x = (centerX + translate.x - 7) * scale - bounds.x;
+                  delta.y = (centerY + translate.y - 7) * scale - bounds.y;
+                  return delta;
+                }
               }
             }
             var x = frame.originX + quarter((centerX - frame.originX) / frame.unitX) * frame.unitX;
@@ -548,11 +550,11 @@ Draw.loadPlugin(function (ui) {
         var view = graph.view, scale = view.scale || 1, translate = view.translate || { x: 0, y: 0 };
         var modelX = (this.bounds.x + this.currentDx) / scale - translate.x + anchor.x;
         var modelY = (this.bounds.y + this.currentDy) / scale - translate.y + anchor.y;
+        var arcCenter = cells.length === 1 && graph.getCellStyle(cells[0]).cetzArcHandle === 'center';
         var x = quarter((modelX - frame.originX) / frame.unitX);
         var y = quarter((frame.originY - modelY) / frame.unitY);
-        var arcCenter = cells.length === 1 && graph.getCellStyle(cells[0]).cetzArcAspect != null;
         this.hint.textContent = (arcCenter ? 'CeTZ arc center ' : 'CeTZ ') +
-          '(' + x + ', ' + y + ')' + (arcCenter ? ' · endpoints fixed' : '');
+          '(' + x + ', ' + y + ')' + (arcCenter ? ' · start fixed' : '');
       };
       if (graph.popupMenuHandler) graph.popupMenuHandler.isEnabled = function () { return false; };
     } else if (!active && activeMode) {

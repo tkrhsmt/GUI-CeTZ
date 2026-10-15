@@ -235,23 +235,23 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.equal(pointSnap.x, 20);
   assert.equal(pointSnap.y, -10);
   assert.equal(snappedBounds, null);
-  selectedCell = { id: 'cetz-point-0-1', style: 'ellipse;cetzArcStartX=100;cetzArcStartY=100;' +
-    'cetzArcEndX=180;cetzArcEndY=100;cetzArcAspect=1;' };
+  selectedCell = { id: 'cetz-point-0-1', style: 'ellipse;cetzArcHandle=center;' };
   const arcSnap = graph.snapDelta({ x: 15, y: 13 },
     { x: 133, y: 53, width: 14, height: 14 });
-  assert.ok(Math.abs(arcSnap.x) < 0.001);
-  assert.ok(Math.abs(arcSnap.y - 13) < 0.001);
-  selectedCell.style = 'ellipse;cetzArcStartX=100;cetzArcStartY=100;' +
-    'cetzArcEndX=180;cetzArcEndY=140;cetzArcAspect=2;';
-  const ellipseSnap = graph.snapDelta({ x: 12, y: -6 },
+  assert.equal(133 + arcSnap.x + 7, 160);
+  assert.equal(53 + arcSnap.y + 7, 70);
+  selectedCell = { id: 'cetz-point-0-2', style: 'ellipse;cetzArcHandle=end;' +
+    'cetzArcCenterX=100;cetzArcCenterY=100;cetzArcRadiusX=80;cetzArcRadiusY=40;' };
+  const endSnap = graph.snapDelta({ x: 12, y: -6 },
     { x: 143, y: 63, width: 14, height: 14 });
-  const projectedX = 143 + ellipseSnap.x + 7;
-  const projectedY = 63 + ellipseSnap.y + 7;
-  const startDistance = (projectedX - 100) ** 2 + ((projectedY - 100) / 2) ** 2;
-  const endDistance = (projectedX - 180) ** 2 + ((projectedY - 140) / 2) ** 2;
-  assert.ok(Math.abs(startDistance - endDistance) < 0.001);
+  const projectedX = 143 + endSnap.x + 7;
+  const projectedY = 63 + endSnap.y + 7;
+  assert.ok(Math.abs(((projectedX - 100) / 80) ** 2 + ((projectedY - 100) / 40) ** 2 - 1) < 0.00001);
+  const endAngle = Math.atan2((projectedY - 100) / 40, (projectedX - 100) / 80) * 180 / Math.PI;
+  assert.ok(Math.abs(endAngle - Math.round(endAngle)) < 0.00001);
+  selectedCell = { id: 'cetz-point-0-1', style: 'ellipse;cetzArcHandle=center;' };
   graph.graphHandler.updateHint();
-  assert.match(graph.graphHandler.hint.textContent, /^CeTZ arc center .* endpoints fixed$/);
+  assert.match(graph.graphHandler.hint.textContent, /^CeTZ arc center .* start fixed$/);
   selectedCell = pointCell;
   graph.graphHandler.updateHint();
   assert.equal(graph.graphHandler.hint.textContent, 'CeTZ (1, 1)');

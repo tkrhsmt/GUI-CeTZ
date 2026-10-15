@@ -361,69 +361,38 @@ function rewriteArcControl(text, index, x, y) {
   }
   if (index !== 1 && index !== 2) throw new Error('Unknown arc control point.');
   const origin = arcOrigin(arc);
-  const startAngle = +arc.start.value.slice(0, -3) * Math.PI / 180;
   if (index === 1) {
-    const [start, , end] = arcControlPoints({ call: text });
+    const [start] = arcControlPoints({ call: text });
     const aspect = arc.ry / arc.rx;
-    const chordX = end.x - start.x, chordY = (end.y - start.y) / aspect;
-    const midX = (start.x + end.x) / 2;
-    const midY = (start.y + end.y) / (2 * aspect);
-    const length2 = chordX * chordX + chordY * chordY;
-    // In normalized ellipse coordinates, equal distances from the endpoints
-    // put the center on their perpendicular bisector.
-    const projection = length2 < 1e-10 ? { x, y } : {
-      x: midX - chordY * ((x - midX) * -chordY + (y / aspect - midY) * chordX) / length2,
-      y: aspect * (midY + chordX * ((x - midX) * -chordY + (y / aspect - midY) * chordX) / length2)
-    };
-    const rx = Math.hypot(start.x - projection.x, (start.y - projection.y) / aspect);
+    const rx = Math.hypot(start.x - x, (start.y - y) / aspect);
     if (rx < 0.001) throw new Error('An arc center cannot be moved onto its start point.');
     const ry = rx * aspect;
-    const degrees = point => Math.atan2((point.y - projection.y) / ry,
-      (point.x - projection.x) / rx) * 180 / Math.PI;
     const oldStart = +arc.start.value.slice(0, -3), oldStop = +arc.stop.value.slice(0, -3);
-    const near = (angle, reference) => angle + 360 * Math.round((reference - angle) / 360);
-    const nextStart = near(degrees(start), oldStart);
-    let nextStop = length2 < 1e-10 ? nextStart + oldStop - oldStart : near(degrees(end), oldStop);
-    if (oldStop >= oldStart && nextStop < nextStart) nextStop += 360;
-    if (oldStop < oldStart && nextStop > nextStart) nextStop -= 360;
-    const precise = n => Number(n.toFixed(5));
+    const angle = Math.atan2((start.y - y) / ry, (start.x - x) / rx) * 180 / Math.PI;
+    const nextStart = angle + 360 * Math.round((oldStart - angle) / 360);
+    const nextStop = nextStart + oldStop - oldStart;
     const radius = arc.tuple || Math.abs(aspect - 1) > 1e-10
-      ? `(${precise(rx)}, ${precise(ry)})` : String(precise(rx));
+      ? `(${round(rx)}, ${round(ry)})` : String(round(rx));
     const edits = [
-      { start: arc.start.start, end: arc.start.end, text: `${precise(nextStart)}deg` },
-      { start: arc.stop.start, end: arc.stop.end, text: `${precise(nextStop)}deg` }
+      { start: arc.start.start, end: arc.start.end, text: `${round(nextStart)}deg` },
+      { start: arc.stop.start, end: arc.stop.end, text: `${round(nextStop)}deg` }
     ];
     if (arc.anchor === 'origin') edits.push({ start: arc.center.start, end: arc.center.end,
-      text: `(${precise(projection.x)}, ${precise(projection.y)})` });
+      text: `(${round(x)}, ${round(y)})` });
     if (arc.radius) edits.push({ start: arc.radius.start, end: arc.radius.end, text: radius });
     else edits.push({ start: arc.end, end: arc.end, text: `, radius: ${radius}` });
     return edits.sort((a, b) => b.start - a.start).reduce((value, edit) =>
       value.slice(0, edit.start) + edit.text + value.slice(edit.end), text);
   }
-  let scale, angle, angleArg;
-  const dx = (x - (arc.anchor === 'origin' ? origin.x : arc.px)) / arc.rx;
-  const dy = (y - (arc.anchor === 'origin' ? origin.y : arc.py)) / arc.ry;
-  if (arc.anchor === 'origin') scale = Math.hypot(dx, dy);
-  else {
-    const dot = dx * Math.cos(startAngle) + dy * Math.sin(startAngle);
-    scale = -(dx * dx + dy * dy) / (2 * dot);
-  }
-  if (!Number.isFinite(scale) || scale < 0.001)
-    throw new Error('Move the arc end to the far side of its start tangent.');
-  angle = arc.anchor === 'origin' ? Math.atan2(dy, dx) * 180 / Math.PI
-    : Math.atan2(dy / scale + Math.sin(startAngle), dx / scale + Math.cos(startAngle)) * 180 / Math.PI;
-  angleArg = arc.stop;
-  const rx = arc.rx * scale, ry = arc.ry * scale;
-  const oldAngle = +angleArg.value.slice(0, -3);
+  const dx = (x - origin.x) / arc.rx;
+  const dy = (y - origin.y) / arc.ry;
+  if (Math.hypot(dx, dy) < 0.001)
+    throw new Error('Move the arc end away from its center.');
+  let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+  const oldAngle = +arc.stop.value.slice(0, -3);
   while (angle - oldAngle > 180) angle -= 360;
   while (angle - oldAngle < -180) angle += 360;
-  const radius = arc.tuple || Math.abs(rx - ry) > 0.00001
-    ? `(${round(rx)}, ${round(ry)})` : String(round(rx));
-  const edits = [{ start: angleArg.start, end: angleArg.end, text: `${round(angle)}deg` }];
-  if (arc.radius) edits.push({ start: arc.radius.start, end: arc.radius.end, text: radius });
-  else edits.push({ start: arc.end, end: arc.end, text: `, radius: ${radius}` });
-  return edits.sort((a, b) => b.start - a.start).reduce((value, edit) =>
-    value.slice(0, edit.start) + edit.text + value.slice(edit.end), text);
+  return text.slice(0, arc.stop.start) + `${Math.round(angle)}deg` + text.slice(arc.stop.end);
 }
 
 function calibration(svg) {
@@ -511,18 +480,16 @@ async function renderEditable(source, canvas, filePath) {
   const pointHandles = calls.map((call, i) => {
     call.points = call.geometry ? call.name === 'arc' ? arcControlPoints(call) : literalPointRanges(call) : [];
     const arc = call.name === 'arc' && call.points.length === 3 ? arcArguments(call.call) : null;
-    const arcStart = arc && screenPoint(call, call.points[0]);
-    const arcEnd = arc && screenPoint(call, call.points[2]);
-    const arcAspect = arc && arc.ry * call.transform.sy * result.unitY /
-      (arc.rx * call.transform.sx * result.unitX);
+    const arcCenter = arc && screenPoint(call, call.points[1]);
+    const arcRadiusX = arc && Math.abs(arc.rx * call.transform.sx * result.unitX * 2.5);
+    const arcRadiusY = arc && Math.abs(arc.ry * call.transform.sy * result.unitY * 2.5);
     return call.points.map((point, j) => {
       const { x, y } = screenPoint(call, point);
       const color = call.name === 'bezier' && j >= 2 || call.name === 'arc' && j >= 1
         ? '#e28b23' : '#2563eb';
-      const constraint = j === 1 && arc
-        ? `cetzArcStartX=${pixel(arcStart.x)};cetzArcStartY=${pixel(arcStart.y)};` +
-          `cetzArcEndX=${pixel(arcEnd.x)};cetzArcEndY=${pixel(arcEnd.y)};` +
-          `cetzArcAspect=${pixel(arcAspect)};` : '';
+      const constraint = arc && j === 1 ? 'cetzArcHandle=center;' : arc && j === 2
+        ? `cetzArcHandle=end;cetzArcCenterX=${pixel(arcCenter.x)};cetzArcCenterY=${pixel(arcCenter.y)};` +
+          `cetzArcRadiusX=${pixel(arcRadiusX)};cetzArcRadiusY=${pixel(arcRadiusY)};` : '';
       return `<mxCell id="cetz-point-${i}-${j}" value="" style="ellipse;fillColor=#ffffff;strokeColor=${color};strokeWidth=2;resizable=0;deletable=0;rotatable=0;connectable=0;${constraint}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x - POINT_HANDLE_SIZE / 2)}" y="${pixel(y - POINT_HANDLE_SIZE / 2)}" width="${POINT_HANDLE_SIZE}" height="${POINT_HANDLE_SIZE}" as="geometry"/></mxCell>`;
     }).join('');
   }).join('');
@@ -603,9 +570,9 @@ function patchesFromEditable(source, rendered, xml, readCells) {
           (rendered.calibration.unitX * 2.5);
         const y = (rendered.calibration.originY - move.y - POINT_HANDLE_SIZE / 2) /
           (rendered.calibration.unitY * 2.5);
-        const precise = call.name === 'arc' && move.index === 1;
-        return { index: move.index, x: precise ? Number(x.toFixed(5)) : snapCoordinate(x),
-          y: precise ? Number(y.toFixed(5)) : snapCoordinate(y) };
+        const arcEndpoint = call.name === 'arc' && move.index === 2;
+        return { index: move.index, x: arcEndpoint ? x : snapCoordinate(x),
+          y: arcEndpoint ? y : snapCoordinate(y) };
       });
       let replacement;
       if (call.name === 'arc') {

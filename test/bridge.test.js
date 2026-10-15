@@ -649,36 +649,54 @@ test('arc position, center, and endpoint handles update the corresponding argume
     const updatedCells = readAllCells(rerendered.xml);
     const after = updatedCells.get(`cetz-point-0-${index}`);
     if (index === 1) {
-      for (const endpoint of [0, 2]) {
-        const oldPoint = cells.get(`cetz-point-0-${endpoint}`).geometry;
-        const newPoint = updatedCells.get(`cetz-point-0-${endpoint}`).geometry;
-        assert.ok(Math.abs(+newPoint.x - +oldPoint.x) < 0.1);
-        assert.ok(Math.abs(+newPoint.y - +oldPoint.y) < 0.1);
-      }
-      assert.ok(Math.abs(+after.geometry.x - +before.geometry.x) < 0.1);
+      const oldStart = cells.get('cetz-point-0-0').geometry;
+      const newStart = updatedCells.get('cetz-point-0-0').geometry;
+      assert.ok(Math.abs(+newStart.x - +oldStart.x) < 1);
+      assert.ok(Math.abs(+newStart.y - +oldStart.y) < 1);
+      const target = snappedHandle(rendered, before.geometry, 20, -10);
+      assert.ok(Math.abs(+after.geometry.x - target.x) < 1);
+      assert.ok(Math.abs(+after.geometry.y - target.y) < 1);
+      assert.doesNotMatch(updated, /\.\d{3,}/);
       continue;
     }
-    const target = snappedHandle(rendered, before.geometry, 20, -10);
-    assert.ok(Math.abs(Number(after.geometry.x) - target.x) < 1, String(index));
-    assert.ok(Math.abs(Number(after.geometry.y) - target.y) < 1, String(index));
+    if (index === 2) {
+      const oldCenter = cells.get('cetz-point-0-1').geometry;
+      const newCenter = updatedCells.get('cetz-point-0-1').geometry;
+      assert.ok(Math.abs(+newCenter.x - +oldCenter.x) < 0.1);
+      assert.ok(Math.abs(+newCenter.y - +oldCenter.y) < 0.1);
+      assert.match(updated, /stop: -?\d+deg/);
+      assert.doesNotMatch(updated, /\.\d{3,}/);
+    } else {
+      const target = snappedHandle(rendered, before.geometry, 20, -10);
+      assert.ok(Math.abs(Number(after.geometry.x) - target.x) < 1, String(index));
+      assert.ok(Math.abs(Number(after.geometry.y) - target.y) < 1, String(index));
+    }
   }
 });
-test('arc endpoint editing preserves an elliptical radius', async () => {
+test('arc endpoint stays on its ellipse with an integer stop angle', async () => {
   const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
     'arc((0, 0), start: 0deg, stop: 90deg, radius: (2, 1))\n})';
   const file = path.resolve('examples/advanced.typ');
   const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
-  const before = readAllCells(rendered.xml).get('cetz-point-0-2');
   const moved = rendered.xml.replace(/(<mxCell id="cetz-point-0-2"[\s\S]*?<mxGeometry x=")([\d.]+)/,
     (_, prefix, x) => prefix + (Number(x) + 20));
   const updated = apply(source, patchesFromEditable(source, rendered, moved, readAllCells));
-  assert.match(updated, /radius: \([\d.]+, [\d.]+\)/);
+  assert.match(updated, /radius: \(2, 1\)/);
+  assert.match(updated, /stop: -?\d+deg/);
   const rerendered = await renderEditable(updated, parseCanvas(updated).canvas, file);
   const after = readAllCells(rerendered.xml).get('cetz-point-0-2');
-  const target = snappedHandle(rendered, before.geometry, 20, 0);
-  assert.ok(Math.abs(Number(after.geometry.x) - target.x) < 1);
+  const center = readAllCells(rerendered.xml).get('cetz-point-0-1');
+  const start = readAllCells(rerendered.xml).get('cetz-point-0-0');
+  const originalCenter = readAllCells(rendered.xml).get('cetz-point-0-1');
+  assert.ok(Math.abs(+center.geometry.x - +originalCenter.geometry.x) < 0.1);
+  assert.ok(Math.abs(+center.geometry.y - +originalCenter.geometry.y) < 0.1);
+  const radiusX = Math.abs(+start.geometry.x - +originalCenter.geometry.x);
+  const radiusY = radiusX / 2;
+  const dx = (+after.geometry.x - +center.geometry.x) / radiusX;
+  const dy = (+after.geometry.y - +center.geometry.y) / radiusY;
+  assert.ok(Math.abs(dx * dx + dy * dy - 1) < 0.01);
 });
-test('arc center drag keeps both endpoints fixed for circular and elliptical arcs', async () => {
+test('arc center drag snaps to quarter units, keeps the start fixed, and writes short decimals', async () => {
   const file = path.resolve('examples/advanced.typ');
   for (const [radius, anchor] of [['1', ''], ['(2, 1)', ''], ['(2, 1)', ', anchor: "origin"']]) {
     const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
@@ -686,17 +704,20 @@ test('arc center drag keeps both endpoints fixed for circular and elliptical arc
     const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
     const before = readAllCells(rendered.xml);
     const center = before.get('cetz-point-0-1');
-    assert.match(center.cell.style, /cetzArcAspect=/);
+    assert.match(center.cell.style, /cetzArcHandle=center/);
     const moved = rendered.xml.replace(/(<mxCell id="cetz-point-0-1"[\s\S]*?<mxGeometry x=")([\d.-]+)(" y=")([\d.-]+)/,
       (_, prefix, x, middle, y) => prefix + (+x + 20) + middle + (+y - 15));
     const updated = apply(source, patchesFromEditable(source, rendered, moved, readAllCells));
     const after = readAllCells((await renderEditable(updated, parseCanvas(updated).canvas, file)).xml);
-    for (const index of [0, 2]) {
-      const oldPoint = before.get(`cetz-point-0-${index}`).geometry;
-      const newPoint = after.get(`cetz-point-0-${index}`).geometry;
-      assert.ok(Math.abs(+newPoint.x - +oldPoint.x) < 0.1, `${radius} ${anchor} endpoint ${index} x`);
-      assert.ok(Math.abs(+newPoint.y - +oldPoint.y) < 0.1, `${radius} ${anchor} endpoint ${index} y`);
-    }
+    const oldStart = before.get('cetz-point-0-0').geometry;
+    const newStart = after.get('cetz-point-0-0').geometry;
+    assert.ok(Math.abs(+newStart.x - +oldStart.x) < 1, `${radius} ${anchor} start x`);
+    assert.ok(Math.abs(+newStart.y - +oldStart.y) < 1, `${radius} ${anchor} start y`);
+    const newCenter = after.get('cetz-point-0-1').geometry;
+    const target = snappedHandle(rendered, center.geometry, 20, -15);
+    assert.ok(Math.abs(+newCenter.x - target.x) < 1, `${radius} ${anchor} center x`);
+    assert.ok(Math.abs(+newCenter.y - target.y) < 1, `${radius} ${anchor} center y`);
+    assert.doesNotMatch(updated, /\.\d{3,}/);
     if (anchor) assert.doesNotMatch(updated, /arc\(\(0, 0\),/);
     else assert.match(updated, /arc\(\(0, 0\),/);
   }
