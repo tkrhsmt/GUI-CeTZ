@@ -20,6 +20,7 @@ function pointArg(text, range) {
   return x && y ? { x, y } : null;
 }
 function coordinateArg(text, range, previous) {
+  if (!range) return null;
   const absolute = pointArg(text, range);
   if (absolute) return { ...absolute, abs: [absolute.x.value, absolute.y.value], relative: false };
   if (!previous) return null;

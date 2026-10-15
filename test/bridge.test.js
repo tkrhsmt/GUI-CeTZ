@@ -68,6 +68,13 @@ test('does not edit expression-based shapes', () => {
   assert.equal(model.elements.length, 1);
   assert.ok(model.unsupported.length >= 1);
 });
+test('does not crash when a shape has spread coordinates', () => {
+  const text = '#cetz.canvas({ let corners = ((0, 0), (2, 2)); rect(..corners); circle((1, 1)) })';
+  const model = parseCanvas(text);
+  assert.equal(model.elements.length, 1);
+  assert.equal(model.elements[0].kind, 'circle');
+  assert.ok(model.unsupported.some(item => item.startsWith('rect at ')));
+});
 test('accepts compressed Draw.io diagrams', () => {
   const xml = xmlForDiagram(source, parseCanvas(source));
   const inner = /<mxGraphModel[\s\S]*<\/mxGraphModel>/.exec(xml)[0];
