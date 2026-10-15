@@ -9,6 +9,7 @@ const { renderDiagram } = require('./render-diagram');
 const { SHAPES, insertionFor, templateInsertions } = require('./templates');
 const { EditHistory, historyAction } = require('./history');
 const { withDiagramStatus } = require('./diagram-status');
+const { launchHints } = require('./launch-hints');
 
 const sessions = new Map();
 function key(uri) { return uri.toString(); }
@@ -127,12 +128,14 @@ async function syncToSource(session) {
   await syncFromSource(session);
   if (patches.length) await refreshGuiView(session);
 }
-async function openGui() {
+async function openGui(sourceUri, canvasIndex) {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'typst' && !editor.document.fileName.endsWith('.typ'))
+  const doc = sourceUri ? await vscode.workspace.openTextDocument(sourceUri) : editor?.document;
+  if (!doc || doc.languageId !== 'typst' && !doc.fileName.endsWith('.typ'))
     throw new Error('Open a .typ file and place the cursor in a CeTZ canvas first.');
-  const doc = editor.document;
-  const index = pickCanvas(doc.getText(), doc.offsetAt(editor.selection.active));
+  const index = Number.isInteger(canvasIndex) ? canvasIndex :
+    pickCanvas(doc.getText(), doc.offsetAt(editor.selection.active));
+  if (!locateCanvases(doc.getText())[index]) throw new Error('The selected CeTZ canvas no longer exists.');
   const uri = diagramUri(doc.uri, index);
   let session = sessions.get(key(uri));
   if (!session) {
@@ -177,7 +180,11 @@ async function showSyncError(session, error) {
   await refreshGuiView(session);
 }
 function activate(context) {
-  context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.open', () => openGui().catch(report)));
+  context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.open', (uri, index) => openGui(uri, index).catch(report)));
+  context.subscriptions.push(vscode.languages.registerInlayHintsProvider(
+    [{ pattern: '**/*.typ' }, { language: 'typst' }],
+    { provideInlayHints: (document, range) => launchHints(vscode, document, range) }
+  ));
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.insertShape', () => insertShape().catch(report)));
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.syncFromSource', async () => {
     const uri = vscode.window.activeTextEditor?.document.uri;
