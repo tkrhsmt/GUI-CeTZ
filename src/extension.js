@@ -3,9 +3,9 @@ const vscode = require('vscode');
 const path = require('path');
 const { locateCanvases } = require('./scanner');
 const { parseCanvas } = require('./diagram');
-const { xmlForDiagram, patchesFromXml, readAllCells } = require('./drawio');
-const { renderCanvas, imageDiagram } = require('./preview');
-const { renderEditable, patchesFromEditable } = require('./advanced');
+const { readAllCells } = require('./drawio');
+const { patchesFromEditable } = require('./advanced');
+const { renderDiagram } = require('./render-diagram');
 const { SHAPES, insertionFor, templateInsertions } = require('./templates');
 const { EditHistory, historyAction } = require('./history');
 
@@ -81,18 +81,11 @@ async function syncFromSource(session) {
   const doc = await documentForSession(session);
   const text = doc.getText();
   const diagram = usableDiagram(text, session.index);
-  const preview = diagram.unsupported.length > 0;
-  let editable = null;
-  if (preview) {
-    try { editable = await renderEditable(text, diagram.canvas, session.sourceUri.fsPath); }
-    catch { /* Complex canvas state still gets Typst's exact locked preview. */ }
-  }
-  const xml = editable?.xml || (preview ? imageDiagram(await renderCanvas(text, diagram.canvas, session.sourceUri.fsPath)) : xmlForDiagram(text, diagram));
+  const { xml, editable } = await renderDiagram(text, diagram.canvas, session.sourceUri.fsPath);
   if (generation !== session.syncGeneration || (await documentForSession(session)).version !== doc.version) return;
   await updateDiagramDocument(session, xml);
   session.sourceVersion = doc.version;
   session.diagram = diagram;
-  session.preview = preview;
   session.editable = editable;
 }
 async function syncToSource(session) {
@@ -118,36 +111,16 @@ async function syncToSource(session) {
     if (patches.length) await refreshGuiView(session);
     return;
   }
-  if (session.preview) {
-    const source = await documentForSession(session);
-    if (source.version !== session.sourceVersion) {
-      await syncFromSource(session);
-      throw new Error('Typst changed while the GUI was being edited. The GUI was refreshed from Typst.');
-    }
-    const patches = templateInsertions(source.getText(), session.diagram.canvas,
-      readAllCells(xml), readAllCells(session.lastXml));
-    await applySourcePatches(session, source, patches);
-    await syncFromSource(session);
-    if (patches.length) await refreshGuiView(session);
-    return;
-  }
   const source = await documentForSession(session);
   if (source.version !== session.sourceVersion) {
     await syncFromSource(session);
-    throw new Error('Typst changed while the GUI was being edited. The GUI was refreshed from Typst; retry your change.');
+    throw new Error('Typst changed while the GUI was being edited. The GUI was refreshed from Typst.');
   }
-  const patches = patchesFromXml(source.getText(), session.diagram, xml);
+  const patches = templateInsertions(source.getText(), session.diagram.canvas,
+    readAllCells(xml), readAllCells(session.lastXml));
   await applySourcePatches(session, source, patches);
-  if (patches.length) {
-    const updated = await documentForSession(session);
-    session.sourceVersion = updated.version;
-    session.diagram = usableDiagram(updated.getText(), session.index);
-  }
-  if (patches.needsRefresh) {
-    await syncFromSource(session);
-    await refreshGuiView(session);
-  }
-  else session.lastXml = xml;
+  await syncFromSource(session);
+  if (patches.length) await refreshGuiView(session);
 }
 async function openGui() {
   const editor = vscode.window.activeTextEditor;
@@ -165,8 +138,8 @@ async function openGui() {
   }
   await syncFromSource(session);
   await vscode.commands.executeCommand('vscode.openWith', uri, 'hediet.vscode-drawio-text', vscode.ViewColumn.Beside);
-  if (session.preview && !session.editable)
-    vscode.window.showInformationMessage('CeTZ: This canvas is shown as a Typst-rendered preview because it contains operations that cannot be safely edited as Draw.io shapes. Edit it in Typst.');
+  if (!session.editable)
+    vscode.window.showInformationMessage('CeTZ: This canvas has no directly editable literal shapes. The Typst preview is available; add shapes from the CeTZ palette or edit the source.');
 }
 async function insertShape() {
   const editor = vscode.window.activeTextEditor;

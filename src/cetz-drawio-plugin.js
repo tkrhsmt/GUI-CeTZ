@@ -18,11 +18,29 @@ Draw.loadPlugin(function (ui) {
   ]);
   var shapeNames = ['arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier',
     'hobby', 'catmull', 'merge-path', 'compound-path'];
+  var shapeGlyphs = {
+    arc: '<path d="M10 34 A22 22 0 0 1 54 34"/><circle cx="32" cy="34" r="2" fill="#e28b23" stroke="none"/>',
+    mark: '<path d="M9 34 H48 M39 25 L51 34 L39 43"/>',
+    'n-star': '<path d="M32 5 L38 20 L54 20 L41 30 L46 45 L32 36 L18 45 L23 30 L10 20 L26 20 Z"/>',
+    grid: '<path d="M10 8 V42 M21 8 V42 M32 8 V42 M43 8 V42 M54 8 V42 M10 8 H54 M10 19 H54 M10 30 H54 M10 42 H54"/>',
+    'rect-around': '<rect x="11" y="8" width="42" height="34" rx="5"/><path d="M21 18 H43 V32 H21 Z" stroke-dasharray="3 3"/>',
+    bezier: '<path d="M8 36 C18 4 43 44 56 12"/><path d="M8 36 L18 10 M56 12 L43 40" stroke="#e28b23" stroke-dasharray="3 3"/>',
+    hobby: '<path d="M7 34 C19 12 25 13 33 25 S48 39 57 10"/><circle cx="7" cy="34" r="2"/><circle cx="33" cy="25" r="2"/><circle cx="57" cy="10" r="2"/>',
+    catmull: '<path d="M7 36 C17 35 18 8 30 11 S43 36 57 13"/><circle cx="7" cy="36" r="2"/><circle cx="30" cy="11" r="2"/><circle cx="57" cy="13" r="2"/>',
+    'merge-path': '<path d="M9 38 H28 V10 H51 V38 H28"/><circle cx="28" cy="38" r="2"/>',
+    'compound-path': '<rect x="10" y="9" width="34" height="30"/><circle cx="42" cy="28" r="13" fill="#dbeafe"/>'
+  };
+  function shapeIcon(name) {
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48" viewBox="0 0 64 48">' +
+      '<g fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
+      shapeGlyphs[name] + '</g></svg>';
+    return 'data:image/svg+xml,' + encodeURIComponent(svg);
+  }
   sidebar.addPaletteFunctions('cetz-advanced', 'CeTZ shapes', true,
     shapeNames.map(function (name) {
       return sidebar.createVertexTemplateEntry(
-        'rounded=0;dashed=1;fillColor=none;strokeColor=#4f79ff;cetzTemplate=' + name + ';',
-        120, 80, name, name);
+        'shape=image;imageAspect=1;image=' + shapeIcon(name) + ';cetzTemplate=' + name + ';',
+        80, 60, '', name, false, true);
     }));
   var basicPair = sidebar.palettes['cetz-primitives'];
   var previewBasicPair = sidebar.palettes['cetz-preview-primitives'];
@@ -152,6 +170,11 @@ Draw.loadPlugin(function (ui) {
           element.style.display = 'none';
         });
       });
+      var moreShapes = sidebar.container.querySelector && sidebar.container.querySelector('.geSidebarFooter');
+      if (moreShapes) {
+        if (!hiddenPalettes.has(moreShapes)) hiddenPalettes.set(moreShapes, moreShapes.style.display);
+        moreShapes.style.display = 'none';
+      }
     } else {
       hiddenPalettes.forEach(function (display, element) { element.style.display = display; });
       hiddenPalettes.clear();
@@ -188,7 +211,7 @@ Draw.loadPlugin(function (ui) {
       stroke.value = /^#[0-9a-f]{6}$/i.test(style.cetzStrokeColor) ? style.cetzStrokeColor : '#000000';
       width.value = style.cetzStrokeWidth || '1';
       dash.value = style.cetzDash || 'solid';
-      fill.parentNode.style.display = ['rect', 'circle', 'n-star', 'rect-around',
+      fill.parentNode.style.display = ['rect', 'circle', 'polygon', 'n-star', 'rect-around',
         'merge-path', 'compound-path'].includes(style.cetzKind) ? '' : 'none';
       stroke.parentNode.style.display = '';
       width.parentNode.style.display = '';

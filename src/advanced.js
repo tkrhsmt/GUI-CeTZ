@@ -6,7 +6,7 @@ const { templateInsertions } = require('./templates');
 const { color: parseColor, stroke: parseStroke, typstColor, typstStroke } = require('./style');
 
 const EDITABLE = new Set(['arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier', 'hobby',
-  'catmull', 'merge-path', 'compound-path', 'rect', 'circle', 'content', 'line']);
+  'catmull', 'merge-path', 'compound-path', 'rect', 'circle', 'content', 'line', 'polygon']);
 const NUMBER = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)';
 const BASE_X = 500, BASE_Y = 500;
 const POINT = new RegExp(`\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)`, 'g');
@@ -14,7 +14,7 @@ const POINT_HANDLE_NAMES = new Set(['bezier', 'hobby', 'catmull', 'line']);
 const POINT_HANDLE_SIZE = 14;
 const WRAPPER = new RegExp(`^scope\\(\\{\\s*translate\\(x:\\s*(${NUMBER}),\\s*y:\\s*(${NUMBER})\\)\\s*scale\\(x:\\s*(${NUMBER}),\\s*y:\\s*(${NUMBER})\\)\\s*`);
 const round = n => Number(n.toFixed(5));
-const FILLABLE = new Set(['rect', 'circle', 'n-star', 'rect-around', 'merge-path', 'compound-path']);
+const FILLABLE = new Set(['rect', 'circle', 'polygon', 'n-star', 'rect-around', 'merge-path', 'compound-path']);
 const STYLE_KEYS = new Set(['cetzFillColor', 'cetzStrokeColor', 'cetzStrokeWidth', 'cetzDash']);
 
 function namedArgument(text, name) {
@@ -46,6 +46,23 @@ function styleMap(style) {
     const equal = part.indexOf('=');
     return equal < 0 ? [part, ''] : [part.slice(0, equal), part.slice(equal + 1)];
   }));
+}
+
+function rectCoordinates(text) {
+  const open = skipTrivia(text, 4);
+  const end = closing(text, open, '(', ')');
+  if (end < 0) return null;
+  const points = splitArgs(text, open + 1, end).filter(arg =>
+    !/^\s*[\w-]+\s*:/.test(text.slice(arg.start, arg.end))).slice(0, 2);
+  if (points.length < 2) return null;
+  const point = new RegExp(`^\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*$`);
+  const relative = new RegExp(`^\\s*\\(\\s*rel\\s*:\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*\\)\\s*$`);
+  const first = point.exec(text.slice(points[0].start, points[0].end));
+  const secondText = text.slice(points[1].start, points[1].end);
+  const second = point.exec(secondText), delta = relative.exec(secondText);
+  if (!first || !second && !delta) return null;
+  return { first: { x: +first[1], y: +first[2] },
+    second: { x: +(second || delta)[1], y: +(second || delta)[2], relative: !!delta } };
 }
 
 function rewriteEditableStyle(call, beforeStyle, afterStyle) {
@@ -125,20 +142,26 @@ function rewriteLiteralCall(call, transform) {
       return;
     }
     const count = { arc: 1, mark: 2, 'n-star': 1, grid: 2, 'rect-around': 2,
-      rect: 2, circle: 1, content: 1 }[name];
+      rect: 2, circle: 1, content: 1, polygon: 1 }[name];
     const coordinates = count == null ? positional : positional.slice(0, count);
     if (!coordinates.length || count != null && coordinates.length < count)
       throw new Error('The CeTZ call does not have literal coordinates to edit.');
-    coordinates.forEach(rewritePoint);
+    if (name === 'rect') {
+      rewritePoint(coordinates[0]);
+      const raw = call.slice(coordinates[1].start, coordinates[1].end);
+      const relative = new RegExp(`^\\s*\\(\\s*rel\\s*:\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*\\)\\s*$`).exec(raw);
+      if (relative) replace(coordinates[1], `(rel: (${round(+relative[1] * sx)}, ${round(+relative[2] * sy)}))`);
+      else rewritePoint(coordinates[1]);
+    } else coordinates.forEach(rewritePoint);
     if (name === 'content' && (!uniform || sx !== 1))
       throw new Error('CeTZ text size cannot be changed through its position arguments.');
     if (name === 'mark' && (!uniform || sx !== 1))
       throw new Error('CeTZ marks cannot be resized through their point arguments alone.');
     if (name === 'circle' || name === 'arc') rewriteDimension(args, 'radius', true, 1);
-    if (name === 'n-star') {
-      if (!uniform) throw new Error('CeTZ stars cannot be resized differently in x and y without a transform.');
+    if (name === 'n-star' || name === 'polygon') {
+      if (!uniform) throw new Error('This CeTZ shape cannot be resized differently in x and y without a transform.');
       rewriteDimension(args, 'radius', false, 1);
-      rewriteDimension(args, 'inner-radius', false, null);
+      if (name === 'n-star') rewriteDimension(args, 'inner-radius', false, null);
     }
     if (name === 'grid') rewriteDimension(args, 'step', true, null);
     if (name === 'rect-around') rewriteDimension(args, 'padding', true, null);
@@ -190,15 +213,22 @@ function locateEditableCalls(source, canvas) {
 }
 
 function boundsFor(call) {
-  const points = [...call.call.matchAll(POINT)].map(m => [+m[1], +m[2]]);
+  let points = [...call.call.matchAll(POINT)].map(m => [+m[1], +m[2]]);
+  if (call.name === 'rect') {
+    const rect = rectCoordinates(call.call);
+    if (!rect) return null;
+    points = [[rect.first.x, rect.first.y],
+      [rect.second.x + (rect.second.relative ? rect.first.x : 0),
+        rect.second.y + (rect.second.relative ? rect.first.y : 0)]];
+  }
   if (!points.length) return null;
   if ((call.name === 'rect' || call.name === 'line') && points.length < 2) return null;
   let minX = Math.min(...points.map(p => p[0])), maxX = Math.max(...points.map(p => p[0]));
   let minY = Math.min(...points.map(p => p[1])), maxY = Math.max(...points.map(p => p[1]));
   const radiusTuple = new RegExp(`(?:^|[,\\s])radius:\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)`).exec(call.call);
   const radiusScalar = new RegExp(`(?:^|[,\\s])radius:\\s*(${NUMBER})(?![\\w.])`).exec(call.call);
-  const r = radiusScalar ? +radiusScalar[1] : ['arc', 'n-star', 'circle'].includes(call.name) ? 1 : 0;
-  if (['arc', 'n-star', 'circle'].includes(call.name)) {
+  const r = radiusScalar ? +radiusScalar[1] : ['arc', 'n-star', 'circle', 'polygon'].includes(call.name) ? 1 : 0;
+  if (['arc', 'n-star', 'circle', 'polygon'].includes(call.name)) {
     if (/(?:^|[,\s])radius\s*:/.test(call.call) && !radiusTuple && !radiusScalar) return null;
     const rx = radiusTuple ? +radiusTuple[1] : r;
     const ry = radiusTuple ? +radiusTuple[2] : r;

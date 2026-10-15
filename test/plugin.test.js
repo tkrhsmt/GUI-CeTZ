@@ -15,12 +15,17 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
     };
   }
   const wrapper = element(), container = element(), menubarContainer = element('block');
+  const moreShapes = element('flex');
+  moreShapes.className = 'geSidebarFooter';
+  container.querySelector = selector => selector === '.geSidebarFooter' ? moreShapes : null;
   container.appendChild(wrapper);
+  container.appendChild(moreShapes);
   const toolbarContainer = element('flex'), formatContainer = element('block');
   const palettes = {
     general: [element(''), element('block')],
     scratchpad: [element(''), element('')]
   };
+  const vertexTemplates = [];
   let fileTitle = 'example.cetz-1.drawio', preview = false, editablePreview = false;
   let graphEnabled = false;
   let fileLoaded;
@@ -49,7 +54,10 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
     sidebar: {
       wrapper, container, palettes,
       addPaletteFunctions(id) { palettes[id] = [element(), element()]; },
-      createVertexTemplateEntry() { return function () {}; },
+      createVertexTemplateEntry(style, width, height, value, title) {
+        vertexTemplates.push({ style, width, height, value, title });
+        return function () {};
+      },
       createEdgeTemplateEntry() { return function () {}; }
     },
     editor: { graph, addListener(name, callback) { if (name === 'fileLoaded') fileLoaded = callback; } },
@@ -68,6 +76,15 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/cetz-drawio-plugin.js'), 'utf8'), context);
 
+  const icons = vertexTemplates.filter(entry => entry.style.startsWith('shape=image;'));
+  assert.equal(icons.length, 10);
+  assert.equal(new Set(icons.map(entry => entry.style)).size, 10);
+  for (const icon of icons) {
+    assert.match(icon.style, new RegExp(`cetzTemplate=${icon.title};`));
+    const image = /image=(data:image\/svg\+xml,[^;]+);/.exec(icon.style)?.[1];
+    assert.ok(image, icon.title);
+    assert.match(decodeURIComponent(image), /<svg[^>]+viewBox="0 0 64 48"/);
+  }
   assert.equal(palettes.general[0].style.display, 'none');
   assert.equal(palettes.general[1].style.display, 'none');
   assert.equal(palettes.scratchpad[0].style.display, 'none');
@@ -77,6 +94,7 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   assert.equal(toolbarContainer.style.display, 'flex');
   assert.equal(formatContainer.style.display, 'block');
   assert.equal(menubarContainer.style.display, 'block');
+  assert.equal(moreShapes.style.display, 'none');
   assert.equal(graphEnabled, true);
 
   preview = true;
@@ -114,5 +132,6 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   assert.equal(palettes['cetz-primitives'][0].style.display, 'none');
   assert.equal(palettes['cetz-preview-primitives'][0].style.display, 'none');
   assert.equal(palettes['cetz-advanced'][0].style.display, 'none');
+  assert.equal(moreShapes.style.display, 'flex');
   assert.equal(graphEnabled, true);
 });

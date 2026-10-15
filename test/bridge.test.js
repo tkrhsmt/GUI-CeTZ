@@ -7,6 +7,7 @@ const { parseCanvas } = require('../src/diagram');
 const { xmlForDiagram, patchesFromXml, readCells, readAllCells } = require('../src/drawio');
 const { renderCanvas, imageDiagram } = require('../src/preview');
 const { renderEditable, patchesFromEditable, locateEditableCalls } = require('../src/advanced');
+const { renderDiagram } = require('../src/render-diagram');
 const { SHAPES, insertionFor, templateInsertions } = require('../src/templates');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -244,6 +245,45 @@ test('inserts basic CeTZ primitives from a rendered preview palette', () => {
     const updated = apply(text, templateInsertions(text, canvas, cells));
     assert.match(updated, new RegExp(`\\b${name}\\(`));
   }
+});
+test('primitive-only and mixed canvases use the same Typst-backed Draw.io cells', async () => {
+  const prefix = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n';
+  const primitive = prefix + 'rect((0, 0), (2, 1), fill: red)\n' +
+    'circle((4, 0), radius: 1)\nline((0, 2), (2, 2))\n})';
+  const mixed = primitive.replace('\n})', '\narc((6, 0), start: 30deg, stop: 150deg)\n})');
+  const file = path.resolve('examples/advanced.typ');
+  assert.equal(parseCanvas(primitive).unsupported.length, 0);
+  for (const source of [primitive, mixed]) {
+    const result = await renderDiagram(source, parseCanvas(source).canvas, file);
+    assert.ok(result.editable);
+    assert.match(result.xml, /id="cetz-preview-background"/);
+    assert.doesNotMatch(result.xml, /id="preview-image"|id="cetz-0-/);
+    for (const index of [0, 1, 2]) assert.ok(readAllCells(result.xml).get(`cetz-edit-${index}`));
+    const original = readAllCells(result.xml).get('cetz-edit-0').geometry;
+    const moved = result.xml.replace(/(<mxCell id="cetz-edit-0"[\s\S]*?<mxGeometry x=")([\d.]+)/,
+      (_, head, x) => head + (Number(x) + 20));
+    const updated = apply(source, patchesFromEditable(source, result.editable, moved, readAllCells));
+    assert.match(updated, /rect\(\([\d.]+, 0\),\s*\([\d.]+, 1\), fill: red\)/);
+    const refreshed = await renderDiagram(updated, parseCanvas(updated).canvas, file);
+    const after = readAllCells(refreshed.xml).get('cetz-edit-0').geometry;
+    assert.ok(Math.abs(+after.x - +original.x - 20) < 0.02);
+  }
+});
+test('the primitive example keeps relative rectangles and polygons editable', async () => {
+  const file = path.resolve('examples/extended.typ');
+  const source = fs.readFileSync(file, 'utf8');
+  const result = await renderDiagram(source, parseCanvas(source).canvas, file);
+  assert.deepEqual(result.editable.calls.map(call => call.name),
+    ['rect', 'circle', 'line', 'content', 'polygon']);
+  const cells = readAllCells(result.xml);
+  assert.ok(cells.get('cetz-edit-0'));
+  assert.ok(cells.get('cetz-edit-4'));
+  const moved = result.xml.replace(/(<mxCell id="cetz-edit-0"[\s\S]*?<mxGeometry x=")([\d.]+)/,
+    (_, head, x) => head + (Number(x) + 20));
+  const updated = apply(source, patchesFromEditable(source, result.editable, moved, readAllCells));
+  assert.match(updated, /rect\(\([\d.]+, 0\),\s*\(rel: \(3, 2\)\)/);
+  assert.match(updated, /polygon\(\(6, 1\), 5, radius: 0\.8\)/);
+  await renderDiagram(updated, parseCanvas(updated).canvas, file);
 });
 test('moves and deletes basic primitives in a Typst-rendered Draw.io preview', async () => {
   const file = path.resolve('examples/advanced.typ');
