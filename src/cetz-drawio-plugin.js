@@ -46,16 +46,19 @@ Draw.loadPlugin(function (ui) {
   var previewBasicPair = sidebar.palettes['cetz-preview-primitives'];
   var advancedPair = sidebar.palettes['cetz-advanced'];
   var controls = document.createElement('div');
-  controls.style.cssText = 'padding:10px;display:none;font:12px sans-serif;';
+  controls.style.cssText = 'box-sizing:border-box;width:100%;padding:10px 8px 12px;display:none;font:12px sans-serif;color:inherit;';
   sidebar.wrapper.insertBefore(controls, sidebar.wrapper.firstChild);
 
   function field(label, type, values, key) {
     var row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin:6px 0;padding:0 6px;min-height:28px;';
+    row.style.cssText = 'box-sizing:border-box;display:grid;grid-template-columns:76px minmax(0,1fr);align-items:center;column-gap:10px;width:100%;margin:0;padding:5px 2px;min-height:36px;';
     var caption = document.createElement('span');
     caption.textContent = label;
+    caption.style.cssText = 'min-width:0;white-space:nowrap;';
     row.appendChild(caption);
     var input = document.createElement(type === 'select' ? 'select' : 'input');
+    input.setAttribute('aria-label', label);
+    input.style.cssText = 'box-sizing:border-box;width:100%;max-width:100%;height:28px;min-width:0;padding:2px 6px;border:1px solid #888;border-radius:4px;background:transparent;color:inherit;font:inherit;';
     if (type === 'select') values.forEach(function (entry) {
       var option = document.createElement('option');
       option.value = entry[0]; option.textContent = entry[1]; input.appendChild(option);
@@ -63,9 +66,7 @@ Draw.loadPlugin(function (ui) {
     });
     else {
       input.type = type; input.min = '0.25'; input.step = '0.25';
-      input.style.cssText = type === 'color'
-        ? 'width:48px;height:24px;border:1px solid #888;vertical-align:middle;'
-        : 'width:65px;padding:2px;border:1px solid #888;background:white;color:#111;';
+      if (type === 'color') input.style.padding = '2px';
     }
     input.addEventListener('change', function () {
       var graph = ui.editor.graph;
@@ -117,7 +118,6 @@ Draw.loadPlugin(function (ui) {
     [['custom', 'Custom (Typst)']]);
   var markStart = field('Start mark', 'select', markOptions, 'cetzStartMark');
   var markEnd = field('End mark', 'select', markOptions, 'cetzEndMark');
-  markStart.style.width = markEnd.style.width = '145px';
   var graph = ui.editor.graph;
   var cetzMenu = null;
   function sendHistoryAction(name) {
@@ -140,6 +140,14 @@ Draw.loadPlugin(function (ui) {
           graph.setSelectionCell(cell);
         }, parent);
       });
+      menu.addSeparator(parent);
+      [['Zoom in', 'zoomIn'], ['Zoom out', 'zoomOut'], ['Fit view', 'fitWindow']]
+        .forEach(function (entry) {
+          menu.addItem(entry[0], null, function () {
+            var action = ui.actions.get(entry[1]);
+            if (isCetz() && action) action.funct();
+          }, parent);
+        });
       menu.addSeparator(parent);
       menu.addItem('Undo', null, function () { if (isCetz()) sendHistoryAction('undo'); }, parent);
       menu.addItem('Redo', null, function () { if (isCetz()) sendHistoryAction('redo'); }, parent);
@@ -198,8 +206,57 @@ Draw.loadPlugin(function (ui) {
     lastEditCount = editCount;
   }
   var hiddenPalettes = new Map();
+  var hiddenChrome = new Map();
+  var rulerWasVisible = false;
   function setDisplay(element, visible) {
     if (element) element.style.display = visible ? '' : 'none';
+  }
+  function hideChrome(element, active) {
+    if (!element) return;
+    if (active) {
+      if (!hiddenChrome.has(element)) hiddenChrome.set(element, element.style.display);
+      element.style.display = 'none';
+    }
+  }
+  function updateChrome(active) {
+    if (!active) {
+      hiddenChrome.forEach(function (display, element) { element.style.display = display; });
+      hiddenChrome.clear();
+      return;
+    }
+    // Standard menus and the format panel expose edits that cannot be written to Typst.
+    if (ui.menubar && ui.menubar.container) {
+      Array.prototype.forEach.call(ui.menubar.container.children, function (element) {
+        if (element !== cetzMenu && element !== ui.statusContainer) hideChrome(element, true);
+      });
+    }
+    hideChrome(ui.toolbarContainer, true);
+    hideChrome(ui.formatContainer, true);
+    // The shape-library buttons are siblings of the palette, above its entries.
+    var sidebarParent = sidebar.container && sidebar.container.parentNode;
+    if (sidebarParent) Array.prototype.forEach.call(sidebarParent.children, function (element) {
+      if (element !== sidebar.container && /(?:^|\s)geButton(?:\s|$)/.test(element.className || ''))
+        hideChrome(element, true);
+    });
+  }
+  if (ui.setRulerVisible) {
+    var originalSetRulerVisible = ui.setRulerVisible;
+    ui.setRulerVisible = function (visible) {
+      if (isCetz() && visible) return;
+      return originalSetRulerVisible.apply(this, arguments);
+    };
+  }
+  function updateRuler(active, changed) {
+    if (active && changed) {
+      rulerWasVisible = !!ui.ruler;
+      if (ui.ruler) {
+        ui.ruler.destroy();
+        ui.ruler = null;
+      }
+    } else if (!active && changed && rulerWasVisible && ui.setRulerVisible) {
+      rulerWasVisible = false;
+      ui.setRulerVisible(true);
+    }
   }
   function updateStandardPalettes(active) {
     if (active) {
@@ -278,6 +335,9 @@ Draw.loadPlugin(function (ui) {
     };
   }
   function updateControls() {
+    function showField(input, visible) {
+      input.parentNode.style.display = visible ? 'grid' : 'none';
+    }
     var cell = graph.getSelectionCell();
     var previewCell = false;
     if (isEditablePreview() && cell) {
@@ -296,14 +356,15 @@ Draw.loadPlugin(function (ui) {
       dash.value = style.cetzDash || 'solid';
       markStart.value = style.cetzStartMark || 'none';
       markEnd.value = style.cetzEndMark || 'none';
-      fill.parentNode.style.display = ['rect', 'circle', 'polygon', 'n-star', 'rect-around',
-        'merge-path', 'compound-path'].includes(style.cetzKind) ? '' : 'none';
-      stroke.parentNode.style.display = '';
-      width.parentNode.style.display = '';
-      dash.parentNode.style.display = '';
-      start.parentNode.style.display = end.parentNode.style.display = 'none';
-      markStart.parentNode.style.display = markEnd.parentNode.style.display =
-        style.cetzKind === 'line' ? '' : 'none';
+      showField(fill, ['rect', 'circle', 'polygon', 'n-star', 'rect-around',
+        'merge-path', 'compound-path'].includes(style.cetzKind));
+      showField(stroke, true);
+      showField(width, true);
+      showField(dash, true);
+      showField(start, false);
+      showField(end, false);
+      showField(markStart, style.cetzKind === 'line');
+      showField(markEnd, style.cetzKind === 'line');
       return;
     }
     fill.value = /^#[0-9a-f]{6}$/i.test(style.fillColor) ? style.fillColor : '#ffffff';
@@ -317,13 +378,14 @@ Draw.loadPlugin(function (ui) {
     end.value = ['classic', 'diamond'].includes(style.endArrow) ? style.endArrow : 'none';
     var edge = graph.getModel().isEdge(cell);
     var content = !edge && (cell.style || '').split(';')[0] === 'text';
-    fill.parentNode.style.display = edge || content ? 'none' : '';
-    stroke.parentNode.style.display = content ? 'none' : '';
-    width.parentNode.style.display = content ? 'none' : '';
-    dash.parentNode.style.display = content ? 'none' : '';
-    start.parentNode.style.display = edge ? '' : 'none';
-    end.parentNode.style.display = edge ? '' : 'none';
-    markStart.parentNode.style.display = markEnd.parentNode.style.display = 'none';
+    showField(fill, !edge && !content);
+    showField(stroke, !content);
+    showField(width, !content);
+    showField(dash, !content);
+    showField(start, edge);
+    showField(end, edge);
+    showField(markStart, false);
+    showField(markEnd, false);
   }
   function update() {
     var active = isCetz(), preview = active && isPreview();
@@ -411,6 +473,8 @@ Draw.loadPlugin(function (ui) {
     }
     var changed = active !== activeMode;
     activeMode = active;
+    updateRuler(active, changed);
+    updateChrome(active);
     if (changed && ui.refresh) ui.refresh(true);
     if (active || changed) graph.setEnabled(true);
     updateStandardPalettes(active);

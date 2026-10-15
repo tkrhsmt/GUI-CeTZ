@@ -6,12 +6,13 @@ const test = require('node:test');
 const vm = require('node:vm');
 const { MARK_NAMES } = require('../src/marks');
 
-test('CeTZ hides unrelated palettes without hiding editor controls and restores them afterward', () => {
+test('CeTZ shows supported controls and restores standard Draw.io chrome afterward', () => {
   function element(display = '') {
     return {
       style: { display }, children: [], parentNode: null,
       appendChild(child) { this.children.push(child); child.parentNode = this; },
       insertBefore(child) { this.appendChild(child); },
+      setAttribute(name, value) { this[name] = value; },
       addEventListener(name, callback) { this.listeners ||= {}; this.listeners[name] = callback; }
     };
   }
@@ -21,6 +22,11 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   container.querySelector = selector => selector === '.geSidebarFooter' ? moreShapes : null;
   container.appendChild(wrapper);
   container.appendChild(moreShapes);
+  const sidebarPanel = element();
+  const libraryButton = element('inline-block');
+  libraryButton.className = 'geButton';
+  sidebarPanel.appendChild(libraryButton);
+  sidebarPanel.appendChild(container);
   const toolbarContainer = element('flex'), formatContainer = element('block');
   const palettes = {
     general: [element(''), element('block')],
@@ -28,7 +34,7 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   };
   const vertexTemplates = [];
   let fileTitle = 'example.cetz-1.drawio', preview = false, editablePreview = false;
-  let graphEnabled = false;
+  let graphEnabled = false, rulerDestroyed = false, rulerVisible = false;
   let fileLoaded;
   let selectionChanged, modelChanged, selectedCell = null, changedStyle = null, snappedBounds = null;
   const removedTemplates = [];
@@ -84,12 +90,21 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
     editor: { graph, addListener(name, callback) { if (name === 'fileLoaded') fileLoaded = callback; } },
     actions: { get(name) { return actions[name]; } },
     menubar: { container: menubarContainer, addMenu() {
-      const menu = element(); menubarContainer.appendChild(menu); return menu;
+      const menu = element(); menu.className = 'geMenubar'; menubarContainer.appendChild(menu); return menu;
     } },
     menubarContainer, toolbarContainer, formatContainer,
+    ruler: { destroy() { rulerDestroyed = true; } },
+    setRulerVisible(value) { rulerVisible = value; this.ruler = value ? { destroy() {} } : null; },
     getCurrentFile() { return { getTitle() { return fileTitle; }, getData() { return ''; } }; },
     refresh() { graphEnabled = false; }
   };
+  const standardMenu = element('inline-block');
+  // Draw.io changes standard menu elements from geMenubar to geItem after creation.
+  standardMenu.className = 'geItem';
+  menubarContainer.appendChild(standardMenu);
+  const statusContainer = element('flex');
+  menubarContainer.appendChild(statusContainer);
+  ui.statusContainer = statusContainer;
   const context = {
     Draw: { loadPlugin(callback) { callback(ui); } },
     document: { createElement() { return element(); } },
@@ -114,9 +129,16 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   assert.equal(palettes['cetz-primitives'][0].style.display, '');
   assert.equal(palettes['cetz-preview-primitives'][0].style.display, 'none');
   assert.equal(palettes['cetz-advanced'][0].style.display, '');
-  assert.equal(toolbarContainer.style.display, 'flex');
-  assert.equal(formatContainer.style.display, 'block');
+  assert.equal(toolbarContainer.style.display, 'none');
+  assert.equal(formatContainer.style.display, 'none');
   assert.equal(menubarContainer.style.display, 'block');
+  assert.equal(standardMenu.style.display, 'none');
+  assert.equal(statusContainer.style.display, 'flex');
+  assert.equal(libraryButton.style.display, 'none');
+  assert.equal(rulerDestroyed, true);
+  assert.equal(ui.ruler, null);
+  ui.setRulerVisible(true);
+  assert.equal(ui.ruler, null);
   assert.equal(moreShapes.style.display, 'none');
   assert.equal(graphEnabled, true);
 
@@ -137,8 +159,12 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   selectionChanged();
   const controls = wrapper.children[0];
   assert.equal(controls.style.display, '');
+  assert.match(controls.style.cssText, /box-sizing:border-box;width:100%/);
+  assert.match(controls.children[1].style.cssText, /grid-template-columns:76px minmax\(0,1fr\)/);
+  assert.match(controls.children[1].children[1].style.cssText, /max-width:100%/);
   assert.equal(controls.children[0].style.display, 'none');
-  assert.equal(controls.children[1].style.display, '');
+  assert.equal(controls.children[1].style.display, 'grid');
+  assert.equal(controls.children[2].style.display, 'grid');
   const strokeInput = controls.children[1].children[1];
   strokeInput.value = '#ff0000';
   strokeInput.listeners.change();
@@ -149,8 +175,8 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   selectionChanged();
   const markStart = controls.children[6].children[1];
   const markEnd = controls.children[7].children[1];
-  assert.equal(controls.children[6].style.display, '');
-  assert.equal(controls.children[7].style.display, '');
+  assert.equal(controls.children[6].style.display, 'grid');
+  assert.equal(controls.children[7].style.display, 'grid');
   assert.equal(markStart.children.length, 18);
   assert.deepEqual(markStart.children.slice(1, -1).map(option => option.value), MARK_NAMES);
   assert.equal(markEnd.value, 'triangle');
@@ -230,6 +256,12 @@ test('CeTZ hides unrelated palettes without hiding editor controls and restores 
   assert.equal(palettes['cetz-preview-primitives'][0].style.display, 'none');
   assert.equal(palettes['cetz-advanced'][0].style.display, 'none');
   assert.equal(moreShapes.style.display, 'flex');
+  assert.equal(toolbarContainer.style.display, 'flex');
+  assert.equal(formatContainer.style.display, 'block');
+  assert.equal(standardMenu.style.display, 'inline-block');
+  assert.equal(statusContainer.style.display, 'flex');
+  assert.equal(libraryButton.style.display, 'inline-block');
+  assert.equal(rulerVisible, true);
   assert.equal(graph.graphHandler.updateHint, originalHint);
   assert.equal(graph.graphHandler.useGuidesForEvent, originalUseGuides);
   resizeHandler.updateHint();
