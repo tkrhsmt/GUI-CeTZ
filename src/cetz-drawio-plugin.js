@@ -121,8 +121,10 @@ Draw.loadPlugin(function (ui) {
   var graph = ui.editor.graph;
   var cetzMenu = null;
   function sendHistoryAction(name) {
+    var token = Date.now().toString(36) + Math.random().toString(36).slice(2);
     graph.insertVertex(graph.getDefaultParent(), null, '', -1000, -1000, 1, 1,
-      'opacity=0;strokeColor=none;fillColor=none;cetzAction=' + name + ';');
+      'opacity=0;strokeColor=none;fillColor=none;cetzAction=' + name +
+      ';cetzActionToken=' + token + ';');
   }
   function ensureCetzMenu() {
     if (!ui.menubar || cetzMenu && cetzMenu.parentNode) return;
@@ -240,6 +242,40 @@ Draw.loadPlugin(function (ui) {
     }
     return null;
   }
+  function cetzFrame() {
+    var background = graph.getModel().getCell('cetz-preview-background');
+    var style = background && graph.getCellStyle(background);
+    var frame = {
+      originX: Number(style && style.cetzOriginX),
+      originY: Number(style && style.cetzOriginY),
+      unitX: Number(style && style.cetzUnitX),
+      unitY: Number(style && style.cetzUnitY)
+    };
+    return Object.values(frame).every(Number.isFinite) && frame.unitX > 0 && frame.unitY > 0
+      ? frame : null;
+  }
+  function quarter(value) { return Math.round(value * 4) / 4; }
+  if (typeof mxVertexHandler !== 'undefined' && mxVertexHandler.prototype.updateHint) {
+    var originalVertexHint = mxVertexHandler.prototype.updateHint;
+    mxVertexHandler.prototype.updateHint = function () {
+      originalVertexHint.apply(this, arguments);
+      if (!isEditablePreview() || !this.hint || !this.bounds ||
+        !/^cetz-edit-\d+$/.test(this.state && this.state.cell && this.state.cell.id || '') ||
+        typeof mxEvent !== 'undefined' &&
+          (this.index === mxEvent.LABEL_HANDLE || this.index === mxEvent.ROTATION_HANDLE)) return;
+      var frame = cetzFrame();
+      if (!frame) return;
+      var view = this.state.view, scale = view.scale || 1;
+      var translate = view.translate || { x: 0, y: 0 };
+      var left = this.bounds.x / scale - translate.x;
+      var bottom = (this.bounds.y + this.bounds.height) / scale - translate.y;
+      var x = quarter((left - frame.originX) / frame.unitX);
+      var y = quarter((frame.originY - bottom) / frame.unitY);
+      var width = quarter(this.bounds.width / scale / frame.unitX);
+      var height = quarter(this.bounds.height / scale / frame.unitY);
+      this.hint.textContent = 'CeTZ bounds (' + x + ', ' + y + '), size (' + width + ', ' + height + ')';
+    };
+  }
   function updateControls() {
     var cell = graph.getSelectionCell();
     var previewCell = false;
@@ -331,18 +367,13 @@ Draw.loadPlugin(function (ui) {
         var cells = graph.getSelectionCells();
         var anchor = cells.length === 1 ? cetzAnchor(cells[0]) : null;
         if (!anchor) return;
-        var background = graph.getModel().getCell('cetz-preview-background');
-        var style = background && graph.getCellStyle(background);
-        var originX = Number(style && style.cetzOriginX);
-        var originY = Number(style && style.cetzOriginY);
-        var unitX = Number(style && style.cetzUnitX);
-        var unitY = Number(style && style.cetzUnitY);
-        if (![originX, originY, unitX, unitY].every(Number.isFinite) || unitX <= 0 || unitY <= 0) return;
+        var frame = cetzFrame();
+        if (!frame) return;
         var view = graph.view, scale = view.scale || 1, translate = view.translate || { x: 0, y: 0 };
         var modelX = (this.bounds.x + this.currentDx) / scale - translate.x + anchor.x;
         var modelY = (this.bounds.y + this.currentDy) / scale - translate.y + anchor.y;
-        var x = Math.round((modelX - originX) / unitX * 4) / 4;
-        var y = Math.round((originY - modelY) / unitY * 4) / 4;
+        var x = quarter((modelX - frame.originX) / frame.unitX);
+        var y = quarter((frame.originY - modelY) / frame.unitY);
         this.hint.textContent = 'CeTZ (' + x + ', ' + y + ')';
       };
       if (graph.popupMenuHandler) graph.popupMenuHandler.isEnabled = function () { return false; };

@@ -121,7 +121,8 @@ function rewriteEditableStyle(call, beforeStyle, afterStyle) {
 function rewriteLiteralCall(call, transform) {
   const edits = [];
   const { sx, sy } = transform;
-  const tx = snapCoordinate(transform.tx), ty = snapCoordinate(transform.ty);
+  const tx = transform.snapTx === false ? transform.tx : snapCoordinate(transform.tx);
+  const ty = transform.snapTy === false ? transform.ty : snapCoordinate(transform.ty);
   const uniform = Math.abs(sx - sy) < 0.00001;
   function replace(range, value) { edits.push({ start: range.start, end: range.end, text: value }); }
   function rewritePoint(range) {
@@ -423,8 +424,9 @@ async function renderEditable(source, canvas, filePath) {
   const updatedCanvas = { ...canvas, bodyEnd: canvas.bodyEnd + markers.length, end: canvas.end + markers.length };
   const result = calibration(await renderCanvas(calibrated, updatedCanvas, filePath));
   result.gridSize = pixel(result.unitX * 2.5 / GRID_FRACTIONS);
-  result.originX = pixel(Math.round(TARGET_ORIGIN / result.gridSize) * result.gridSize);
-  result.originY = pixel(Math.round(TARGET_ORIGIN / result.gridSize) * result.gridSize);
+  const majorGrid = result.gridSize * GRID_FRACTIONS;
+  result.originX = pixel(Math.round(TARGET_ORIGIN / majorGrid) * majorGrid);
+  result.originY = pixel(Math.round(TARGET_ORIGIN / majorGrid) * majorGrid);
   const size = /<svg\b[^>]*viewBox="[^"]*?\s([\d.]+)\s([\d.]+)"/.exec(result.svg);
   if (!size) throw new Error('Typst SVG has no viewBox.');
   const width = +size[1] * 2.5, height = +size[2] * 2.5;
@@ -432,9 +434,9 @@ async function renderEditable(source, canvas, filePath) {
   // Leave room for the axes when Typst expands its SVG into negative CeTZ coordinates.
   const margin = 200;
   result.originX = pixel(result.originX + Math.max(0,
-    Math.ceil((margin - (result.originX - result.zero.x * 2.5)) / result.gridSize)) * result.gridSize);
+    Math.ceil((margin - (result.originX - result.zero.x * 2.5)) / majorGrid)) * majorGrid);
   result.originY = pixel(result.originY + Math.max(0,
-    Math.ceil((margin - (result.originY - result.zero.y * 2.5)) / result.gridSize)) * result.gridSize);
+    Math.ceil((margin - (result.originY - result.zero.y * 2.5)) / majorGrid)) * majorGrid);
   const backgroundX = result.originX - result.zero.x * 2.5;
   const backgroundY = result.originY - result.zero.y * 2.5;
   const background = `<mxCell id="cetz-preview-background" value="" style="shape=rect;fillColor=none;strokeColor=none;opacity=0;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;selectable=0;pointerEvents=0;cetzOriginX=${result.originX};cetzOriginY=${result.originY};cetzUnitX=${pixel(result.unitX * 2.5)};cetzUnitY=${pixel(result.unitY * 2.5)};" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(backgroundX)}" y="${pixel(backgroundY)}" width="${width}" height="${height}" as="geometry"/></mxCell>`;
@@ -502,7 +504,9 @@ async function renderEditable(source, canvas, filePath) {
 function patchesFromEditable(source, rendered, xml, readCells) {
   const cells = readCells(xml), original = readCells(rendered.xml), patches = [];
   for (const [id, item] of cells)
-    if (!original.has(id) && !/(?:^|;)cetzTemplate=[\w-]+(?:;|$)/.test(item.cell.style || ''))
+    if (!original.has(id) &&
+      !/(?:^|;)cetzTemplate=[\w-]+(?:;|$)/.test(item.cell.style || '') &&
+      !/(?:^|;)cetzAction=(?:undo|redo)(?:;|$)/.test(item.cell.style || ''))
       throw new Error('Use the CeTZ menu to add shapes to this canvas.');
   const background = cells.get('cetz-preview-background');
   const canonical = value => value && typeof value === 'object'
@@ -581,7 +585,9 @@ function patchesFromEditable(source, rendered, xml, readCells) {
     const dx = +b.x - sx * +a.x, dy = +b.y - sy * +a.y;
     const tx = call.transform.tx * sx + (dx + (sx - 1) * rendered.calibration.originX) / (rendered.calibration.unitX * 2.5);
     const ty = call.transform.ty * sy + ((1 - sy) * rendered.calibration.originY - dy) / (rendered.calibration.unitY * 2.5);
-    const replacement = rewriteLiteralCall(call.call, { tx, ty, sx: call.transform.sx * sx, sy: call.transform.sy * sy });
+    const replacement = rewriteLiteralCall(call.call, { tx, ty, sx: call.transform.sx * sx,
+      sy: call.transform.sy * sy, snapTx: Math.abs(sx - 1) < 0.00001,
+      snapTy: Math.abs(sy - 1) < 0.00001 });
     patches.push({ start: call.start, end: call.end, text: replacement });
   }
   return patches.concat(templateInsertions(source, rendered.canvas, cells, original));

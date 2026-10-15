@@ -10,6 +10,7 @@ const { renderEditable, patchesFromEditable, locateEditableCalls } = require('..
 const { renderDiagram } = require('../src/render-diagram');
 const { MARK_NAMES, sideValues, sideEdits } = require('../src/marks');
 const { SHAPES, insertionFor, templateInsertions } = require('../src/templates');
+const { historyAction } = require('../src/history');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -330,8 +331,8 @@ test('Draw.io grid lines and source coordinates follow CeTZ quarter units', asyn
   const calibration = rendered.editable.calibration;
   const gridSize = Number(/<mxGraphModel[^>]*gridSize="([^"]+)"/.exec(rendered.xml)[1]);
   assert.ok(Math.abs(gridSize * 4 - calibration.unitX * 2.5) < 0.0001);
-  assert.ok(Math.abs(calibration.originX / gridSize - Math.round(calibration.originX / gridSize)) < 0.00001);
-  assert.ok(Math.abs(calibration.originY / gridSize - Math.round(calibration.originY / gridSize)) < 0.00001);
+  assert.ok(Math.abs(calibration.originX / (gridSize * 4) - Math.round(calibration.originX / (gridSize * 4))) < 0.00001);
+  assert.ok(Math.abs(calibration.originY / (gridSize * 4) - Math.round(calibration.originY / (gridSize * 4))) < 0.00001);
   const background = readAllCells(rendered.xml).get('cetz-preview-background').geometry;
   const backgroundStyle = readAllCells(rendered.xml).get('cetz-preview-background').cell.style;
   assert.match(backgroundStyle, new RegExp(`cetzOriginX=${calibration.originX};`));
@@ -354,6 +355,24 @@ test('Draw.io grid lines and source coordinates follow CeTZ quarter units', asyn
   const updated = apply(source, patchesFromEditable(source, rendered.editable, moved, readAllCells));
   assert.match(updated, /rect\(\(0\.25, 0\),\s*\(2\.25, 1\)\)/);
   assert.doesNotMatch(updated, /rect\([^\n]*\d+\.\d{3,}/);
+});
+test('a repeated history marker does not undo a following shape resize', async () => {
+  const file = path.resolve('examples/advanced.typ');
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
+    'rect((0, 0), (2, 1))\n})';
+  const first = await renderDiagram(source, parseCanvas(source).canvas, file);
+  const marker = '<mxCell id="old-undo" style="opacity=0;cetzAction=undo;" vertex="1" parent="1">' +
+    '<mxGeometry x="-1000" y="-1000" width="1" height="1" as="geometry"/></mxCell>';
+  const moved = first.xml.replace(/(<mxCell id="cetz-edit-0"[\s\S]*?<mxGeometry x=")([\d.]+)/,
+    (_, head, x) => head + (Number(x) + first.editable.calibration.gridSize));
+  const afterMove = apply(source, patchesFromEditable(source, first.editable, moved, readAllCells));
+  const second = await renderDiagram(afterMove, parseCanvas(afterMove).canvas, file);
+  const resized = second.xml.replace(/(<mxCell id="cetz-edit-0"[\s\S]*?width=")([\d.]+)/,
+    (_, head, width) => head + (Number(width) * 1.5)).replace('</root>', marker + '</root>');
+  assert.equal(historyAction(readAllCells(resized), readAllCells(second.xml), new Set(['old-undo'])), null);
+  const afterResize = apply(afterMove,
+    patchesFromEditable(afterMove, second.editable, resized, readAllCells));
+  assert.match(afterResize, /rect\(\(0\.25, 0\),\s*\(3\.25, 1\)\)/);
 });
 test('a changed Typst drawing updates its preview image cell during live merge', async () => {
   const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 0))\n})';
@@ -472,6 +491,13 @@ test('moves and deletes basic primitives in a Typst-rendered Draw.io preview', a
       assert.throws(() => patchesFromEditable(source, rendered, resized, readAllCells), /text size/);
     } else {
       const resizedSource = apply(source, patchesFromEditable(source, rendered, resized, readAllCells));
+      if (call.startsWith('rect')) {
+        const withEmptyUndo = resized.replace('</root>',
+          '<mxCell id="empty-undo" style="opacity=0;cetzAction=undo;" vertex="1" parent="1">' +
+          '<mxGeometry x="-1000" y="-1000" width="1" height="1" as="geometry"/></mxCell></root>');
+        assert.equal(apply(source, patchesFromEditable(source, rendered, withEmptyUndo, readAllCells)),
+          resizedSource);
+      }
       assert.doesNotMatch(resizedSource, /scope\(\{/);
       if (call.startsWith('circle')) assert.match(resizedSource, /radius: \(1\.5, 1\)/);
       const resizedRender = await renderEditable(resizedSource, parseCanvas(resizedSource).canvas, file);

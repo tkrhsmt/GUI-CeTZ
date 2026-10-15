@@ -96,9 +96,10 @@ async function syncToSource(session) {
   const gui = await vscode.workspace.openTextDocument(session.diagramUri);
   const xml = gui.getText();
   if (xml === session.lastXml) return;
-  const action = historyAction(readAllCells(xml), readAllCells(session.lastXml));
-  if (action) {
-    try { await applyHistoryAction(session, action); }
+  const command = historyAction(readAllCells(xml), readAllCells(session.lastXml), session.handledHistoryActions);
+  if (command) session.handledHistoryActions.add(command.key);
+  if (command && session.history.canStep(command.action)) {
+    try { await applyHistoryAction(session, command.action); }
     catch (error) { await syncFromSource(session); await refreshGuiView(session); throw error; }
     return;
   }
@@ -136,7 +137,7 @@ async function openGui() {
   if (!session) {
     session = { sourceUri: doc.uri, diagramUri: uri, index, sourceVersion: -1,
       diagram: null, lastXml: '', writingDiagram: false, writingSource: false, timer: null,
-      history: new EditHistory() };
+      history: new EditHistory(), handledHistoryActions: new Set() };
     sessions.set(key(uri), session);
   }
   await syncFromSource(session);

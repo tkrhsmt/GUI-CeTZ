@@ -19,6 +19,10 @@ class EditHistory {
     this.redoStack.length = 0;
   }
 
+  canStep(action) {
+    return (action === 'undo' ? this.undoStack : this.redoStack).length > 0;
+  }
+
   step(action, current) {
     const from = action === 'undo' ? this.undoStack : this.redoStack;
     const to = action === 'undo' ? this.redoStack : this.undoStack;
@@ -34,11 +38,14 @@ class EditHistory {
   }
 }
 
-function historyAction(cells, originalCells) {
+function historyAction(cells, originalCells, handledIds = new Set()) {
   for (const [id, item] of cells) {
     if (originalCells.has(id) || item.cell.parent !== '1') continue;
-    const action = /(?:^|;)cetzAction=(undo|redo)(?:;|$)/.exec(item.cell.style || '')?.[1];
-    if (action) return action;
+    const style = item.cell.style || '';
+    const action = /(?:^|;)cetzAction=(undo|redo)(?:;|$)/.exec(style)?.[1];
+    const token = /(?:^|;)cetzActionToken=([\w-]+)(?:;|$)/.exec(style)?.[1];
+    const key = token || id;
+    if (action && !handledIds.has(key)) return { id, action, key };
   }
   return null;
 }
