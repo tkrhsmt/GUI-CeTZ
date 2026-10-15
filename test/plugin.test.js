@@ -33,7 +33,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     scratchpad: [element(''), element('')]
   };
   const vertexTemplates = [], edgeTemplates = [], paletteFns = {};
-  let fileTitle = 'example.cetz-1.drawio', preview = false, editablePreview = false;
+  let fileTitle = 'example.cetz-1.drawio', fileData = '', preview = false, editablePreview = false;
   let graphEnabled = false, rulerDestroyed = false, rulerVisible = false;
   let tooltipArgs;
   let fileLoaded;
@@ -99,10 +99,12 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     menubar: { container: menubarContainer, addMenu() {
       const menu = element(); menu.className = 'geMenubar'; menubarContainer.appendChild(menu); return menu;
     } },
-    menubarContainer, toolbarContainer, formatContainer,
+    container: element(), menubarContainer, toolbarContainer, formatContainer,
+    tabContainer: element('flex'),
+    updateTabContainer() { this.tabContainer.style.display = 'flex'; },
     ruler: { destroy() { rulerDestroyed = true; } },
     setRulerVisible(value) { rulerVisible = value; this.ruler = value ? { destroy() {} } : null; },
-    getCurrentFile() { return { getTitle() { return fileTitle; }, getData() { return ''; } }; },
+    getCurrentFile() { return { getTitle() { return fileTitle; }, getData() { return fileData; } }; },
     refresh() { graphEnabled = false; }
   };
   const standardMenu = element('inline-block');
@@ -123,7 +125,8 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     } },
     mxVertexHandler: VertexHandler,
     mxEvent: { LABEL_HANDLE: -1, ROTATION_HANDLE: -2 },
-    MutationObserver: class { observe() {} }, setTimeout(callback) { callback(); }
+    MutationObserver: class { observe() {} }, setTimeout(callback) { callback(); },
+    setInterval(callback) { context.pollStatus = callback; }
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/cetz-drawio-plugin.js'), 'utf8'), context);
 
@@ -162,6 +165,17 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.equal(palettes['cetz-advanced'][0].style.display, '');
   assert.equal(toolbarContainer.style.display, 'none');
   assert.equal(formatContainer.style.display, 'none');
+  assert.equal(ui.tabContainer.style.display, 'none');
+  assert.equal(ui.container.children[0].style.display, 'none');
+  ui.updateTabContainer();
+  assert.equal(ui.tabContainer.style.display, 'none');
+  fileData = '<mxfile host="GUI-CeTZ" cetzStatus="' + encodeURIComponent('invalid syntax\nline 3') + '">';
+  context.pollStatus();
+  assert.equal(ui.container.children[0].textContent, 'CeTZ error: invalid syntax\nline 3');
+  assert.equal(ui.container.children[0].style.display, 'block');
+  fileData = '<mxfile host="GUI-CeTZ">';
+  context.pollStatus();
+  assert.equal(ui.container.children[0].style.display, 'none');
   assert.equal(menubarContainer.style.display, 'block');
   assert.equal(standardMenu.style.display, 'none');
   assert.equal(statusContainer.style.display, 'flex');
@@ -294,6 +308,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.equal(snappedBounds.y, 40);
 
   fileTitle = 'ordinary.drawio';
+  fileData = '';
   preview = false;
   editablePreview = false;
   selectedCell = null;
@@ -307,6 +322,8 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.equal(moreShapes.style.display, 'flex');
   assert.equal(toolbarContainer.style.display, 'flex');
   assert.equal(formatContainer.style.display, 'block');
+  assert.equal(ui.tabContainer.style.display, 'flex');
+  assert.equal(ui.container.children[0].style.display, 'none');
   assert.equal(standardMenu.style.display, 'inline-block');
   assert.equal(statusContainer.style.display, 'flex');
   assert.equal(libraryButton.style.display, 'inline-block');

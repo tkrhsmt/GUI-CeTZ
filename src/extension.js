@@ -8,6 +8,7 @@ const { patchesFromEditable } = require('./advanced');
 const { renderDiagram } = require('./render-diagram');
 const { SHAPES, insertionFor, templateInsertions } = require('./templates');
 const { EditHistory, historyAction } = require('./history');
+const { withDiagramStatus } = require('./diagram-status');
 
 const sessions = new Map();
 function key(uri) { return uri.toString(); }
@@ -169,6 +170,12 @@ async function insertShape() {
   if (!await vscode.workspace.applyEdit(edit)) throw new Error('Could not insert the CeTZ call.');
 }
 function report(error) { vscode.window.showErrorMessage('CeTZ: ' + (error instanceof Error ? error.message : String(error))); }
+async function showSyncError(session, error) {
+  if (!session.lastXml) return report(error);
+  const message = error instanceof Error ? error.message : String(error);
+  await updateDiagramDocument(session, withDiagramStatus(session.lastXml, message));
+  await refreshGuiView(session);
+}
 function activate(context) {
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.open', () => openGui().catch(report)));
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.insertShape', () => insertShape().catch(report)));
@@ -187,16 +194,19 @@ function activate(context) {
         session.expectedSourceText = null;
         session.history.clear();
         if (session.timer) clearTimeout(session.timer);
+        const version = event.document.version;
         session.timer = setTimeout(async () => {
           try { await syncFromSource(session); await refreshGuiView(session); }
-          catch (error) { report(error); }
+          catch (error) {
+            if ((await documentForSession(session)).version === version)
+              await showSyncError(session, error).catch(report);
+          }
         }, 180);
       } else if (key(event.document.uri) === key(session.diagramUri) && !session.writingDiagram) {
         if (session.timer) clearTimeout(session.timer);
         session.timer = setTimeout(() => syncToSource(session).catch(async error => {
-          report(error);
-          await syncFromSource(session).catch(report);
-          await refreshGuiView(session).catch(report);
+          await syncFromSource(session).catch(() => {});
+          await showSyncError(session, error).catch(report);
         }), 180);
       }
     }

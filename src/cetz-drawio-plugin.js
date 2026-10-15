@@ -254,6 +254,26 @@ Draw.loadPlugin(function (ui) {
   var hiddenPalettes = new Map();
   var hiddenChrome = new Map();
   var rulerWasVisible = false;
+  var errorBar = document.createElement('div');
+  errorBar.className = 'cetzErrorBar';
+  errorBar.setAttribute('role', 'status');
+  errorBar.setAttribute('aria-live', 'polite');
+  errorBar.style.cssText = 'box-sizing:border-box;grid-column:1 / -1;grid-row:4;display:none;' +
+    'max-height:112px;overflow:auto;padding:7px 12px;border-top:1px solid #d97706;' +
+    'background:#fff7ed;color:#7c2d12;font:12px/1.4 sans-serif;white-space:pre-wrap;z-index:2;';
+  if (ui.container) ui.container.appendChild(errorBar);
+  function updateErrorBar(active) {
+    var file = active && ui.getCurrentFile();
+    var data = file && file.getData && file.getData();
+    var attribute = typeof data === 'string' && /<mxfile\b[^>]*\bcetzStatus="([^"]*)"/.exec(data);
+    var message = '';
+    if (attribute) {
+      try { message = decodeURIComponent(attribute[1]); }
+      catch (error) { message = attribute[1]; }
+    }
+    errorBar.textContent = message ? 'CeTZ error: ' + message : '';
+    errorBar.style.display = active && message ? 'block' : 'none';
+  }
   function setDisplay(element, visible) {
     if (element) element.style.display = visible ? '' : 'none';
   }
@@ -278,12 +298,21 @@ Draw.loadPlugin(function (ui) {
     }
     hideChrome(ui.toolbarContainer, true);
     hideChrome(ui.formatContainer, true);
+    hideChrome(ui.tabContainer, true);
     // The shape-library buttons are siblings of the palette, above its entries.
     var sidebarParent = sidebar.container && sidebar.container.parentNode;
     if (sidebarParent) Array.prototype.forEach.call(sidebarParent.children, function (element) {
       if (element !== sidebar.container && /(?:^|\s)geButton(?:\s|$)/.test(element.className || ''))
         hideChrome(element, true);
     });
+  }
+  if (ui.updateTabContainer) {
+    var originalUpdateTabContainer = ui.updateTabContainer;
+    ui.updateTabContainer = function () {
+      var result = originalUpdateTabContainer.apply(this, arguments);
+      if (isCetz()) hideChrome(ui.tabContainer, true);
+      return result;
+    };
   }
   if (ui.setRulerVisible) {
     var originalSetRulerVisible = ui.setRulerVisible;
@@ -541,6 +570,7 @@ Draw.loadPlugin(function (ui) {
     activeMode = active;
     updateRuler(active, changed);
     updateChrome(active);
+    updateErrorBar(active);
     if (changed && ui.refresh) ui.refresh(true);
     if (active || changed) graph.setEnabled(true);
     updateStandardPalettes(active);
@@ -557,5 +587,6 @@ Draw.loadPlugin(function (ui) {
   new MutationObserver(function () { setTimeout(update, 0); }).observe(sidebar.container, { childList: true, subtree: true });
   if (ui.menubar) new MutationObserver(function () { setTimeout(update, 0); })
     .observe(ui.menubar.container, { childList: true });
+  setInterval(function () { updateErrorBar(isCetz()); }, 500);
   update();
 });
