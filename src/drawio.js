@@ -1,6 +1,7 @@
 'use strict';
 const zlib = require('zlib');
 const { color, stroke: parseStroke, typstColor, typstStroke, dashStyle, fromDrawio, PX_PER_PT } = require('./style');
+const { templateInsertions } = require('./templates');
 
 const SCALE = 80, ORIGIN_X = 160, ORIGIN_Y = 400;
 const px = x => ORIGIN_X + x * SCALE;
@@ -199,7 +200,7 @@ function patchesFromXml(source, diagram, xml) {
   }
   for (const element of diagram.elements) {
     const item = cells.get(element.id);
-    if (!item) throw new Error('A linked CeTZ shape was deleted. Restore it or edit the Typst source.');
+    if (!item) { patches.push({ start: element.start, end: element.end, text: '' }); continue; }
     const originalItem = originalCells.get(element.id);
     if (item.cell.edge !== originalItem.cell.edge || item.cell.vertex !== originalItem.cell.vertex)
       throw new Error('Changing the kind of a linked CeTZ shape is not supported.');
@@ -325,15 +326,21 @@ function patchesFromXml(source, diagram, xml) {
     if (element.kind !== 'rect' && (currentStyle.rounded !== originalStyle.rounded || currentStyle.arcSize !== originalStyle.arcSize))
       throw new Error('Corner rounding cannot be synchronized for this CeTZ element.');
   }
-  const added = [...readAllCells(xml)].filter(([id, item]) => !id.startsWith('cetz-') && id !== '0' && id !== '1' && item.cell.parent === '1');
+  const allCells = readAllCells(xml);
+  const added = [...allCells].filter(([id, item]) => !id.startsWith('cetz-') && id !== '0' && id !== '1' &&
+    item.cell.parent === '1' && !/(?:^|;)cetzTemplate=[\w-]+(?:;|$)/.test(item.cell.style || ''));
   if (added.length) {
     if (!diagram.endTransform) throw new Error('New shapes cannot be inserted after an unsupported transform.');
     const calls = added.map(([, item]) => newCall(item, diagram.endTransform));
     insert(diagram.canvas.bodyEnd, '\n  ' + calls.join('\n  ') + '\n');
     patches.needsRefresh = true;
   }
+  const menuPatches = templateInsertions(source, diagram.canvas, allCells, readAllCells(xmlForDiagram(source, diagram)));
+  for (const patch of menuPatches)
+    insert(patch.start, patch.text);
+  if (menuPatches.length) patches.needsRefresh = true;
   for (const [start, text] of insertions) patches.push({ start, end: start, text });
   return patches;
 }
 
-module.exports = { xmlForDiagram, patchesFromXml, readCells };
+module.exports = { xmlForDiagram, patchesFromXml, readCells, readAllCells };

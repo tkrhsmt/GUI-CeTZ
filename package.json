@@ -1,7 +1,7 @@
 {
   "name": "gui-cetz",
   "displayName": "GUI CeTZ",
-  "description": "Edit simple CeTZ shapes and preview advanced CeTZ diagrams in Draw.io while preserving Typst source.",
+  "description": "Edit CeTZ shapes in Draw.io while preserving Typst source and exact advanced SVG rendering.",
   "version": "0.1.0",
   "publisher": "tkrhsmt",
   "license": "MIT",
@@ -12,11 +12,13 @@
   "contributes": {
     "commands": [
       { "command": "cetzEditor.open", "title": "CeTZ: Open GUI Editor" },
-      { "command": "cetzEditor.syncFromSource", "title": "CeTZ: Sync GUI From Typst" }
+      { "command": "cetzEditor.syncFromSource", "title": "CeTZ: Sync GUI From Typst" },
+      { "command": "cetzEditor.insertShape", "title": "CeTZ: Insert Shape" }
     ],
     "menus": {
       "editor/context": [
-        { "command": "cetzEditor.open", "when": "resourceExtname == .typ", "group": "navigation" }
+        { "command": "cetzEditor.open", "when": "resourceExtname == .typ", "group": "navigation" },
+        { "command": "cetzEditor.insertShape", "when": "resourceExtname == .typ", "group": "navigation" }
       ]
     }
   },
