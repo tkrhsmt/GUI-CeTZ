@@ -4,19 +4,32 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 const { locateCanvases } = require('./scanner');
 
-function definitionPrelude(prefix) {
+function definitionPrelude(prefix, includeShow = true) {
   const lines = prefix.split('\n'), kept = [];
+  let nesting = 0;
   for (let i = 0; i < lines.length; i++) {
-    if (!/^\s*#(?:import|let|set|show)\b/.test(lines[i])) continue;
+    if (nesting || !/^\s*#(?:import|let|set|show)\b/.test(lines[i])) {
+      nesting += bracketBalance(lines[i]);
+      continue;
+    }
     let statement = lines[i];
     let depth = bracketBalance(statement);
     while (i + 1 < lines.length && (depth > 0 || /(?:=|,|\+)\s*$/.test(statement))) {
       statement += '\n' + lines[++i];
       depth = bracketBalance(statement);
     }
-    kept.push(statement);
+    if (includeShow || !/^\s*#show\b/.test(statement)) kept.push(statement);
   }
   return kept.join('\n');
+}
+function scopedPreviewMethods(prefix) {
+  const names = new Set();
+  for (const match of prefix.matchAll(/#let\s*\(([^)]*)\)\s*=\s*utils\.methods\(self\)/g)) {
+    for (const name of match[1].split(',').map(part => part.trim()))
+      if (name === 'only' || name === 'uncover') names.add(name);
+  }
+  // A standalone canvas has no slide state. Show shapes from every overlay.
+  return [...names].map(name => `#let ${name} = (range, body) => body`).join('\n');
 }
 function bracketBalance(text) {
   let depth = 0, quoted = false;
@@ -59,15 +72,31 @@ async function renderCanvas(source, canvas, filePath) {
     const start = prefix[earlier.start - 1] === '#' ? earlier.start - 1 : earlier.start;
     prefix = prefix.slice(0, start) + prefix.slice(earlier.end);
   }
-  const selected = source.slice(callStart, canvas.end);
+  // A canvas inside a code expression (such as figure(...)) has no leading #.
+  // Standalone preview input is markup, so it always needs one.
+  const selected = '#' + source.slice(canvas.start, canvas.end);
   const page = '#set page(width: auto, height: auto, margin: 0pt, fill: none)';
   const prelude = definitionPrelude(prefix);
   let stdout;
   try {
     stdout = await compileSvg(`${prelude}\n${page}\n${selected}\n`, filePath);
   } catch (error) {
-    if (prelude === prefix.trim()) throw error;
-    stdout = await compileSvg(`${prefix}\n${page}\n${selected}\n`, filePath);
+    const withoutShow = definitionPrelude(prefix, false);
+    if (withoutShow !== prelude) {
+      try { stdout = await compileSvg(`${withoutShow}\n${page}\n${selected}\n`, filePath); }
+      catch { /* Some drawings need the surrounding source instead. */ }
+    }
+    if (!stdout) {
+      const methods = scopedPreviewMethods(prefix);
+      if (methods) {
+        try { stdout = await compileSvg(`${withoutShow}\n${methods}\n${page}\n${selected}\n`, filePath); }
+        catch { /* Fall back to the original source context. */ }
+      }
+    }
+    if (!stdout) {
+      if (prelude === prefix.trim()) throw error;
+      stdout = await compileSvg(`${prefix}\n${page}\n${selected}\n`, filePath);
+    }
   }
   if (!/^<svg\b/.test(stdout)) throw new Error('Typst did not produce an SVG preview.');
   return stdout;

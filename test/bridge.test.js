@@ -330,6 +330,37 @@ test('primitive-only and mixed canvases use the same Typst-backed Draw.io cells'
     assert.ok(Math.abs(+after.x - +original.x - snappedMove(result.editable, 20)) < 0.5);
   }
 });
+test('renders a canvas inside a presentation block when its show rule creates multiple pages', async () => {
+  const text = '#import "@preview/cetz:0.5.2"\n' +
+    '#let slide(body) = body\n#show: it => { pagebreak(); it }\n' +
+    '#slide[\n#cetz.canvas({ import cetz.draw: *; line((0, 0), (1, 1)) })\n]';
+  const file = path.resolve('examples/advanced.typ');
+  const rendered = await renderDiagram(text, parseCanvas(text).canvas, file);
+  assert.ok(rendered.editable);
+  assert.ok(readAllCells(rendered.xml).get('cetz-edit-0'));
+});
+test('renders slide-local overlay methods used inside a canvas', async () => {
+  const text = '#import "@preview/cetz:0.5.2"\n' +
+    '#let utils = (methods: self => (only: (range, body) => body))\n' +
+    '#let slide(body) = body\n#show: it => { pagebreak(); it }\n' +
+    '#slide[\n#let self = none\n#let (only) = utils.methods(self)\n' +
+    '#cetz.canvas({ import cetz.draw: *; line((0, 0), (1, 1)); ' +
+    'only("2-", { line((1, 1), (2, 2)) }) })\n]';
+  const file = path.resolve('examples/advanced.typ');
+  const rendered = await renderDiagram(text, parseCanvas(text).canvas, file);
+  assert.ok(rendered.editable);
+  assert.ok(readAllCells(rendered.xml).get('cetz-edit-0'));
+});
+test('renders a canvas used as a figure argument', async () => {
+  const text = '#import "@preview/cetz:0.5.2"\n' +
+    '#let accent = blue\n#figure(\n  cetz.canvas({\n' +
+    '    import cetz.draw: *\n    rect((0, 0), (2, 1), fill: accent)\n' +
+    '  }),\n  caption: [Example],\n)';
+  const file = path.resolve('examples/basic.typ');
+  const rendered = await renderDiagram(text, parseCanvas(text).canvas, file);
+  assert.ok(rendered.editable);
+  assert.ok(readAllCells(rendered.xml).get('cetz-edit-0'));
+});
 test('Draw.io grid lines and source coordinates follow CeTZ quarter units', async () => {
   const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
     'rect((0, 0), (2, 1))\n})';
