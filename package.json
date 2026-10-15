@@ -1,0 +1,24 @@
+{
+  "name": "gui-cetz",
+  "displayName": "GUI CeTZ",
+  "description": "Edit simple CeTZ diagrams with the Draw.io VS Code editor while preserving Typst source.",
+  "version": "0.1.0",
+  "publisher": "tkrhsmt",
+  "license": "MIT",
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Visualization", "Other"],
+  "extensionDependencies": ["hediet.vscode-drawio"],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "cetzEditor.open", "title": "CeTZ: Open GUI Editor" },
+      { "command": "cetzEditor.syncFromSource", "title": "CeTZ: Sync GUI From Typst" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "cetzEditor.open", "when": "resourceExtname == .typ", "group": "navigation" }
+      ]
+    }
+  },
+  "scripts": { "test": "node --test test/*.test.js" }
+}
