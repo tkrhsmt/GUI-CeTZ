@@ -10,6 +10,7 @@ const { SHAPES, insertionFor, templateInsertions } = require('./templates');
 const { EditHistory, historyAction } = require('./history');
 const { withDiagramStatus } = require('./diagram-status');
 const { launchHints } = require('./launch-hints');
+const { ensureDrawioPlugin } = require('./plugin-settings');
 
 const sessions = new Map();
 function key(uri) { return uri.toString(); }
@@ -128,7 +129,7 @@ async function syncToSource(session) {
   await syncFromSource(session);
   if (patches.length) await refreshGuiView(session);
 }
-async function openGui(sourceUri, canvasIndex) {
+async function openGui(sourceUri, canvasIndex, extensionPath) {
   const editor = vscode.window.activeTextEditor;
   const doc = sourceUri ? await vscode.workspace.openTextDocument(sourceUri) : editor?.document;
   if (!doc || doc.languageId !== 'typst' && !doc.fileName.endsWith('.typ'))
@@ -136,6 +137,7 @@ async function openGui(sourceUri, canvasIndex) {
   const index = Number.isInteger(canvasIndex) ? canvasIndex :
     pickCanvas(doc.getText(), doc.offsetAt(editor.selection.active));
   if (!locateCanvases(doc.getText())[index]) throw new Error('The selected CeTZ canvas no longer exists.');
+  await ensureDrawioPlugin(vscode, extensionPath, doc.uri);
   const uri = diagramUri(doc.uri, index);
   let session = sessions.get(key(uri));
   if (!session) {
@@ -180,7 +182,8 @@ async function showSyncError(session, error) {
   await refreshGuiView(session);
 }
 function activate(context) {
-  context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.open', (uri, index) => openGui(uri, index).catch(report)));
+  context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.open', (uri, index) =>
+    openGui(uri, index, context.extensionPath).catch(report)));
   context.subscriptions.push(vscode.languages.registerInlayHintsProvider(
     [{ pattern: '**/*.typ' }, { language: 'typst' }],
     { provideInlayHints: (document, range) => launchHints(vscode, document, range) }
