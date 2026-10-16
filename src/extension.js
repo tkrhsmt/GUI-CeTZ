@@ -1,6 +1,5 @@
 'use strict';
 const vscode = require('vscode');
-const path = require('path');
 const { locateCanvases } = require('./scanner');
 const { parseCanvas } = require('./diagram');
 const { readAllCells } = require('./drawio');
@@ -9,15 +8,15 @@ const { renderDiagram } = require('./render-diagram');
 const { SHAPES, insertionFor, templateInsertions } = require('./templates');
 const { EditHistory, historyAction } = require('./history');
 const { withDiagramStatus } = require('./diagram-status');
-const { launchHints } = require('./launch-hints');
+const { launchCodeLenses } = require('./launch-code-lenses');
 const { ensureDrawioPlugin } = require('./plugin-settings');
+const { SCHEME, diagramUri: virtualDiagramUri, DiagramFiles } = require('./diagram-files');
 
 const sessions = new Map();
 function key(uri) { return uri.toString(); }
 function documentForSession(session) { return vscode.workspace.openTextDocument(session.sourceUri); }
 function diagramUri(sourceUri, index) {
-  const parsed = path.parse(sourceUri.fsPath);
-  return vscode.Uri.file(path.join(parsed.dir, parsed.name + '.cetz-' + (index + 1) + '.drawio'));
+  return virtualDiagramUri(vscode, sourceUri, index);
 }
 function pickCanvas(text, offset) {
   const all = locateCanvases(text);
@@ -31,10 +30,13 @@ function usableDiagram(text, index) {
   // An empty canvas can still be populated from Draw.io.
   return diagram;
 }
-async function updateDiagramDocument(session, xml) {
+async function updateDiagramDocument(session, xml, diagramFiles) {
   let doc;
   try { doc = await vscode.workspace.openTextDocument(session.diagramUri); }
-  catch { await vscode.workspace.fs.writeFile(session.diagramUri, Buffer.from(xml, 'utf8')); doc = await vscode.workspace.openTextDocument(session.diagramUri); }
+  catch {
+    diagramFiles.initialize(session.diagramUri, Buffer.from(xml, 'utf8'));
+    doc = await vscode.workspace.openTextDocument(session.diagramUri);
+  }
   if (doc.getText() === xml) { session.lastXml = xml; return; }
   session.writingDiagram = true;
   try {
@@ -45,8 +47,6 @@ async function updateDiagramDocument(session, xml) {
   } finally { session.writingDiagram = false; }
 }
 async function refreshGuiView(session) {
-  const doc = await vscode.workspace.openTextDocument(session.diagramUri);
-  await doc.save();
   // Editable previews replace the SVG cell during Draw.io's live document merge.
   // Keep the full reload for locked previews, which have no editable image cell.
   if (!session.editable)
@@ -89,7 +89,7 @@ async function syncFromSource(session) {
   const diagram = usableDiagram(text, session.index);
   const { xml, editable } = await renderDiagram(text, diagram.canvas, session.sourceUri.fsPath);
   if (generation !== session.syncGeneration || (await documentForSession(session)).version !== doc.version) return;
-  await updateDiagramDocument(session, xml);
+  await updateDiagramDocument(session, xml, session.diagramFiles);
   session.sourceVersion = doc.version;
   session.diagram = diagram;
   session.editable = editable;
@@ -129,7 +129,7 @@ async function syncToSource(session) {
   await syncFromSource(session);
   if (patches.length) await refreshGuiView(session);
 }
-async function openGui(sourceUri, canvasIndex, extensionPath) {
+async function openGui(sourceUri, canvasIndex, extensionPath, diagramFiles) {
   const editor = vscode.window.activeTextEditor;
   const doc = sourceUri ? await vscode.workspace.openTextDocument(sourceUri) : editor?.document;
   if (!doc || doc.languageId !== 'typst' && !doc.fileName.endsWith('.typ'))
@@ -143,6 +143,7 @@ async function openGui(sourceUri, canvasIndex, extensionPath) {
   if (!session) {
     session = { sourceUri: doc.uri, diagramUri: uri, index, sourceVersion: -1,
       diagram: null, lastXml: '', writingDiagram: false, writingSource: false, timer: null,
+      diagramFiles,
       history: new EditHistory(), handledHistoryActions: new Set() };
     sessions.set(key(uri), session);
   }
@@ -178,15 +179,17 @@ function report(error) { vscode.window.showErrorMessage('CeTZ: ' + (error instan
 async function showSyncError(session, error) {
   if (!session.lastXml) return report(error);
   const message = error instanceof Error ? error.message : String(error);
-  await updateDiagramDocument(session, withDiagramStatus(session.lastXml, message));
+  await updateDiagramDocument(session, withDiagramStatus(session.lastXml, message), session.diagramFiles);
   await refreshGuiView(session);
 }
 function activate(context) {
+  const diagramFiles = new DiagramFiles(vscode);
+  context.subscriptions.push(vscode.workspace.registerFileSystemProvider(SCHEME, diagramFiles), diagramFiles);
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.open', (uri, index) =>
-    openGui(uri, index, context.extensionPath).catch(report)));
-  context.subscriptions.push(vscode.languages.registerInlayHintsProvider(
+    openGui(uri, index, context.extensionPath, diagramFiles).catch(report)));
+  context.subscriptions.push(vscode.languages.registerCodeLensProvider(
     [{ pattern: '**/*.typ' }, { language: 'typst' }],
-    { provideInlayHints: (document, range) => launchHints(vscode, document, range) }
+    { provideCodeLenses: document => launchCodeLenses(vscode, document) }
   ));
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.insertShape', () => insertShape().catch(report)));
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.syncFromSource', async () => {

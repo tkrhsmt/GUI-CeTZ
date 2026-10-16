@@ -33,6 +33,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     scratchpad: [element(''), element('')]
   };
   const vertexTemplates = [], edgeTemplates = [], paletteFns = {};
+  let paletteAdds = 0;
   let fileTitle = 'example.cetz-1.drawio', fileData = '', preview = false, editablePreview = false;
   let graphEnabled = false, rulerDestroyed = false, rulerVisible = false;
   let tooltipArgs;
@@ -82,6 +83,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     sidebar: {
       wrapper, container, palettes,
       addPaletteFunctions(id, title, expanded, fns) {
+        paletteAdds++;
         palettes[id] = [element(), element()]; paletteFns[id] = fns;
       },
       createVertexTemplateEntry(style, width, height, value, title) {
@@ -100,12 +102,15 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
       const menu = element(); menu.className = 'geMenubar'; menubarContainer.appendChild(menu); return menu;
     } },
     container: element(), menubarContainer, toolbarContainer, formatContainer,
+    sidebarContainer: element(), hsplitPosition: 0, formatWidth: 240,
+    toggleShapesPanel(visible) { this.hsplitPosition = visible ? 232 : 0; this.refresh(); },
+    toggleFormatPanel(visible) { this.formatWidth = visible ? 240 : 0; this.refresh(); },
     tabContainer: element('flex'),
     updateTabContainer() { this.tabContainer.style.display = 'flex'; },
     ruler: { destroy() { rulerDestroyed = true; } },
     setRulerVisible(value) { rulerVisible = value; this.ruler = value ? { destroy() {} } : null; },
     getCurrentFile() { return { getTitle() { return fileTitle; }, getData() { return fileData; } }; },
-    refresh() { graphEnabled = false; }
+    refresh() { graphEnabled = false; this.sidebarContainer.style.width = this.hsplitPosition + 'px'; }
   };
   const standardMenu = element('inline-block');
   // Draw.io changes standard menu elements from geMenubar to geItem after creation.
@@ -129,6 +134,15 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     setInterval(callback) { context.pollStatus = callback; }
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/cetz-drawio-plugin.js'), 'utf8'), context);
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../src/cetz-drawio-plugin.js'), 'utf8'), context);
+  assert.equal(paletteAdds, 3);
+  assert.equal(ui.hsplitPosition, 180);
+  assert.equal(ui.formatWidth, 0);
+  assert.equal(ui.sidebarContainer.style.width, '180px');
+  ui.toggleShapesPanel(false);
+  assert.equal(ui.hsplitPosition, 180);
+  ui.toggleFormatPanel(true);
+  assert.equal(ui.formatWidth, 0);
 
   const icons = vertexTemplates.filter(entry => entry.style.startsWith('shape=image;'));
   assert.equal(icons.length, 10);
@@ -313,6 +327,8 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   editablePreview = false;
   selectedCell = null;
   fileLoaded();
+  assert.equal(ui.hsplitPosition, 0);
+  assert.equal(ui.formatWidth, 240);
   assert.equal(palettes.general[0].style.display, '');
   assert.equal(palettes.general[1].style.display, 'block');
   assert.equal(palettes.scratchpad[0].style.display, '');
@@ -336,4 +352,6 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   graph.snapDelta({ x: 0, y: 0 }, { x: 10, y: 20 });
   assert.equal(snappedBounds.x, 10);
   assert.equal(graphEnabled, true);
+  ui.toggleShapesPanel(true);
+  assert.equal(ui.hsplitPosition, 232);
 });

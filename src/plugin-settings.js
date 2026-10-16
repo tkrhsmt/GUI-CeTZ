@@ -9,7 +9,10 @@ async function ensureDrawioPlugin(vscode, extensionPath, resource) {
   const plugins = config.get('plugins') || [];
   const folder = vscode.workspace.getWorkspaceFolder(resource);
   const resolved = entry => (entry || '').replace(/\$\{workspaceFolder\}/g, folder?.uri.fsPath || '');
-  if (plugins.some(plugin => plugin && path.normalize(resolved(plugin.file)) === path.normalize(file))) return;
+  const isCetzPlugin = plugin => plugin &&
+    path.normalize(resolved(plugin.file)).endsWith(path.join('src', 'cetz-drawio-plugin.js'));
+  if (plugins.filter(isCetzPlugin).length === 1 &&
+    path.normalize(resolved(plugins.find(isCetzPlugin).file)) === path.normalize(file)) return;
 
   const inspected = config.inspect('plugins') || {};
   const target = inspected.workspaceFolderValue !== undefined
@@ -17,7 +20,7 @@ async function ensureDrawioPlugin(vscode, extensionPath, resource) {
     : inspected.workspaceValue !== undefined
       ? vscode.ConfigurationTarget.Workspace
       : vscode.ConfigurationTarget.Global;
-  await config.update('plugins', [...plugins, { file }], target);
+  await config.update('plugins', [...plugins.filter(plugin => !isCetzPlugin(plugin)), { file }], target);
 }
 
 module.exports = { ensureDrawioPlugin };

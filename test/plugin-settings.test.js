@@ -38,3 +38,14 @@ test('uses an existing workspace scope and does not duplicate the development pl
   await ensureDrawioPlugin(configured.vscode, '/extensions/gui-cetz', {});
   assert.equal(configured.updates[0][2], vscode.ConfigurationTarget.WorkspaceFolder);
 });
+
+test('replaces old CeTZ plugin entries instead of loading duplicate palettes', async () => {
+  const current = '/extensions/gui-cetz/src/cetz-drawio-plugin.js';
+  const { vscode, updates } = fixture([
+    { file: '/old-extension/src/cetz-drawio-plugin.js' },
+    { file: '/other/plugin.js' },
+    { file: current }
+  ]);
+  await ensureDrawioPlugin(vscode, '/extensions/gui-cetz', {});
+  assert.deepEqual(updates[0][1], [{ file: '/other/plugin.js' }, { file: current }]);
+});

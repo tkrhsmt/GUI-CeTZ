@@ -3,6 +3,10 @@
 Draw.loadPlugin(function (ui) {
   var sidebar = ui.sidebar;
   if (!sidebar) return;
+  // The same plugin can be listed by both workspace and user settings.
+  // Draw.io invokes each entry, so guard the UI before adding palettes.
+  if (ui.guiCetzPluginLoaded) return;
+  ui.guiCetzPluginLoaded = true;
 
   var shapeNames = ['arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier',
     'hobby', 'catmull', 'merge-path', 'compound-path'];
@@ -228,6 +232,19 @@ Draw.loadPlugin(function (ui) {
     else original.redo.apply(this, arguments);
   };
   var activeMode = false;
+  var previousSidebarWidth = null;
+  var previousSidebarDisplay = null;
+  var previousFormatWidth = null;
+  var originalToggleShapesPanel = ui.toggleShapesPanel;
+  if (originalToggleShapesPanel) ui.toggleShapesPanel = function () {
+    if (isCetz()) return;
+    return originalToggleShapesPanel.apply(this, arguments);
+  };
+  var originalToggleFormatPanel = ui.toggleFormatPanel;
+  if (originalToggleFormatPanel) ui.toggleFormatPanel = function () {
+    if (isCetz()) return;
+    return originalToggleFormatPanel.apply(this, arguments);
+  };
   var lastPreviewStyle = null;
   var lastEditCount = 0;
   function isTemplate(cell) {
@@ -570,6 +587,26 @@ Draw.loadPlugin(function (ui) {
     }
     var changed = active !== activeMode;
     activeMode = active;
+    if (active && ui.sidebarContainer) {
+      if (changed) {
+        previousSidebarWidth = ui.hsplitPosition;
+        previousSidebarDisplay = ui.sidebarContainer.style.display;
+        previousFormatWidth = ui.formatWidth;
+      }
+      // Draw.io initializes the sidebar at width 0 on small screens and
+      // hides it again across the responsive breakpoint.
+      if (!Number.isFinite(ui.hsplitPosition) || ui.hsplitPosition < 180)
+        ui.hsplitPosition = 180;
+      ui.formatWidth = 0;
+      ui.sidebarContainer.style.display = '';
+    } else if (changed && ui.sidebarContainer) {
+      if (previousSidebarWidth != null) ui.hsplitPosition = previousSidebarWidth;
+      if (previousFormatWidth != null) ui.formatWidth = previousFormatWidth;
+      ui.sidebarContainer.style.display = previousSidebarDisplay || '';
+      previousSidebarWidth = null;
+      previousSidebarDisplay = null;
+      previousFormatWidth = null;
+    }
     updateRuler(active, changed);
     updateChrome(active);
     updateErrorBar(active);
