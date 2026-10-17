@@ -199,6 +199,28 @@ function rewriteLiteralCall(call, transform) {
     text.slice(0, edit.start) + edit.text + text.slice(edit.end), call);
 }
 
+function rewriteReferencedCall(call, dx, dy) {
+  const ranges = coordinateRanges(call);
+  if (!ranges.length) throw new Error('This CeTZ call has no coordinates to move.');
+  const edits = ranges.map((range, index) => {
+    const raw = call.call.slice(range.start, range.end).trim();
+    const existing = new RegExp(`^\\(\\s*rel:\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*,\\s*to:\\s*([\\s\\S]*)\\)$`).exec(raw);
+    const base = existing ? existing[3].trim() : raw;
+    // A coordinate that uses the previous point already inherits the part of
+    // this move supplied by that point. Avoid applying that part twice.
+    const previous = index > 0 && call.name === 'line';
+    const fromPrevious = previous && /^\(\s*\)\s*$/.test(base);
+    const vertical = previous && /^\(\s*\(\s*\)\s*,\s*"\|-"\s*,/.test(base);
+    const horizontal = previous && /^\(\s*\(\s*\)\s*,\s*"-\|"\s*,/.test(base);
+    const x = snapCoordinate((existing ? +existing[1] : 0) + (fromPrevious || vertical ? 0 : dx));
+    const y = snapCoordinate((existing ? +existing[2] : 0) + (fromPrevious || horizontal ? 0 : dy));
+    return { start: range.start, end: range.end,
+      text: `(rel: (${x}, ${y}), to: ${base})` };
+  });
+  return edits.sort((a, b) => b.start - a.start).reduce((value, edit) =>
+    value.slice(0, edit.start) + edit.text + value.slice(edit.end), call.call);
+}
+
 function locateEditableCalls(source, canvas) {
   const result = [];
   for (let i = canvas.bodyStart; i < canvas.bodyEnd;) {
@@ -238,9 +260,21 @@ function locateEditableCalls(source, canvas) {
   return result;
 }
 
-function boundsFor(call) {
-  let points = [...call.call.matchAll(POINT)].map(m => [+m[1], +m[2]]);
-  if (call.name === 'rect') {
+function coordinateRanges(call) {
+  const open = skipTrivia(call.call, call.name.length);
+  const end = closing(call.call, open, '(', ')');
+  if (end < 0) return [];
+  const positional = splitArgs(call.call, open + 1, end).filter(arg =>
+    !/^\s*[\w-]+\s*:/.test(call.call.slice(arg.start, arg.end)));
+  const count = { rect: 2, circle: 1, content: 1, polygon: 1, arc: 1,
+    mark: 2, 'n-star': 1, grid: 2, 'rect-around': 2 }[call.name];
+  return count == null ? positional : positional.slice(0, count);
+}
+
+function boundsFor(call, resolvedPoints) {
+  let points = resolvedPoints?.length ? resolvedPoints :
+    [...call.call.matchAll(POINT)].map(m => [+m[1], +m[2]]);
+  if (call.name === 'rect' && !resolvedPoints?.length) {
     const rect = rectCoordinates(call.call);
     if (!rect) return null;
     points = [[rect.first.x, rect.first.y],
@@ -415,11 +449,58 @@ function calibration(svg) {
 
 async function renderEditable(source, canvas, filePath) {
   const calls = locateEditableCalls(source, canvas);
+  const probes = [];
+  const insertions = [];
+  for (const [index, call] of calls.entries()) {
+    if (!['rect', 'circle', 'content', 'line', 'polygon'].includes(call.name)) continue;
+    const ranges = coordinateRanges(call);
+    if (!ranges.length || call.name === 'line' && ranges.length < 2) continue;
+    const literal = new RegExp(`^\\s*\\(\\s*${NUMBER}\\s*,\\s*${NUMBER}\\s*\\)\\s*$`);
+    const relativeRect = new RegExp(`^\\s*\\(\\s*rel:\\s*\\(\\s*${NUMBER}\\s*,\\s*${NUMBER}\\s*\\)\\s*\\)\\s*$`);
+    if (ranges.every((range, pointIndex) => {
+      const raw = call.call.slice(range.start, range.end);
+      return literal.test(raw) || call.name === 'rect' && pointIndex === 1 && relativeRect.test(raw);
+    })) continue;
+    call.requiresProbe = true;
+    if (call.transform.tx || call.transform.ty || call.transform.sx !== 1 || call.transform.sy !== 1)
+      continue;
+    const markers = ranges.map((range, pointIndex) => {
+      const color = '#' + (0xa00000 + index * 256 + pointIndex).toString(16).padStart(6, '0');
+      probes.push({ index, pointIndex, color });
+      return `rect(${call.call.slice(range.start, range.end)}, (rel: (0.01, 0.01)), fill: rgb("${color}"), stroke: none)`;
+    });
+    // Probe in a scope before the call so () still means the previous point
+    // at the call site. The scope keeps probes from changing later geometry.
+    insertions.push({ offset: call.start, text: `scope({ ${markers.join('; ')} })\n` });
+  }
   const markers = '\nrect((0, 0), (0.01, 0.01), fill: rgb("#010203"), stroke: none)\n' +
     'rect((1, 1), (1.01, 1.01), fill: rgb("#040506"), stroke: none)\n';
-  const calibrated = source.slice(0, canvas.bodyEnd) + markers + source.slice(canvas.bodyEnd);
-  const updatedCanvas = { ...canvas, bodyEnd: canvas.bodyEnd + markers.length, end: canvas.end + markers.length };
-  const result = calibration(await renderCanvas(calibrated, updatedCanvas, filePath));
+  insertions.push({ offset: canvas.bodyEnd, text: markers });
+  const calibrated = insertions.sort((a, b) => b.offset - a.offset).reduce((value, item) =>
+    value.slice(0, item.offset) + item.text + value.slice(item.offset), source);
+  const added = insertions.reduce((sum, item) => sum + item.text.length, 0);
+  const updatedCanvas = { ...canvas, bodyEnd: canvas.bodyEnd + added, end: canvas.end + added };
+  let result;
+  try {
+    result = calibration(await renderCanvas(calibrated, updatedCanvas, filePath));
+  } catch (error) {
+    if (!probes.length) throw error;
+    const plain = source.slice(0, canvas.bodyEnd) + markers + source.slice(canvas.bodyEnd);
+    result = calibration(await renderCanvas(plain, {
+      ...canvas, bodyEnd: canvas.bodyEnd + markers.length, end: canvas.end + markers.length
+    }, filePath));
+  }
+  for (const probe of probes) {
+    const match = new RegExp(`<path\\b[^>]*fill="${probe.color}"[^>]*\\/>`, 'i').exec(result.svg);
+    const position = match && /transform="translate\(([^)]+)\)"/.exec(match[0]);
+    if (!position) continue;
+    const [x, y = 0] = position[1].trim().split(/[\s,]+/).map(Number);
+    if (!calls[probe.index].resolvedPoints) calls[probe.index].resolvedPoints = [];
+    calls[probe.index].resolvedPoints[probe.pointIndex] = [
+      (x - result.zero.x) / result.unitX, (result.zero.y - y) / result.unitY
+    ];
+    result.svg = result.svg.replace(match[0], '');
+  }
   result.gridSize = pixel(result.unitX * 2.5 / GRID_FRACTIONS);
   const majorGrid = result.gridSize * GRID_FRACTIONS;
   result.originX = pixel(Math.round(TARGET_ORIGIN / majorGrid) * majorGrid);
@@ -456,7 +537,9 @@ async function renderEditable(source, canvas, filePath) {
     `<mxCell id="cetz-origin-dot" value="" style="ellipse;fillColor=#1f2937;strokeColor=#ffffff;strokeWidth=1;movable=0;resizable=0;deletable=0;selectable=0;pointerEvents=0;" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(result.originX - 4)}" y="${pixel(result.originY - 4)}" width="8" height="8" as="geometry"/></mxCell>` +
     axisLabel('origin', '(0, 0)', '#1f2937', result.originX + 7, result.originY + 7, 48);
   const handles = calls.map((call, i) => {
-    const b = boundsFor(call);
+    const points = call.resolvedPoints?.length && call.resolvedPoints.every(Boolean)
+      ? call.resolvedPoints : null;
+    const b = call.requiresProbe && !points ? null : boundsFor(call, points);
     if (!b) return '';
     const x = result.originX + b.x * result.unitX * 2.5;
     const y = result.originY - (b.y + b.height) * result.unitY * 2.5;
@@ -590,6 +673,15 @@ function patchesFromEditable(source, rendered, xml, readCells) {
     }
     if (!boxChanged) continue;
     const sx = +b.width / +a.width, sy = +b.height / +a.height;
+    if (call.resolvedPoints?.length && (Math.abs(sx - 1) > 0.00001 || Math.abs(sy - 1) > 0.00001))
+      throw new Error('Resize anchor-based CeTZ shapes in Typst. Their GUI handles support moving.');
+    if (call.resolvedPoints?.length) {
+      const dx = (+b.x - +a.x) / (rendered.calibration.unitX * 2.5);
+      const dy = (+a.y - +b.y) / (rendered.calibration.unitY * 2.5);
+      patches.push({ start: call.start, end: call.end,
+        text: rewriteReferencedCall(call, dx, dy) });
+      continue;
+    }
     const dx = +b.x - sx * +a.x, dy = +b.y - sy * +a.y;
     const tx = call.transform.tx * sx + (dx + (sx - 1) * rendered.calibration.originX) / (rendered.calibration.unitX * 2.5);
     const ty = call.transform.ty * sy + ((1 - sy) * rendered.calibration.originY - dy) / (rendered.calibration.unitY * 2.5);

@@ -547,6 +547,49 @@ test('moves and deletes basic primitives in a Typst-rendered Draw.io preview', a
     assert.doesNotMatch(deleted, new RegExp(call.split('(')[0] + '\\('), call);
   }
 });
+
+test('moves anchor-based shapes while preserving their coordinate references', async () => {
+  const file = path.resolve('examples/advanced.typ');
+  const original = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
+    'line((0, 0), (2, 0), name: "axis")\n' +
+    'content((), [Label], anchor: "west")\n' +
+    'line("axis.end", ((), "|-", (0, 1)), name: "leg")\n' +
+    'content(("leg.start", 50%, "leg.end"), [Middle], anchor: "north")\n' +
+    'circle("leg.end", radius: 0.2)\n' +
+    'rect("axis.start", "leg.end")\n})';
+  for (const index of [1, 2, 3, 4, 5]) {
+    let source = original;
+    for (let step = 0; step < 2; step++) {
+      const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
+      const before = readAllCells(rendered.xml).get(`cetz-edit-${index}`);
+      assert.ok(before, `missing anchor handle ${index}`);
+      if (step === 0) {
+        const resized = rendered.xml.replace(
+          new RegExp(`(<mxCell id="cetz-edit-${index}"[\\s\\S]*?width=")([\\d.]+)`),
+          (_, prefix, width) => prefix + (Number(width) * 1.5));
+        assert.throws(() => patchesFromEditable(source, rendered, resized, readAllCells),
+          /Resize anchor-based CeTZ shapes in Typst/);
+      }
+      const moved = rendered.xml.replace(
+        new RegExp(`(<mxCell id="cetz-edit-${index}"[\\s\\S]*?<mxGeometry x=")([\\d.]+)(" y=")([\\d.]+)`),
+        (_, prefix, x, middle, y) => prefix + (Number(x) + 150) + middle + (Number(y) - 100));
+      source = apply(source, patchesFromEditable(source, rendered, moved, readAllCells));
+      const rerendered = await renderEditable(source, parseCanvas(source).canvas, file);
+      const after = readAllCells(rerendered.xml).get(`cetz-edit-${index}`);
+      assert.ok(after, `missing moved anchor handle ${index}`);
+      const unitX = rendered.calibration.unitX * 2.5;
+      const unitY = rendered.calibration.unitY * 2.5;
+      const expectedX = Math.round(150 / unitX * 4) / 4;
+      const expectedY = Math.round(100 / unitY * 4) / 4;
+      for (const [point, beforePoint] of rendered.calls[index].resolvedPoints.entries()) {
+        const afterPoint = rerendered.calls[index].resolvedPoints[point];
+        assert.ok(Math.abs(afterPoint[0] - beforePoint[0] - expectedX) < 0.02, `${index} point ${point} x`);
+        assert.ok(Math.abs(afterPoint[1] - beforePoint[1] - expectedY) < 0.02, `${index} point ${point} y`);
+      }
+    }
+    assert.match(source, /to: (?:\(\)|"axis\.end"|"leg\.end"|\("leg\.start", 50%, "leg\.end"\))/);
+  }
+});
 test('flattens an existing generated scope into literal circle arguments on edit', async () => {
   const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
     'arc((0, 0), start: 0deg, stop: 90deg)\n' +
