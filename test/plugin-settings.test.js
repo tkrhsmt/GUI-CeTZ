@@ -29,14 +29,23 @@ test('registers the packaged Draw.io plugin while preserving existing plugins', 
   ], vscode.ConfigurationTarget.Global]]);
 });
 
-test('uses an existing workspace scope and does not duplicate the development plugin', async () => {
+test('replaces workspace-relative paths that Draw.io cannot resolve for virtual files', async () => {
   const { vscode, updates } = fixture([{ file: '${workspaceFolder}/src/cetz-drawio-plugin.js' }],
     { workspaceValue: [{ file: '${workspaceFolder}/src/cetz-drawio-plugin.js' }] });
   await ensureDrawioPlugin(vscode, '/project', {});
-  assert.equal(updates.length, 0);
+  assert.deepEqual(updates, [['plugins', [
+    { file: '/project/src/cetz-drawio-plugin.js' }
+  ], vscode.ConfigurationTarget.Workspace]]);
   const configured = fixture([{ file: '/other/plugin.js' }], { workspaceFolderValue: [] });
   await ensureDrawioPlugin(configured.vscode, '/extensions/gui-cetz', {});
   assert.equal(configured.updates[0][2], vscode.ConfigurationTarget.WorkspaceFolder);
+});
+
+test('keeps an already absolute plugin path', async () => {
+  const file = '/project/src/cetz-drawio-plugin.js';
+  const { vscode, updates } = fixture([{ file }]);
+  await ensureDrawioPlugin(vscode, '/project', {});
+  assert.equal(updates.length, 0);
 });
 
 test('replaces old CeTZ plugin entries instead of loading duplicate palettes', async () => {

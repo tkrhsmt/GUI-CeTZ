@@ -1,8 +1,8 @@
 'use strict';
 const path = require('path');
 
-// Draw.io only loads plugins named in its configuration. The development
-// workspace has this setting, but a VSIX installed in another workspace does not.
+// Draw.io only loads plugins named in its configuration. Its editor opens a
+// gui-cetz: URI, for which ${workspaceFolder} cannot be resolved.
 async function ensureDrawioPlugin(vscode, extensionPath, resource) {
   const file = path.join(extensionPath, 'src', 'cetz-drawio-plugin.js');
   const config = vscode.workspace.getConfiguration('hediet.vscode-drawio', resource);
@@ -12,7 +12,7 @@ async function ensureDrawioPlugin(vscode, extensionPath, resource) {
   const isCetzPlugin = plugin => plugin &&
     path.normalize(resolved(plugin.file)).endsWith(path.join('src', 'cetz-drawio-plugin.js'));
   if (plugins.filter(isCetzPlugin).length === 1 &&
-    path.normalize(resolved(plugins.find(isCetzPlugin).file)) === path.normalize(file)) return;
+    path.normalize(plugins.find(isCetzPlugin).file) === path.normalize(file)) return;
 
   const inspected = config.inspect('plugins') || {};
   const target = inspected.workspaceFolderValue !== undefined
