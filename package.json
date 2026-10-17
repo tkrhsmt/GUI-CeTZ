@@ -9,7 +9,7 @@
   "categories": ["Visualization", "Other"],
   "extensionDependencies": ["hediet.vscode-drawio"],
   "main": "./src/extension.js",
-  "activationEvents": ["onLanguage:typst", "onStartupFinished"],
+  "activationEvents": ["onLanguage:typst", "onFileSystem:gui-cetz", "onStartupFinished"],
   "contributes": {
     "commands": [
       { "command": "cetzEditor.open", "title": "CeTZ: Open GUI Editor" },

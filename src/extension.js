@@ -10,13 +10,24 @@ const { EditHistory, historyAction } = require('./history');
 const { withDiagramStatus } = require('./diagram-status');
 const { launchCodeLenses } = require('./launch-code-lenses');
 const { ensureDrawioPlugin } = require('./plugin-settings');
-const { SCHEME, diagramUri: virtualDiagramUri, DiagramFiles } = require('./diagram-files');
+const { SCHEME, diagramUri: virtualDiagramUri, sourceForDiagramUri, DiagramFiles } = require('./diagram-files');
 
 const sessions = new Map();
 function key(uri) { return uri.toString(); }
 function documentForSession(session) { return vscode.workspace.openTextDocument(session.sourceUri); }
 function diagramUri(sourceUri, index) {
   return virtualDiagramUri(vscode, sourceUri, index);
+}
+function sessionFor(sourceUri, uri, index, diagramFiles) {
+  let session = sessions.get(key(uri));
+  if (!session) {
+    session = { sourceUri, diagramUri: uri, index, sourceVersion: -1,
+      diagram: null, lastXml: '', writingDiagram: false, writingSource: false, timer: null,
+      diagramFiles,
+      history: new EditHistory(), handledHistoryActions: new Set() };
+    sessions.set(key(uri), session);
+  }
+  return session;
 }
 function pickCanvas(text, offset) {
   const all = locateCanvases(text);
@@ -31,12 +42,8 @@ function usableDiagram(text, index) {
   return diagram;
 }
 async function updateDiagramDocument(session, xml, diagramFiles) {
-  let doc;
-  try { doc = await vscode.workspace.openTextDocument(session.diagramUri); }
-  catch {
-    diagramFiles.initialize(session.diagramUri, Buffer.from(xml, 'utf8'));
-    doc = await vscode.workspace.openTextDocument(session.diagramUri);
-  }
+  diagramFiles.initialize(session.diagramUri, Buffer.from(xml, 'utf8'));
+  const doc = await vscode.workspace.openTextDocument(session.diagramUri);
   if (doc.getText() === xml) { session.lastXml = xml; return; }
   session.writingDiagram = true;
   try {
@@ -139,14 +146,7 @@ async function openGui(sourceUri, canvasIndex, extensionPath, diagramFiles) {
   if (!locateCanvases(doc.getText())[index]) throw new Error('The selected CeTZ canvas no longer exists.');
   await ensureDrawioPlugin(vscode, extensionPath, doc.uri);
   const uri = diagramUri(doc.uri, index);
-  let session = sessions.get(key(uri));
-  if (!session) {
-    session = { sourceUri: doc.uri, diagramUri: uri, index, sourceVersion: -1,
-      diagram: null, lastXml: '', writingDiagram: false, writingSource: false, timer: null,
-      diagramFiles,
-      history: new EditHistory(), handledHistoryActions: new Set() };
-    sessions.set(key(uri), session);
-  }
+  const session = sessionFor(doc.uri, uri, index, diagramFiles);
   await syncFromSource(session);
   await vscode.commands.executeCommand('vscode.openWith', uri, 'hediet.vscode-drawio-text', vscode.ViewColumn.Beside);
   if (!session.editable || !session.editable.calls.length)
@@ -183,7 +183,20 @@ async function showSyncError(session, error) {
   await refreshGuiView(session);
 }
 function activate(context) {
-  const diagramFiles = new DiagramFiles(vscode);
+  const diagramFiles = new DiagramFiles(vscode, async uri => {
+    const source = sourceForDiagramUri(vscode, uri);
+    if (!source) throw vscode.FileSystemError.FileNotFound(uri);
+    const doc = await vscode.workspace.openTextDocument(source.sourceUri);
+    const diagram = usableDiagram(doc.getText(), source.index);
+    await ensureDrawioPlugin(vscode, context.extensionPath, doc.uri);
+    const { xml, editable } = await renderDiagram(doc.getText(), diagram.canvas, doc.uri.fsPath);
+    const session = sessionFor(doc.uri, uri, source.index, diagramFiles);
+    session.lastXml = xml;
+    session.sourceVersion = doc.version;
+    session.diagram = diagram;
+    session.editable = editable;
+    return Buffer.from(xml, 'utf8');
+  });
   context.subscriptions.push(vscode.workspace.registerFileSystemProvider(SCHEME, diagramFiles), diagramFiles);
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.open', (uri, index) =>
     openGui(uri, index, context.extensionPath, diagramFiles).catch(report)));

@@ -9,29 +9,52 @@ function diagramUri(vscode, sourceUri, index) {
     path: path.posix.join(parsed.dir, `${parsed.name}.cetz-${index + 1}.drawio`) });
 }
 
+function sourceForDiagramUri(vscode, uri) {
+  if (uri.scheme !== SCHEME) return null;
+  const match = /^(.*)\.cetz-([1-9]\d*)\.drawio$/.exec(uri.path);
+  if (!match) return null;
+  return { sourceUri: vscode.Uri.from({ scheme: 'file', authority: uri.authority,
+    path: match[1] + '.typ' }), index: Number(match[2]) - 1 };
+}
+
 class DiagramFiles {
-  constructor(vscode) {
+  constructor(vscode, restore) {
     this.vscode = vscode;
+    this.restore = restore;
     this.files = new Map();
+    this.pending = new Map();
     this.changes = new vscode.EventEmitter();
     this.onDidChangeFile = this.changes.event;
   }
 
   watch() { return new this.vscode.Disposable(() => {}); }
 
+  load(uri) {
+    const key = uri.toString();
+    if (this.files.has(key)) return this.files.get(key);
+    if (!this.restore) throw this.vscode.FileSystemError.FileNotFound(uri);
+    if (!this.pending.has(key)) {
+      const task = Promise.resolve().then(() => this.restore(uri)).then(data => {
+        this.initialize(uri, data);
+        return this.files.get(key);
+      }).finally(() => this.pending.delete(key));
+      this.pending.set(key, task);
+    }
+    return this.pending.get(key);
+  }
+
   stat(uri) {
-    const file = this.files.get(uri.toString());
-    if (file) return { type: this.vscode.FileType.File, ctime: file.ctime,
-      mtime: file.mtime, size: file.data.length };
     if (!uri.path.endsWith('.drawio'))
       return { type: this.vscode.FileType.Directory, ctime: 0, mtime: 0, size: 0 };
-    throw this.vscode.FileSystemError.FileNotFound(uri);
+    const describe = file => ({ type: this.vscode.FileType.File, ctime: file.ctime,
+      mtime: file.mtime, size: file.data.length });
+    const file = this.load(uri);
+    return file instanceof Promise ? file.then(describe) : describe(file);
   }
 
   readFile(uri) {
-    const file = this.files.get(uri.toString());
-    if (!file) throw this.vscode.FileSystemError.FileNotFound(uri);
-    return file.data;
+    const file = this.load(uri);
+    return file instanceof Promise ? file.then(item => item.data) : file.data;
   }
 
   writeFile(uri, data, options) {
@@ -72,7 +95,7 @@ class DiagramFiles {
     this.delete(oldUri);
   }
 
-  dispose() { this.changes.dispose(); this.files.clear(); }
+  dispose() { this.changes.dispose(); this.files.clear(); this.pending.clear(); }
 }
 
-module.exports = { SCHEME, diagramUri, DiagramFiles };
+module.exports = { SCHEME, diagramUri, sourceForDiagramUri, DiagramFiles };
