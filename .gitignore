@@ -1,3 +1,5 @@
 node_modules/
 *.vsix
 *.cetz-*.drawio
+.DS_Store
+/cetz-editor-main/

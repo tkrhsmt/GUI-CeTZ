@@ -123,6 +123,88 @@ test('moves and edits plain content text', () => {
   const next = apply(text, patchesFromXml(text, model, moved));
   assert.match(next, /content\(\(2, 3\), \[World\]\)/);
 });
+test('edits plain content from the CeTZ sidebar style', async () => {
+  const text = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *; content((1, 2), [Hello]) })';
+  const canvas = locateCanvases(text)[0];
+  const rendered = await renderEditable(text, canvas, path.join(__dirname, '../examples/basic.typ'));
+  assert.match(rendered.xml, /cetzText=Hello/);
+  const changed = rendered.xml.replace('cetzText=Hello;', 'cetzText=Goodbye;');
+  const next = apply(text, patchesFromEditable(text, rendered, changed, readAllCells));
+  assert.match(next, /content\(\(1, 2\),\s*\[Goodbye\]\)/);
+  const labelEdit = rendered.xml.replace('id="cetz-edit-0" value=""', 'id="cetz-edit-0" value="Hi"');
+  const fromCanvas = apply(text, patchesFromEditable(text, rendered, labelEdit, readAllCells));
+  assert.match(fromCanvas, /content\(\(1, 2\),\s*\[Hi\]\)/);
+});
+
+test('content edit frames follow Typst text bounds instead of a character estimate', async () => {
+  const source = '#import "@preview/cetz:0.5.2"\n' +
+    '#cetz.canvas({ import cetz.draw: *; content((0, 0), [Hi]); ' +
+    'content((0, 2), [A much longer sentence], name: "long") })';
+  const rendered = await renderEditable(source, parseCanvas(source).canvas,
+    path.resolve('examples/basic.typ'));
+  const cells = readAllCells(rendered.xml);
+  const short = cells.get('cetz-edit-0').geometry;
+  const long = cells.get('cetz-edit-1').geometry;
+  assert.equal(rendered.calls[0].contentCorners.length, 4);
+  assert.equal(rendered.calls[1].contentCorners.length, 4);
+  assert.ok(+short.width > 15 && +short.width < 45, short.width);
+  assert.ok(+long.width > +short.width * 8 && +long.width < +short.width * 12,
+    `${short.width}, ${long.width}`);
+  assert.ok(+short.height > 10 && +long.height > 10);
+});
+
+test('content coordinate handles move the Typst position while keeping measured text bounds', async () => {
+  const source = '#import "@preview/cetz:0.5.2"\n' +
+    '#cetz.canvas({ import cetz.draw: *; content((1, 2), [Label]) })';
+  const file = path.resolve('examples/basic.typ');
+  const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
+  const cells = readAllCells(rendered.xml);
+  const box = cells.get('cetz-edit-0').geometry;
+  const point = cells.get('cetz-point-0-0');
+  assert.ok(point);
+  assert.ok(Math.abs(+point.geometry.x + 7 - rendered.calibration.originX -
+    rendered.calibration.unitX * 2.5) < 0.1);
+  const moved = rendered.xml.replace(/(<mxCell id="cetz-point-0-0"[\s\S]*?<mxGeometry x=")([\d.]+)/,
+    (_, prefix, x) => prefix + (Number(x) + rendered.calibration.unitX * 2.5));
+  const next = apply(source, patchesFromEditable(source, rendered, moved, readAllCells));
+  assert.match(next, /content\(\(2, 2\), \[Label\]\)/);
+  const rerendered = await renderEditable(next, parseCanvas(next).canvas, file);
+  const nextBox = readAllCells(rerendered.xml).get('cetz-edit-0').geometry;
+  assert.ok(Math.abs(+nextBox.x - +box.x - rendered.calibration.unitX * 2.5) < 0.1);
+  assert.ok(Math.abs(+nextBox.width - +box.width) < 0.1);
+});
+
+test('a referenced content coordinate handle preserves its shared anchor', async () => {
+  const source = '#import "@preview/cetz:0.5.2"\n' +
+    '#cetz.canvas({ import cetz.draw: *; anchor("P", (4, 1)); content("P", [Anchored]) })';
+  const file = path.resolve('examples/basic.typ');
+  const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
+  assert.ok(readAllCells(rendered.xml).get('cetz-point-1-0'));
+  const moved = rendered.xml.replace(/(<mxCell id="cetz-point-1-0"[\s\S]*?<mxGeometry x=")([\d.]+)/,
+    (_, prefix, x) => prefix + (Number(x) + rendered.calibration.unitX * 2.5));
+  const next = apply(source, patchesFromEditable(source, rendered, moved, readAllCells));
+  assert.match(next, /anchor\("P", \(4, 1\)\)/);
+  assert.match(next, /content\(\(rel: \(1, 0\), to: "P"\), \[Anchored\]\)/);
+  await renderEditable(next, parseCanvas(next).canvas, file);
+});
+
+test('a stale content resize and property action do not block the next shape edit', async () => {
+  const source = '#import "@preview/cetz:0.5.2"\n' +
+    '#cetz.canvas({ import cetz.draw: *; content((0, 0), [Label]); rect((0, 0), (2, 1)) })';
+  const rendered = await renderEditable(source, parseCanvas(source).canvas,
+    path.resolve('examples/advanced.typ'));
+  const content = readAllCells(rendered.xml).get('cetz-edit-0');
+  assert.match(content.cell.style, /(?:^|;)resizable=0;/);
+  const resized = rendered.xml.replace(/(<mxCell id="cetz-edit-0"[\s\S]*?width=")([\d.]+)/,
+    (_, prefix, width) => prefix + (Number(width) + 40));
+  const staleAction = '<mxCell id="action-1" value="" style="cetzAction=scale;cetzTargets=1;cetzValue=1.5;cetzActionToken=old;" vertex="1" parent="1"><mxGeometry x="-1000" y="-1000" width="1" height="1" as="geometry"/></mxCell>';
+  const moved = resized.replace(/(<mxCell id="cetz-edit-1"[\s\S]*?<mxGeometry x=")([\d.]+)/,
+    (_, prefix, x) => prefix + (Number(x) + rendered.calibration.unitX * 2.5));
+  const edited = moved.replace('</root>', staleAction + '</root>');
+  const patches = patchesFromEditable(source, rendered, edited, readAllCells);
+  assert.equal(patches.length, 1);
+  assert.match(apply(source, patches), /rect\(\(1, 0\),\s*\(3, 1\)\)/);
+});
 test('converts a new Draw.io rectangle into a CeTZ call', () => {
   const text = '#cetz.canvas({ import cetz.draw: * })';
   const model = parseCanvas(text), xml = xmlForDiagram(text, model);
@@ -307,6 +389,18 @@ test('inserts basic CeTZ primitives from a rendered preview palette', () => {
     assert.match(updated, new RegExp(`\\b${name}\\(`));
   }
 });
+test('places new primitive templates at their Draw.io geometry', () => {
+  const text = '#cetz.canvas({ import cetz.draw: * })';
+  const canvas = parseCanvas(text).canvas;
+  const calibration = { originX: 500, originY: 500, unitX: 40, unitY: 40 };
+  const item = { cell: { parent: '1', style: 'cetzTemplate=rect;' },
+    geometry: { x: '500', y: '400', width: '200', height: '100' } };
+  const next = apply(text, templateInsertions(text, canvas, new Map([['new', item]]), new Map(), calibration));
+  assert.match(next, /rect\(\(0, 0\), \(2, 1\)\)/);
+  item.cell.style = 'cetzTemplate=circle;';
+  const round = apply(text, templateInsertions(text, canvas, new Map([['new', item]]), new Map(), calibration));
+  assert.match(round, /circle\(\(1, 0\.5\), radius: \(1, 0\.5\)\)/);
+});
 test('primitive-only and mixed canvases use the same Typst-backed Draw.io cells', async () => {
   const prefix = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n';
   const primitive = prefix + 'rect((0, 0), (2, 1), fill: red)\n' +
@@ -394,6 +488,23 @@ test('Draw.io grid lines and source coordinates follow CeTZ quarter units', asyn
   assert.match(updated, /rect\(\(0\.25, 0\),\s*\(2\.25, 1\)\)/);
   assert.doesNotMatch(updated, /rect\([^\n]*\d+\.\d{3,}/);
 });
+test('a grid frame follows its corner arguments even with tuple spacing after resizing', async () => {
+  const file = path.resolve('examples/advanced.typ');
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *; ' +
+    'grid((0, 0), (3, 2), step: (4, 0.5)) })';
+  const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
+  const before = readAllCells(rendered.xml).get('cetz-edit-0').geometry;
+  const unitX = rendered.calibration.unitX * 2.5;
+  assert.ok(Math.abs(+before.width - 3 * unitX) < 0.01);
+  const resized = rendered.xml.replace(
+    /(<mxCell id="cetz-edit-0"[\s\S]*?<mxGeometry[^>]*width=")([\d.]+)/,
+    (_, prefix, width) => prefix + (Number(width) + unitX));
+  const next = apply(source, patchesFromEditable(source, rendered, resized, readAllCells));
+  const after = await renderEditable(next, parseCanvas(next).canvas, file);
+  const frame = readAllCells(after.xml).get('cetz-edit-0').geometry;
+  assert.ok(Math.abs(+frame.width - (+before.width + unitX)) < 0.02);
+  assert.match(next, /grid\(\(0, 0\),\s*\(4, 2\), step:/);
+});
 test('a repeated history marker does not undo a following shape resize', async () => {
   const file = path.resolve('examples/advanced.typ');
   const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
@@ -473,7 +584,8 @@ test('an empty canvas uses the same coordinate grid and accepts a shape template
   const template = '<mxCell id="new-circle" value="" style="cetzTemplate=circle;" vertex="1" parent="1"><mxGeometry x="500" y="500" width="80" height="80" as="geometry"/></mxCell>';
   const inserted = rendered.xml.replace('</root>', template + '</root>');
   const updated = apply(source, patchesFromEditable(source, rendered.editable, inserted, readAllCells));
-  assert.match(updated, /circle\(\(0, 0\), radius: 1\)/);
+  assert.match(updated, /circle\(\([-\d.]+, [-\d.]+\), radius: [\d.]+\)/);
+  assert.doesNotMatch(updated, /circle\(\(0, 0\), radius: 1\)/);
 });
 test('palette insertion regenerates the image and adds an editable shape', async () => {
   const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 0))\n})';
@@ -482,7 +594,8 @@ test('palette insertion regenerates the image and adds an editable shape', async
   const template = '<mxCell id="palette-circle" value="" style="ellipse;cetzTemplate=circle;" vertex="1" parent="1"><mxGeometry x="500" y="500" width="80" height="80" as="geometry"/></mxCell>';
   const inserted = before.xml.replace('</root>', template + '</root>');
   const updated = apply(source, patchesFromEditable(source, before, inserted, readAllCells));
-  assert.match(updated, /circle\(\(0, 0\), radius: 1\)/);
+  assert.match(updated, /circle\(\([-\d.]+, [-\d.]+\), radius: [\d.]+\)/);
+  assert.doesNotMatch(updated, /circle\(\(0, 0\), radius: 1\)/);
   const after = await renderEditable(updated, parseCanvas(updated).canvas, file);
   assert.ok(readAllCells(after.xml).get('cetz-edit-1'));
   assert.ok(readAllCells(after.xml).get('cetz-preview-image'));
@@ -526,7 +639,7 @@ test('moves and deletes basic primitives in a Typst-rendered Draw.io preview', a
     const resized = rendered.xml.replace(/(<mxCell id="cetz-edit-1"[\s\S]*?width=")([\d.]+)/,
       (_, prefix, width) => prefix + (Number(width) * 1.5));
     if (call.startsWith('content')) {
-      assert.throws(() => patchesFromEditable(source, rendered, resized, readAllCells), /text size/);
+      assert.deepEqual(patchesFromEditable(source, rendered, resized, readAllCells), []);
     } else {
       const resizedSource = apply(source, patchesFromEditable(source, rendered, resized, readAllCells));
       if (call.startsWith('rect')) {
@@ -563,11 +676,21 @@ test('moves anchor-based shapes while preserving their coordinate references', a
       const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
       const before = readAllCells(rendered.xml).get(`cetz-edit-${index}`);
       assert.ok(before, `missing anchor handle ${index}`);
+      if (index === 5) assert.doesNotMatch(before.cell.style, /(?:^|;)resizable=0;/);
+      else assert.match(before.cell.style, /(?:^|;)resizable=0;/);
       if (step === 0) {
         const resized = rendered.xml.replace(
           new RegExp(`(<mxCell id="cetz-edit-${index}"[\\s\\S]*?width=")([\\d.]+)`),
           (_, prefix, width) => prefix + (Number(width) * 1.5));
-        assert.throws(() => patchesFromEditable(source, rendered, resized, readAllCells),
+        if ([1, 3].includes(index))
+          assert.deepEqual(patchesFromEditable(source, rendered, resized, readAllCells), []);
+        else if (index === 5) {
+          const resizedSource = apply(source, patchesFromEditable(source, rendered, resized, readAllCells));
+          assert.match(resizedSource, /rect\(\(rel: \([\d., -]+\), to: "axis\.start"\),\s*\(rel: \([\d., -]+\), to: "leg\.end"\)\)/);
+          const afterResize = await renderEditable(resizedSource, parseCanvas(resizedSource).canvas, file);
+          assert.ok(+readAllCells(afterResize.xml).get('cetz-edit-5').geometry.width >
+            +before.geometry.width * 1.2);
+        } else assert.throws(() => patchesFromEditable(source, rendered, resized, readAllCells),
           /Resize anchor-based CeTZ shapes in Typst/);
       }
       const moved = rendered.xml.replace(

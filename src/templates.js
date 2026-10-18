@@ -30,7 +30,31 @@ function insertionFor(source, canvas, call) {
   return { offset: canvas.bodyEnd, text: `${before}${needsImport ? indent + 'import cetz.draw: *\n' : ''}${lines}\n` };
 }
 
-function templateInsertions(source, canvas, cells, originalCells = new Map()) {
+function callFromGeometry(name, item, calibration) {
+  if (!calibration || !['rect', 'circle', 'content', 'line'].includes(name)) return null;
+  const ux = calibration.unitX * 2.5, uy = calibration.unitY * 2.5;
+  const x = screen => Math.round((screen - calibration.originX) / ux * 4) / 4;
+  const y = screen => Math.round((calibration.originY - screen) / uy * 4) / 4;
+  const point = (screenX, screenY) => `(${x(screenX)}, ${y(screenY)})`;
+  const g = item.geometry || {};
+  const [gx, gy, width, height] = [g.x, g.y, g.width, g.height].map(Number);
+  if (![gx, gy, width, height].every(Number.isFinite)) return null;
+  if (name === 'line') {
+    const start = item.source ? [Number(item.source.x), Number(item.source.y)] : [gx, gy + height];
+    const end = item.target ? [Number(item.target.x), Number(item.target.y)] : [gx + width, gy];
+    if (![...start, ...end].every(Number.isFinite)) return null;
+    return `line(${point(...start)}, ${point(...end)})`;
+  }
+  if (width <= 0 || height <= 0) return null;
+  if (name === 'rect') return `rect(${point(gx, gy + height)}, ${point(gx + width, gy)})`;
+  const center = point(gx + width / 2, gy + height / 2);
+  if (name === 'content') return `content(${center}, [Text])`;
+  const rx = Math.round(width / (2 * ux) * 100) / 100;
+  const ry = Math.round(height / (2 * uy) * 100) / 100;
+  return `circle(${center}, radius: ${Math.abs(rx - ry) < 0.01 ? rx : `(${rx}, ${ry})`})`;
+}
+
+function templateInsertions(source, canvas, cells, originalCells = new Map(), calibration) {
   const calls = [];
   for (const [id, item] of cells) {
     if (originalCells.has(id) || item.cell.parent !== '1') continue;
@@ -38,7 +62,7 @@ function templateInsertions(source, canvas, cells, originalCells = new Map()) {
     if (!name) continue;
     const shape = SHAPES.concat(PREVIEW_PRIMITIVES).find(entry => entry.label === name);
     if (!shape) throw new Error(`Unknown CeTZ shape template: ${name}`);
-    calls.push(shape.call);
+    calls.push(callFromGeometry(name, item, calibration) || shape.call);
   }
   if (!calls.length) return [];
   const insertion = insertionFor(source, canvas, calls.join('\n'));
