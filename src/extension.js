@@ -3,10 +3,13 @@ const vscode = require('vscode');
 const { locateCanvases } = require('./scanner');
 const { parseCanvas } = require('./diagram');
 const { readAllCells } = require('./drawio');
-const { patchesFromEditable } = require('./advanced');
+const { patchesFromEditable, renderEditable } = require('./advanced');
 const { renderDiagram } = require('./render-diagram');
 const { SHAPES, insertionFor, templateInsertions } = require('./templates');
 const { EditHistory, historyAction } = require('./history');
+const { sourceAction, sourceActionPatches } = require('./source-actions');
+const { exportTypst } = require('./export');
+const { withSelectionMarker } = require('./selection');
 const { withDiagramStatus } = require('./diagram-status');
 const { launchCodeLenses } = require('./launch-code-lenses');
 const { ensureDrawioPlugin } = require('./plugin-settings');
@@ -53,28 +56,45 @@ async function updateDiagramDocument(session, xml, diagramFiles) {
     session.lastXml = xml;
   } finally { session.writingDiagram = false; }
 }
-async function refreshGuiView(session) {
+async function refreshGuiView(session, force = false) {
   // Editable previews replace the SVG cell during Draw.io's live document merge.
   // Keep the full reload for locked previews, which have no editable image cell.
-  if (!session.editable)
+  if (force || !session.editable)
     await vscode.commands.executeCommand('workbench.action.webview.reloadWebviewAction');
+}
+function sourceWithPatches(text, patches) {
+  return [...patches].sort((a, b) => b.start - a.start)
+    .reduce((value, patch) => value.slice(0, patch.start) + patch.text + value.slice(patch.end), text);
 }
 async function applySourcePatches(session, source, patches) {
   if (!patches.length) return;
   const before = source.getText();
-  let expected = before;
-  for (const patch of [...patches].sort((a, b) => b.start - a.start))
-    expected = expected.slice(0, patch.start) + patch.text + expected.slice(patch.end);
+  const expected = sourceWithPatches(before, patches);
+  // A GUI edit must preserve an editable preview. Otherwise renderDiagram's
+  // fallback would replace all handles with a locked image after the write.
+  const prepared = session.editable
+    ? await renderEditable(expected, usableDiagram(expected, session.index).canvas,
+      session.sourceUri.fsPath)
+    : null;
+  if ((await documentForSession(session)).version !== source.version)
+    throw new Error('Typst changed while the GUI was being edited.');
   session.expectedSourceText = expected;
   const edit = new vscode.WorkspaceEdit();
   for (const patch of patches) edit.replace(session.sourceUri,
     new vscode.Range(source.positionAt(patch.start), source.positionAt(patch.end)), patch.text);
   session.writingSource = true;
+  let applied = false;
   try {
     if (!await vscode.workspace.applyEdit(edit)) throw new Error('Could not apply the CeTZ edit.');
+    applied = true;
     const updated = await documentForSession(session);
+    if (prepared && updated.getText() === expected)
+      session.preparedRender = { text: expected, editable: prepared };
     session.history.record(before, updated.getText());
-  } finally { session.writingSource = false; }
+  } finally {
+    if (!applied) session.expectedSourceText = null;
+    session.writingSource = false;
+  }
 }
 async function applyHistoryAction(session, action) {
   const source = await documentForSession(session);
@@ -84,8 +104,17 @@ async function applyHistoryAction(session, action) {
   edit.replace(session.sourceUri,
     new vscode.Range(source.positionAt(0), source.positionAt(source.getText().length)), replacement);
   session.writingSource = true;
-  try { if (!await vscode.workspace.applyEdit(edit)) throw new Error(`Could not ${action} the CeTZ edit.`); }
-  finally { session.writingSource = false; }
+  let applied = false;
+  try {
+    if (!await vscode.workspace.applyEdit(edit)) throw new Error(`Could not ${action} the CeTZ edit.`);
+    applied = true;
+  } finally {
+    if (!applied) {
+      session.expectedSourceText = null;
+      session.history.step(action === 'undo' ? 'redo' : 'undo', replacement);
+    }
+    session.writingSource = false;
+  }
   await syncFromSource(session);
   await refreshGuiView(session);
 }
@@ -94,7 +123,11 @@ async function syncFromSource(session) {
   const doc = await documentForSession(session);
   const text = doc.getText();
   const diagram = usableDiagram(text, session.index);
-  const { xml, editable } = await renderDiagram(text, diagram.canvas, session.sourceUri.fsPath);
+  const prepared = session.preparedRender;
+  session.preparedRender = null;
+  const { xml, editable } = prepared && prepared.text === text
+    ? { xml: prepared.editable.xml, editable: prepared.editable }
+    : await renderDiagram(text, diagram.canvas, session.sourceUri.fsPath);
   if (generation !== session.syncGeneration || (await documentForSession(session)).version !== doc.version) return;
   await updateDiagramDocument(session, xml, session.diagramFiles);
   session.sourceVersion = doc.version;
@@ -111,6 +144,37 @@ async function syncToSource(session) {
   if (command && session.history.canStep(command.action)) {
     try { await applyHistoryAction(session, command.action); }
     catch (error) { await syncFromSource(session); await refreshGuiView(session); throw error; }
+    return;
+  }
+  const sourceCommand = sourceAction(readAllCells(xml), readAllCells(session.lastXml), session.handledHistoryActions);
+  if (sourceCommand) {
+    session.handledHistoryActions.add(sourceCommand.key);
+    const source = await documentForSession(session);
+    if (source.version !== session.sourceVersion) {
+      await syncFromSource(session);
+      throw new Error('Typst changed while the GUI was being edited. The GUI was refreshed from Typst.');
+    }
+    if (sourceCommand.action === 'export') {
+      await syncFromSource(session);
+      await exportTypst(vscode, source);
+      return;
+    }
+    if (!session.editable) throw new Error('This canvas has no editable CeTZ shapes.');
+    try {
+      if (sourceCommand.action === 'focus') {
+        const call = session.editable.calls[sourceCommand.indices[0]];
+        if (!call) throw new Error('The selected CeTZ shape no longer exists.');
+        await syncFromSource(session);
+        const editor = await vscode.window.showTextDocument(source, { viewColumn: vscode.ViewColumn.One, preserveFocus: false });
+        editor.selection = new vscode.Selection(source.positionAt(call.start), source.positionAt(call.end));
+        editor.revealRange(new vscode.Range(editor.selection.start, editor.selection.end));
+        return;
+      }
+      await applySourcePatches(session, source,
+        sourceActionPatches(source.getText(), session.editable, sourceCommand));
+      await syncFromSource(session);
+      await refreshGuiView(session);
+    } catch (error) { await syncFromSource(session); await refreshGuiView(session); throw error; }
     return;
   }
   if (session.editable) {
@@ -180,7 +244,7 @@ async function showSyncError(session, error) {
   if (!session.lastXml) return report(error);
   const message = error instanceof Error ? error.message : String(error);
   await updateDiagramDocument(session, withDiagramStatus(session.lastXml, message), session.diagramFiles);
-  await refreshGuiView(session);
+  await refreshGuiView(session, true);
 }
 function activate(context) {
   const diagramFiles = new DiagramFiles(vscode, async uri => {
@@ -205,6 +269,8 @@ function activate(context) {
     { provideCodeLenses: document => launchCodeLenses(vscode, document) }
   ));
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.insertShape', () => insertShape().catch(report)));
+  context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.export', () =>
+    exportTypst(vscode, vscode.window.activeTextEditor?.document).catch(report)));
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.syncFromSource', async () => {
     const uri = vscode.window.activeTextEditor?.document.uri;
     const candidates = [...sessions.values()].filter(s => !uri || key(s.sourceUri) === key(uri) || key(s.diagramUri) === key(uri));
@@ -230,13 +296,38 @@ function activate(context) {
         }, 180);
       } else if (key(event.document.uri) === key(session.diagramUri) && !session.writingDiagram) {
         if (session.timer) clearTimeout(session.timer);
-        session.timer = setTimeout(() => syncToSource(session).catch(async error => {
-          await syncFromSource(session).catch(() => {});
-          await showSyncError(session, error).catch(report);
-        }), 180);
+        session.timer = setTimeout(() => {
+          // Draw.io may save again while Typst is rendering. Process each
+          // snapshot in order so a later edit never races an earlier reset.
+          session.guiQueue = (session.guiQueue || Promise.resolve()).catch(() => {})
+            .then(() => syncToSource(session))
+            .catch(async error => {
+              await syncFromSource(session).catch(() => {});
+              await showSyncError(session, error).catch(report);
+            });
+        }, 180);
       }
     }
   }));
-  context.subscriptions.push({ dispose: () => { for (const s of sessions.values()) if (s.timer) clearTimeout(s.timer); sessions.clear(); } });
+  context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.selectInGui', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) throw new Error('Open a .typ file first.');
+    const offset = editor.document.offsetAt(editor.selection.active);
+    let session, index = -1;
+    for (const item of sessions.values()) {
+      if (key(item.sourceUri) !== key(editor.document.uri)) continue;
+      if (item.sourceVersion !== editor.document.version) await syncFromSource(item);
+      index = item.editable?.calls.findIndex(call => offset >= call.start && offset <= call.end) ?? -1;
+      if (index >= 0) { session = item; break; }
+    }
+    if (!session) throw new Error('Place the cursor inside a CeTZ shape open in the GUI.');
+    session.selectionSerial = (session.selectionSerial || 0) + 1;
+    await updateDiagramDocument(session,
+      withSelectionMarker(session.lastXml, index, `${Date.now()}-${session.selectionSerial}`),
+      session.diagramFiles);
+  }));
+  context.subscriptions.push({ dispose: () => { for (const s of sessions.values()) {
+    if (s.timer) clearTimeout(s.timer);
+  } sessions.clear(); } });
 }
 module.exports = { activate, deactivate() {}, pickCanvas, diagramUri };

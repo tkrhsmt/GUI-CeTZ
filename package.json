@@ -14,12 +14,15 @@
     "commands": [
       { "command": "cetzEditor.open", "title": "CeTZ: Open GUI Editor" },
       { "command": "cetzEditor.syncFromSource", "title": "CeTZ: Sync GUI From Typst" },
-      { "command": "cetzEditor.insertShape", "title": "CeTZ: Insert Shape" }
+      { "command": "cetzEditor.selectInGui", "title": "CeTZ: Select Shape in GUI" },
+      { "command": "cetzEditor.insertShape", "title": "CeTZ: Insert Shape" },
+      { "command": "cetzEditor.export", "title": "CeTZ: Export PDF, SVG or PNG" }
     ],
     "menus": {
       "editor/context": [
         { "command": "cetzEditor.open", "when": "resourceExtname == .typ", "group": "navigation" },
-        { "command": "cetzEditor.insertShape", "when": "resourceExtname == .typ", "group": "navigation" }
+        { "command": "cetzEditor.insertShape", "when": "resourceExtname == .typ", "group": "navigation" },
+        { "command": "cetzEditor.export", "when": "resourceExtname == .typ", "group": "navigation" }
       ]
     }
   },
