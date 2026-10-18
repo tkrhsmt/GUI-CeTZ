@@ -2,6 +2,10 @@
 
 GUI CeTZ is a VS Code extension that opens `cetz.canvas({ ... })` in the existing [Draw.io Integration extension](https://github.com/hediet/vscode-drawio). The `.typ` file remains the source of truth. Every canvas, including one containing only CeTZ primitives, is rendered by Typst and shown in Draw.io with the same SVG background. Supported top-level literal shapes receive individual move and resize handles while CeTZ computes their exact appearance.
 
+## See it in action
+
+GUI CeTZ enables both GUI-based operations—which are essential for creating diagrams—and direct manipulation of Typst code.
+
 ## Install from a VSIX
 
 1. Install **Draw.io Integration** (`hediet.vscode-drawio`) in VS Code and make the `typst` command available on your PATH.
