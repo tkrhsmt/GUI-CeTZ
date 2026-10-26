@@ -51,6 +51,11 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   let fileLoaded;
   let selectionChanged, modelChanged, selectedCell = null, changedStyle = null, snappedBounds = null;
   let highlightedCell = null, insertedAction = null;
+  let fitCalls = 0, viewValidations = 0;
+  const imageLoads = [];
+  const dragShapes = [];
+  const cellStates = new Map();
+  let nativePreviewCalls = 0, nativeResetCalls = 0;
   let deferTimeout = false;
   const pendingTimeouts = [];
   const mutationObservers = [];
@@ -71,7 +76,9 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   beginUpdate() {}, endUpdate() {} };
   const graph = {
     view: { scale: 1, translate: { x: 0, y: 0 }, getOverlayPane() { return {}; },
-      getState(cell) { return { cell, x: 12, y: 24, width: 50, height: 30, style: {}, view: this }; } },
+      invalidate() {}, validate() { viewValidations++; },
+      getState(cell) { return cellStates.get(cell.id) ||
+        { cell, x: 12, y: 24, width: 50, height: 30, style: {}, view: this }; } },
     getModel() { return graphModel; }, getSelectionCell() { return selectedCell; },
     getSelectionCells() { return selectedCell ? [selectedCell] : []; },
     setSelectionCell(cell) { selectedCell = cell; },
@@ -87,6 +94,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     isCellCloneable() { return true; },
     isCellVisible() { return true; },
     isCellConnectable() { return true; },
+    isConstrainChild() { return true; },
     removeCells(cells) { removedTemplates.push(...cells); for (const cell of cells) delete graphModel.cells[cell.id]; },
     setEnabled(value) { graphEnabled = value; },
     popupMenuHandler: { isEnabled() { return true; } }
@@ -94,12 +102,17 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   const originalHint = function () { this.hint = { textContent: 'Draw.io coordinates' }; };
   const originalUseGuides = function () { return true; };
   graph.graphHandler = { graph, updateHint: originalHint, bounds: { x: 533, y: 453 },
-    currentDx: 0, currentDy: 0, useGuidesForEvent: originalUseGuides };
+    currentDx: 0, currentDy: 0, useGuidesForEvent: originalUseGuides, maxLivePreview: 17,
+    allowLivePreview: false,
+    updatePreview() { nativePreviewCalls++; return 'native-preview'; },
+    reset() { nativeResetCalls++; return 'native-reset'; } };
+  const originalPreview = graph.graphHandler.updatePreview, originalReset = graph.graphHandler.reset;
   class VertexHandler {}
   const originalVertexHint = function () { this.hint = { textContent: 'Draw.io size' }; };
   VertexHandler.prototype.updateHint = originalVertexHint;
   const actions = { undo: { funct() {}, isEnabled() { return true; } },
-    redo: { funct() {}, isEnabled() { return true; } } };
+    redo: { funct() {}, isEnabled() { return true; } },
+    fitWindow: { funct() { fitCalls++; } } };
   const ui = {
     sidebar: {
       wrapper, container, palettes, sidebarTitles: true,
@@ -146,6 +159,13 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   menubarContainer.appendChild(statusContainer);
   ui.statusContainer = statusContainer;
   const context = {
+    Image: class { set src(value) { this.url = value; imageLoads.push(this); } },
+    mxImageShape: class {
+      constructor(bounds, image) { Object.assign(this, { bounds, image }); dragShapes.push(this); }
+      init(pane) { this.pane = pane; }
+      redraw() { this.redraws = (this.redraws || 0) + 1; }
+      destroy() { this.destroyed = true; }
+    },
     Draw: { loadPlugin(callback) { callback(ui); } },
     document: { createElement() { return element(); }, addEventListener() {} },
     mxCell: class { constructor(value, geometry, style) {
@@ -365,15 +385,9 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   pendingTimeouts.splice(0);
   deferTimeout = false;
   rows[0].listeners.mouseenter();
-  assert.equal(highlightedCell, editCell);
-  assert.equal(context.activeHighlight.shape.fill, '#ef4444');
-  assert.equal(context.activeHighlight.shape.opacity, 32);
-  assert.equal(context.activeHighlight.shape.bounds.x, 12);
-  assert.equal(context.activeHighlight.shape.bounds.width, 50);
-  assert.equal(context.activeHighlight.shape.redrawn, true);
+  assert.equal(highlightedCell, null, 'outline hover does not draw a native rectangle');
   rows[0].listeners.mouseleave();
   assert.equal(highlightedCell, null);
-  assert.equal(context.activeHighlight.shape, null);
   deferTimeout = true;
   rows[0].children[1].listeners.click({ preventDefault() {}, stopPropagation() {} });
   assert.equal(selectedCell, lineCell);
@@ -499,6 +513,102 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.equal(graphModel.cells[pendingTemplate.id], undefined);
   assert.equal(graph.isCellDeletable({ id: 'cetz-axis-y' }), false);
   assert.equal(graph.isCellDeletable({ id: 'cetz-preview-image' }), false);
+  assert.equal(graph.isCellDeletable({ id: 'cetz-render-0' }), false);
+  assert.equal(graph.isCellSelectable({ id: 'cetz-render-0' }), false);
+  assert.equal(graph.isConstrainChild({ id: 'cetz-render-0' }), false);
+  assert.equal(graph.isConstrainChild(editCell), true);
+  assert.equal(graph.graphHandler.maxLivePreview, Number.MAX_SAFE_INTEGER);
+  assert.equal(graph.graphHandler.allowLivePreview, true);
+  const fitsBeforeLoad = fitCalls;
+  fileLoaded();
+  assert.equal(fitCalls, fitsBeforeLoad + 1, 'a freshly loaded diagram is fitted into view');
+  const artwork = { id: 'cetz-render-0', visible: false, parent: editCell,
+    style: 'shape=image;image=data:image/svg+xml,%3Csvg%2F%3E;',
+    geometry: { x: -2, y: -2, width: 80, height: 40 } };
+  graphModel.cells[artwork.id] = artwork;
+  const unchangedStyle = artwork.style;
+  modelChanged();
+  assert.equal(graph.isCellVisible(previewImageCell), true, 'full drawing remains visible while images load');
+  assert.equal(graph.isCellVisible(artwork), false);
+  const sourceNode = { style: { visibility: 'visible' } };
+  graph.view.scale = 1;
+  cellStates.set(artwork.id, { cell: artwork, shape: { node: sourceNode } });
+  graph.graphHandler.cells = [editCell];
+  graph.graphHandler.currentDx = 25;
+  graph.graphHandler.currentDy = -15;
+  const unchangedGeometry = JSON.stringify(artwork.geometry);
+  assert.equal(graph.graphHandler.updatePreview(), 'native-preview');
+  assert.equal(nativePreviewCalls, 1);
+  assert.equal(dragShapes.length, 1, 'drag draws the SVG even before fragment preloading completes');
+  const dragImage = dragShapes[0];
+  assert.equal(dragImage.bounds.x, 35);
+  assert.equal(dragImage.bounds.y, 7);
+  assert.equal(dragImage.bounds.width, 80);
+  assert.equal(dragImage.bounds.height, 40);
+  assert.equal(dragImage.pointerEvents, false);
+  assert.equal(dragImage.preserveImageAspect, false);
+  assert.equal(sourceNode.style.visibility, 'hidden');
+  graph.view.scale = 2;
+  graph.graphHandler.currentDx = 40;
+  graph.graphHandler.currentDy = 30;
+  graph.graphHandler.updatePreview();
+  assert.equal(dragShapes.length, 1, 'frames reuse the preview image');
+  assert.equal(dragImage.redraws, 2);
+  assert.equal(dragImage.bounds.x, 48);
+  assert.equal(dragImage.bounds.y, 50);
+  assert.equal(dragImage.bounds.width, 160);
+  assert.equal(dragImage.bounds.height, 80);
+  assert.equal(JSON.stringify(artwork.geometry), unchangedGeometry, 'dragging does not edit SVG geometry');
+  assert.equal(graph.graphHandler.reset(), 'native-reset');
+  assert.equal(nativeResetCalls, 1);
+  assert.equal(dragImage.destroyed, true);
+  assert.equal(sourceNode.style.visibility, 'visible');
+  const secondArtwork = { id: 'cetz-render-1', parent: lineCell,
+    style: artwork.style, geometry: { x: 5, y: 6, width: 20, height: 30 } };
+  graphModel.cells[secondArtwork.id] = secondArtwork;
+  cellStates.set(lineCell.id, { cell: lineCell, x: 200, y: 300 });
+  graph.view.scale = 1;
+  graph.graphHandler.cells = [editCell, lineCell];
+  graph.graphHandler.currentDx = -10;
+  graph.graphHandler.currentDy = 20;
+  graph.graphHandler.updatePreview();
+  const multiImages = dragShapes.slice(-2);
+  assert.equal(multiImages[0].bounds.x, 0);
+  assert.equal(multiImages[0].bounds.y, 42);
+  assert.equal(multiImages[1].bounds.x, 195);
+  assert.equal(multiImages[1].bounds.y, 326);
+  assert.equal(graph.graphHandler.cetzDragImages.length, 2, 'multiple selected elements draw together');
+  graph.graphHandler.updatePreview(true);
+  assert.ok(multiImages.every(shape => shape.destroyed), 'a remote refresh removes transient previews');
+  assert.equal(sourceNode.style.visibility, 'visible');
+  graph.graphHandler.cells = [pointCell];
+  graph.graphHandler.updatePreview();
+  assert.equal(graph.graphHandler.cetzDragImages.length, 0, 'a control point with no geometry leaves the element untouched');
+  delete graphModel.cells[secondArtwork.id];
+  cellStates.delete(lineCell.id);
+  graph.view.scale = 1;
+  delete graph.graphHandler.cells;
+  graph.graphHandler.currentDx = 0;
+  graph.graphHandler.currentDy = 0;
+  const validationsBeforeLoad = viewValidations;
+  imageLoads.at(-1).onload();
+  assert.equal(graph.isCellVisible(previewImageCell), false);
+  assert.equal(graph.isCellVisible(artwork), true, 'loaded fragments replace the complete drawing');
+  assert.ok(viewValidations > validationsBeforeLoad, 'switching representations rebuilds the graph view');
+  assert.equal(artwork.style, unchangedStyle, 'view switching does not edit the document');
+  assert.equal(artwork.visible, false);
+  assert.equal(fitCalls, fitsBeforeLoad + 1, 'image load and model edits preserve the current view');
+  artwork.style += 'strokeColor=none;';
+  // Change the image itself to exercise failure during a subsequent source render.
+  artwork.style = artwork.style.replace('%3Csvg%2F%3E', '%3Csvg%3E%3C%2Fsvg%3E');
+  modelChanged();
+  assert.equal(graph.isCellVisible(previewImageCell), true);
+  imageLoads.at(-1).onerror();
+  assert.equal(graph.isCellVisible(previewImageCell), true, 'an image error keeps the full drawing visible');
+  assert.equal(graph.isCellVisible(artwork), false);
+  delete graphModel.cells[artwork.id];
+  modelChanged();
+  assert.equal(graph.isCellVisible(previewImageCell), true, 'old diagrams without fragments still display');
   graph.view.scale = 1;
   graph.view.translate = { x: 0, y: 0 };
   selectedCell = editCell;
@@ -534,6 +644,11 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.equal(rulerVisible, true);
   assert.equal(graph.graphHandler.updateHint, originalHint);
   assert.equal(graph.graphHandler.useGuidesForEvent, originalUseGuides);
+  assert.equal(graph.graphHandler.maxLivePreview, 17);
+  assert.equal(graph.graphHandler.allowLivePreview, false);
+  assert.equal(graph.graphHandler.updatePreview, originalPreview);
+  assert.equal(graph.graphHandler.reset, originalReset);
+  assert.equal(graph.isConstrainChild({ id: 'cetz-render-0' }), true);
   resizeHandler.updateHint();
   assert.equal(resizeHandler.hint.textContent, 'Draw.io size');
   assert.equal(graph.isCellSelectable({ id: 'cetz-axis-x' }), true);

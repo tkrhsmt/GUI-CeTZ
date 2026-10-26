@@ -1,6 +1,6 @@
 # GUI CeTZ
 
-GUI CeTZ is a VS Code extension that opens `cetz.canvas({ ... })` in the existing [Draw.io Integration extension](https://github.com/hediet/vscode-drawio). The `.typ` file remains the source of truth. Every canvas, including one containing only CeTZ primitives, is rendered by Typst and shown in Draw.io with the same SVG background. Supported top-level literal shapes receive individual move and resize handles while CeTZ computes their exact appearance.
+GUI CeTZ is a VS Code extension that opens `cetz.canvas({ ... })` in the existing [Draw.io Integration extension](https://github.com/hediet/vscode-drawio). The `.typ` file remains the source of truth. Every canvas, including one containing only CeTZ primitives, is rendered by Typst. Supported shapes carry their own SVG artwork. Live vector previews show movement, resizing, and control-point changes during the gesture; CeTZ recomputes the final appearance when the edit is committed.
 
 ## See it in action
 
@@ -70,6 +70,8 @@ The left sidebar includes an Outline in source order. Hovering a row highlights 
 ## Development
 
 `npm test` uses Node's built-in test runner and has no package installation step. The extension uses the VS Code API and built-in Node modules only.
+
+Optional native interaction tests use `jsdom` and the installed Draw.io `mxClient.js`. Set `GUI_CETZ_DOM_MODULE` to the installed `jsdom` module and `GUI_CETZ_MXCLIENT` to that file, then run `npm test`. These tests dispatch actual pointer events and inspect the resulting SVG DOM without opening a browser or taking screenshots. They are skipped when these optional dependencies are unavailable.
 
 Source modules:
 

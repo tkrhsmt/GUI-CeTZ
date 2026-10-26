@@ -5,6 +5,7 @@ const { renderCanvas } = require('./preview');
 const { templateInsertions } = require('./templates');
 const { color: parseColor, stroke: parseStroke, typstColor, typstStroke } = require('./style');
 const { sideValues, sideEdits } = require('./marks');
+const { layerInstrumentation, splitSvgLayers } = require('./svg-layers');
 
 const EDITABLE = new Set(['arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier', 'hobby',
   'catmull', 'merge-path', 'compound-path', 'rect', 'circle', 'content', 'line', 'polygon', 'anchor']);
@@ -67,7 +68,21 @@ function editableStyle(call) {
   const fill = namedArgument(call.call, 'fill')?.value;
   const stroke = namedArgument(call.call, 'stroke')?.value;
   const parsedStroke = parseStroke(stroke);
+  function curveParameter(name, fallback) {
+    const value = namedArgument(call.call, name)?.value;
+    if (value == null || value === 'auto') return fallback;
+    if (new RegExp(`^${NUMBER}$`).test(value)) return Number(value);
+    if (new RegExp(`^\\(\\s*${NUMBER}(?:\\s*,\\s*${NUMBER})*\\s*,?\\s*\\)$`).test(value))
+      return value.slice(1, -1).split(',').filter(part => part.trim()).map(Number);
+    return fallback;
+  }
   return { cetzKind: call.name,
+    ...(['bezier', 'catmull', 'hobby'].includes(call.name) ? {
+      cetzCurveClose: namedArgument(call.call, 'close')?.value === 'true' ? '1' : '0',
+      cetzCurveTension: curveParameter('tension', 0.5),
+      cetzCurveOmega: encodeURIComponent(JSON.stringify(curveParameter('omega', [0, 0]))),
+      cetzCurveTa: encodeURIComponent(JSON.stringify(curveParameter('ta', null))),
+      cetzCurveTb: encodeURIComponent(JSON.stringify(curveParameter('tb', null))) } : {}),
     ...(['polygon', 'n-star', 'content'].includes(call.name) || call.rotation ?
       { cetzAngle: call.rotation ? call.rotation.angle :
         /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))deg$/.exec(namedArgument(call.call, 'angle')?.value || '')?.[1] || '0' } : {}),
@@ -548,7 +563,14 @@ async function renderEditable(source, canvas, filePath) {
   const probes = [];
   const contentProbes = [];
   const insertions = [];
+  let layerFunction = '__gui_cetz_layer';
+  while (source.includes(layerFunction)) layerFunction += '_';
+  insertions.push({ offset: canvas.bodyStart, text: layerInstrumentation(layerFunction), order: 3 });
   for (const [index, call] of calls.entries()) {
+    if (!['group', 'anchor'].includes(call.name)) {
+      insertions.push({ offset: call.start, text: `${layerFunction}(`, order: 0 });
+      insertions.push({ offset: call.end, text: `, ${index})`, order: 2 });
+    }
     if (call.name === 'content') {
       const innerStart = source.indexOf(call.call, call.start);
       const innerEnd = innerStart + call.call.length;
@@ -595,8 +617,8 @@ async function renderEditable(source, canvas, filePath) {
   }
   const markers = '\nrect((0, 0), (0.01, 0.01), fill: rgb("#010203"), stroke: none)\n' +
     'rect((1, 1), (1.01, 1.01), fill: rgb("#040506"), stroke: none)\n';
-  insertions.push({ offset: canvas.bodyEnd, text: markers });
-  const calibrated = insertions.sort((a, b) => b.offset - a.offset).reduce((value, item) =>
+  insertions.push({ offset: canvas.bodyEnd, text: markers, order: -1 });
+  const calibrated = insertions.sort((a, b) => b.offset - a.offset || (a.order ?? 1) - (b.order ?? 1)).reduce((value, item) =>
     value.slice(0, item.offset) + item.text + value.slice(item.offset), source);
   const added = insertions.reduce((sum, item) => sum + item.text.length, 0);
   const updatedCanvas = { ...canvas, bodyEnd: canvas.bodyEnd + added, end: canvas.end + added };
@@ -605,9 +627,12 @@ async function renderEditable(source, canvas, filePath) {
     result = calibration(await renderCanvas(calibrated, updatedCanvas, filePath));
   } catch (error) {
     if (!probes.length && !contentProbes.length) throw error;
-    const plain = source.slice(0, canvas.bodyEnd) + markers + source.slice(canvas.bodyEnd);
+    const withoutProbes = insertions.filter(item => item.order != null);
+    const plain = withoutProbes.reduce((value, item) =>
+      value.slice(0, item.offset) + item.text + value.slice(item.offset), source);
+    const extra = withoutProbes.reduce((sum, item) => sum + item.text.length, 0);
     result = calibration(await renderCanvas(plain, {
-      ...canvas, bodyEnd: canvas.bodyEnd + markers.length, end: canvas.end + markers.length
+      ...canvas, bodyEnd: canvas.bodyEnd + extra, end: canvas.end + extra
     }, filePath));
   }
   for (const probe of probes) {
@@ -632,6 +657,8 @@ async function renderEditable(source, canvas, filePath) {
     ]);
     result.svg = result.svg.replace(match[0], '');
   }
+  const layered = splitSvgLayers(result.svg, calls.length);
+  result.svg = layered.svg;
   result.gridSize = pixel(result.unitX * 2.5 / GRID_FRACTIONS);
   const majorGrid = result.gridSize * GRID_FRACTIONS;
   result.originX = pixel(Math.round(TARGET_ORIGIN / majorGrid) * majorGrid);
@@ -649,6 +676,8 @@ async function renderEditable(source, canvas, filePath) {
   const backgroundX = result.originX - result.zero.x * 2.5;
   const backgroundY = result.originY - result.zero.y * 2.5;
   const background = `<mxCell id="cetz-preview-background" value="" style="shape=rect;fillColor=none;strokeColor=none;opacity=0;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;selectable=0;pointerEvents=0;cetzOriginX=${result.originX};cetzOriginY=${result.originY};cetzUnitX=${pixel(result.unitX * 2.5)};cetzUnitY=${pixel(result.unitY * 2.5)};" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(backgroundX)}" y="${pixel(backgroundY)}" width="${width}" height="${height}" as="geometry"/></mxCell>`;
+  // Always keep a visible complete drawing in the file. The plugin switches
+  // the view to individual fragments only after their images have loaded.
   const previewImage = `<mxCell id="cetz-preview-image" value="" style="shape=image;imageAspect=1;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;selectable=0;pointerEvents=0;image=${image};" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(backgroundX)}" y="${pixel(backgroundY)}" width="${width}" height="${height}" as="geometry"/></mxCell>`;
   const axisLeft = pixel(Math.min(backgroundX, result.originX) - 160);
   const axisRight = pixel(Math.max(backgroundX + width, result.originX) + 160);
@@ -667,7 +696,7 @@ async function renderEditable(source, canvas, filePath) {
     axisLabel('y', 'y', '#1d4ed8', result.originX + 5, axisTop + 5, 20) +
     `<mxCell id="cetz-origin-dot" value="" style="ellipse;fillColor=#1f2937;strokeColor=#ffffff;strokeWidth=1;movable=0;resizable=0;deletable=0;selectable=0;pointerEvents=0;" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(result.originX - 4)}" y="${pixel(result.originY - 4)}" width="8" height="8" as="geometry"/></mxCell>` +
     axisLabel('origin', '(0, 0)', '#1f2937', result.originX + 7, result.originY + 7, 48);
-  const handles = calls.map((call, i) => {
+  const handleCells = calls.map((call, i) => {
     const points = call.resolvedPoints?.length && call.resolvedPoints.every(Boolean)
       ? call.resolvedPoints : null;
     let b = call.requiresProbe && !points ? null : boundsFor(call, points);
@@ -709,8 +738,23 @@ async function renderEditable(source, canvas, filePath) {
       .map(([key, value]) => `${key}=${value};`).join('');
     const fixed = ['anchor', 'group'].includes(call.name);
     const referencedRect = call.name === 'rect' && call.resolvedPoints?.length === 2 && !call.rotation;
-    return `<mxCell id="cetz-edit-${i}" value="" style="rounded=0;fillColor=#ffffff;fillOpacity=1;strokeColor=#4f79ff;strokeOpacity=35;dashed=1;connectable=0;deletable=0;rotatable=0;${fixed ? 'movable=0;resizable=0;' : call.name === 'content' || call.resolvedPoints?.length && !referencedRect ? 'resizable=0;' : ''}${call.name === 'group' ? 'pointerEvents=0;' : ''}${settings}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x)}" y="${pixel(y)}" width="${pixel(w)}" height="${pixel(h)}" as="geometry"/></mxCell>`;
+    return `<mxCell id="cetz-edit-${i}" value="" style="rounded=0;fillColor=#ffffff;fillOpacity=0;strokeColor=none;dashed=0;recursiveResize=0;expand=0;dropTarget=0;connectable=0;deletable=0;rotatable=0;${fixed ? 'movable=0;resizable=0;' : call.name === 'content' || call.resolvedPoints?.length && !referencedRect ? 'resizable=0;' : ''}${call.name === 'group' ? 'pointerEvents=0;' : ''}${settings}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x)}" y="${pixel(y)}" width="${pixel(w)}" height="${pixel(h)}" as="geometry"/></mxCell>`;
+  });
+  const emitted = new Set();
+  const layers = layered.layers.map((layer, index) => {
+    const owner = layer.owner == null ? null : calls[layer.owner];
+    const parent = owner?.geometry ? `cetz-edit-${layer.owner}` : '1';
+    let handle = '';
+    if (owner?.geometry && !emitted.has(layer.owner)) {
+      handle = handleCells[layer.owner]; emitted.add(layer.owner);
+    }
+    const [x, y, w, h] = layer.bounds || [0, 0, width / 2.5, height / 2.5];
+    const localX = backgroundX + x * 2.5 - (owner?.geometry?.x || 0);
+    const localY = backgroundY + y * 2.5 - (owner?.geometry?.y || 0);
+    const image = `data:image/svg+xml,${encodeURIComponent(layer.svg)}`;
+    return handle + `<mxCell id="cetz-render-${index}" value="" style="shape=image;imageAspect=0;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;selectable=0;pointerEvents=0;image=${image};" visible="0" vertex="1" parent="${parent}" connectable="0"><mxGeometry x="${pixel(localX)}" y="${pixel(localY)}" width="${pixel(w * 2.5)}" height="${pixel(h * 2.5)}" as="geometry"/></mxCell>`;
   }).join('');
+  const handles = layers + handleCells.filter((_, index) => !emitted.has(index)).join('');
   function screenPoint(call, point) {
     let x = call.transform.tx + call.transform.sx * point.x;
     let y = call.transform.ty + call.transform.sy * point.y;
@@ -740,7 +784,8 @@ async function renderEditable(source, canvas, filePath) {
         ? '#e28b23' : '#2563eb';
       const constraint = arc && j === 1 ? 'cetzArcHandle=center;' : arc && j === 2
         ? `cetzArcHandle=end;cetzArcCenterX=${pixel(arcCenter.x)};cetzArcCenterY=${pixel(arcCenter.y)};` +
-          `cetzArcRadiusX=${pixel(arcRadiusX)};cetzArcRadiusY=${pixel(arcRadiusY)};` : '';
+          `cetzArcRadiusX=${pixel(arcRadiusX)};cetzArcRadiusY=${pixel(arcRadiusY)};` +
+          `cetzArcSpan=${pixel(+arc.stop.value.slice(0, -3) - +arc.start.value.slice(0, -3))};` : '';
       return `<mxCell id="cetz-point-${i}-${j}" value="" style="ellipse;fillColor=#ffffff;strokeColor=${color};strokeWidth=2;resizable=0;deletable=0;rotatable=0;connectable=0;${constraint}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x - POINT_HANDLE_SIZE / 2)}" y="${pixel(y - POINT_HANDLE_SIZE / 2)}" width="${POINT_HANDLE_SIZE}" height="${POINT_HANDLE_SIZE}" as="geometry"/></mxCell>`;
     }).join('');
   }).join('');
@@ -773,6 +818,13 @@ function patchesFromEditable(source, rendered, xml, readCells) {
   if (JSON.stringify(canonical(cells.get('cetz-preview-image'))) !==
     JSON.stringify(canonical(original.get('cetz-preview-image'))))
     throw new Error('The CeTZ preview image cannot be edited.');
+  for (const [id, item] of original) {
+    if (!/^cetz-render-\d+$/.test(id)) continue;
+    const owner = /^cetz-edit-(\d+)$/.exec(item.cell.parent || '');
+    if (owner && !cells.has(item.cell.parent)) continue;
+    if (JSON.stringify(canonical(cells.get(id))) !== JSON.stringify(canonical(item)))
+      throw new Error('The CeTZ rendered shape cannot be edited directly.');
+  }
   for (let i = 0; i < rendered.calls.length; i++) {
     const call = rendered.calls[i], id = `cetz-edit-${i}`;
     if (call.group && !cells.has(`cetz-edit-${rendered.calls.indexOf(call.group)}`)) continue;

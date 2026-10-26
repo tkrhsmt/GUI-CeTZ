@@ -984,7 +984,7 @@ test('resizes one advanced shape without changing a neighboring call', async () 
   const resized = readAllCells(rerendered.xml).get('cetz-edit-0').geometry;
   assert.ok(Math.abs(Number(resized.width) - Number(original.width) * 1.5) < 0.02);
   assert.throws(() => patchesFromEditable(source, rendered,
-    rendered.xml.replace('strokeOpacity=35', 'strokeOpacity=100'), readAllCells), /style in Typst/);
+    rendered.xml.replace('dashed=0;recursiveResize=0', 'dashed=1;recursiveResize=0'), readAllCells), /style in Typst/);
 });
 test('renders only the selected canvas when earlier canvases exist', async () => {
   const text = '#import "@preview/cetz:0.5.2"\n' +
