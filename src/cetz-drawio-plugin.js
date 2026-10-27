@@ -151,10 +151,11 @@ Draw.loadPlugin(function (ui) {
   rail.appendChild(paletteStrip);
   var railStyle = document.createElement('style');
   railStyle.textContent = '.cetzPropertyPanel,.cetzOutline{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}.cetzPropertyPanel :where(div,section,header,details,label,summary),.cetzOutline :where(header,div){box-sizing:border-box;min-width:0;max-width:100%}.cetzPropertyPanel :where(h2,small,label,summary,button),.cetzOutline :where(h2,small){white-space:normal;overflow-wrap:anywhere}.cetzOutlineHint,.cetzOutlineEmpty{white-space:normal;overflow-wrap:anywhere}.cetzOutlineCount{flex-shrink:0}.cetzRightRail ::-webkit-scrollbar{width:0;height:0}' +
-    '.cetzOutline{--ol-line:var(--vscode-panel-border,#dce0e5);--ol-hover:var(--vscode-list-hoverBackground,#f2f3f5);--ol-selected:var(--vscode-list-inactiveSelectionBackground,#eaf0fe);--ol-accent:var(--vscode-focusBorder,#4675e7);--ol-icon:var(--vscode-input-background,#f2f3f5);color:inherit;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}' +
-    '.geDarkMode .cetzOutline{--ol-line:#45474b;--ol-hover:#303236;--ol-selected:#293a57;--ol-icon:#303236}.cetzOutline header{padding:12px 4px 13px}.cetzOutline small{font-size:10px;opacity:.6;letter-spacing:1.2px}.cetzOutlineHeading{display:flex;align-items:center;gap:8px;margin:5px 0}.cetzOutline h2{font-size:17px;font-weight:600;letter-spacing:-.3px;margin:0;flex:1}.cetzOutlineCount{font-size:10px;border:1px solid var(--ol-line);border-radius:5px;padding:2px 6px;opacity:.7;font-variant-numeric:tabular-nums}.cetzOutlineHint{font-size:10px;opacity:.55;line-height:1.5}' +
+    '.cetzOutline{display:flex;flex-direction:column;--ol-line:var(--vscode-panel-border,#dce0e5);--ol-hover:var(--vscode-list-hoverBackground,#f2f3f5);--ol-selected:var(--vscode-list-inactiveSelectionBackground,#eaf0fe);--ol-accent:var(--vscode-focusBorder,#4675e7);--ol-icon:var(--vscode-input-background,#f2f3f5);color:inherit;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}' +
+    '.geDarkMode .cetzOutline{display:flex;flex-direction:column;--ol-line:#45474b;--ol-hover:#303236;--ol-selected:#293a57;--ol-icon:#303236}.cetzOutline header{flex:none;padding:12px 4px 13px}.cetzOutline small{font-size:10px;opacity:.6;letter-spacing:1.2px}.cetzOutlineHeading{display:flex;align-items:center;gap:8px;margin:5px 0}.cetzOutline h2{font-size:17px;font-weight:600;letter-spacing:-.3px;margin:0;flex:1}.cetzOutlineCount{font-size:10px;border:1px solid var(--ol-line);border-radius:5px;padding:2px 6px;opacity:.7;font-variant-numeric:tabular-nums}.cetzOutlineHint{font-size:10px;opacity:.55;line-height:1.5}' +
     '.cetzOutlineList{max-height:240px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:0 0 8px}.cetzOutlineRow{display:flex;box-sizing:border-box;width:100%;align-items:center;gap:2px;min-height:48px;border-radius:6px;margin:2px 0;color:inherit;position:relative}.cetzOutlineRow:hover{background:var(--ol-hover)}.cetzOutlineRow[data-selected=true]{background:var(--ol-selected)}.cetzOutlineRow[data-selected=true]:before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:2px;border-radius:2px;background:var(--ol-accent)}' +
     '.cetzOutline button{font:inherit;color:inherit;border:0;background:transparent;cursor:pointer;border-radius:4px}.cetzOutline button:focus-visible{outline:2px solid var(--ol-accent);outline-offset:-2px}.cetzOutlineGrip{width:12px;flex:none;cursor:grab;text-align:center;user-select:none;opacity:0;font-size:11px}.cetzOutlineRow:hover .cetzOutlineGrip,.cetzOutlineRow:focus-within .cetzOutlineGrip{opacity:.45}.cetzOutlineSelect{display:flex;align-items:center;gap:8px;flex:1;min-width:0;text-align:left;padding:6px 3px}.cetzOutlineIcon{display:flex;width:26px;height:28px;align-items:center;justify-content:center;flex:none;border-radius:5px;background:var(--ol-icon);opacity:.85}.cetzOutlineRow[data-selected=true] .cetzOutlineIcon{color:var(--ol-accent)}.cetzOutlineText{display:block;flex:1;min-width:0}.cetzOutlineName{display:flex;align-items:center;gap:6px}.cetzOutlineNameText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:550;line-height:18px}.cetzOutlineMeta{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;opacity:.55;line-height:16px;font-variant-numeric:tabular-nums}.cetzOutlineBranch{flex:none;width:16px;height:24px;padding:0;font-size:10px!important;opacity:.6}.cetzOutlineBranch svg{display:block;margin:auto}.cetzOutlineMove{padding:3px!important;width:20px;height:24px;flex:none;opacity:0;pointer-events:none}.cetzOutlineRow:hover .cetzOutlineMove,.cetzOutlineRow:focus-within .cetzOutlineMove{opacity:.65;pointer-events:auto}.cetzOutlineMove:hover{background:var(--ol-icon)}.cetzOutlineEmpty{margin:0 4px 12px;padding:16px 12px;border:1px dashed var(--ol-line);border-radius:6px;line-height:1.6;font-size:11px;opacity:.65}';
+  railStyle.textContent += '.cetzOutline[data-resized=true] .cetzOutlineList{flex:1;min-height:0;max-height:none}.cetzOutlineResize{flex:none;height:14px;position:relative;cursor:row-resize;touch-action:none;user-select:none;border-radius:4px;outline:none}.cetzOutlineResize:after{content:"";position:absolute;width:32px;height:3px;left:50%;top:5px;transform:translateX(-50%);border-radius:3px;background:var(--ol-line)}.cetzOutlineResize:hover:after,.cetzOutlineResize:focus-visible:after,.cetzOutlineResize[data-dragging=true]:after{background:var(--ol-accent)}.cetzOutlineResize:focus-visible{box-shadow:inset 0 0 0 1px var(--ol-accent)}';
   rail.appendChild(railStyle);
   function placePalette(pair) {
     if (!pair) return;
@@ -665,6 +666,7 @@ Draw.loadPlugin(function (ui) {
   }, true);
   var cetzMenu = null;
   function sendHistoryAction(name) {
+    keyboardMoves = {};
     var token = Date.now().toString(36) + Math.random().toString(36).slice(2);
     graph.insertVertex(graph.getDefaultParent(), null, '', -1000, -1000, 1, 1,
       'opacity=0;strokeColor=none;fillColor=none;cetzAction=' + name +
@@ -716,6 +718,7 @@ Draw.loadPlugin(function (ui) {
     if (fileKey === inspectorFileKey) return;
     Object.keys(inspectorStates).forEach(function (id) { if (inspectorStates[id].timer) clearTimeout(inspectorStates[id].timer); });
     inspectorStates = {}; inspectorFlight = null; inspectorCurrent = null; inspectorSignature = ''; inspectorFileKey = fileKey;
+    keyboardMoves = {};
     outlineSignature = ''; outlineSelection = ''; outlineCollapsed = {};
   }
   function inspectorData(cell) {
@@ -1258,6 +1261,83 @@ Draw.loadPlugin(function (ui) {
     }
     return false;
   }
+  var keyboardMoves = {}, replayingKeyboardMoves = false;
+  function keyboardMoveStyles(cell, x, y, step) {
+    graph.setCellStyles('cetzMoveX', String(Number(x.toFixed(8))), [cell]);
+    graph.setCellStyles('cetzMoveY', String(Number(y.toFixed(8))), [cell]);
+    graph.setCellStyles('cetzMoveGrid', '0', [cell]);
+    graph.setCellStyles('cetzSnapStep', String(step), [cell]);
+    ['cetzGuideX', 'cetzGuideY'].forEach(function (key) { graph.setCellStyles(key, '0', [cell]); });
+  }
+  function reconcileKeyboardMoves() {
+    if (replayingKeyboardMoves || !Object.keys(keyboardMoves).length) return;
+    if (!isCetz() || !isEditablePreview()) { keyboardMoves = {}; return; }
+    var model = graph.getModel(), frame = cetzFrame(); if (!frame) return;
+    if (Object.keys(model.cells || {}).some(function (id) {
+      return /^cetz-scene-\d+$/.test(id) && /(?:^|;)cetzError=[^;]+;/.test(model.cells[id].style || '');
+    })) { keyboardMoves = {}; return; }
+    replayingKeyboardMoves = true;
+    model.beginUpdate();
+    try {
+      Object.keys(keyboardMoves).forEach(function (id) {
+        var pending = keyboardMoves[id], cell = model.getCell(id);
+        if (!cell || !graph.isCellMovable(cell)) { delete keyboardMoves[id]; return; }
+        var style = graph.getCellStyle(cell), x = Number(style.cetzReferenceX), y = Number(style.cetzReferenceY);
+        function matches(point) { return Math.abs(point.x - x) < 0.000001 && Math.abs(point.y - y) < 0.000001; }
+        // An unrelated source change wins. Only replay over an earlier point
+        // in this keyboard sequence, never over a new object or external move.
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !pending.positions.some(matches)) { delete keyboardMoves[id]; return; }
+        if (matches(pending) && style.cetzMoveX === undefined && style.cetzMoveY === undefined) { delete keyboardMoves[id]; return; }
+        var geometry = model.getGeometry(cell).clone();
+        var targetX = Number(style.cetzBaseX) + (pending.x - x) * frame.unitX;
+        var targetY = Number(style.cetzBaseY) - (pending.y - y) * frame.unitY;
+        if (Number(style.cetzMoveX) === pending.x && Number(style.cetzMoveY) === pending.y &&
+          Math.abs(geometry.x - targetX) < 0.00002 && Math.abs(geometry.y - targetY) < 0.00002) return;
+        geometry.x = targetX; geometry.y = targetY;
+        keyboardMoveStyles(cell, pending.x, pending.y, pending.step);
+        model.setGeometry(cell, geometry);
+      });
+    } finally { model.endUpdate(); replayingKeyboardMoves = false; }
+  }
+  ['pointerdown', 'mousedown'].forEach(function (type) {
+    if (graph.container && graph.container.addEventListener)
+      graph.container.addEventListener(type, function () { keyboardMoves = {}; }, true);
+  });
+  document.addEventListener('keydown', function (event) {
+    var direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+    if (!direction || !isCetz() || !isEditablePreview() || placement || ui.dialog ||
+      event.metaKey || event.ctrlKey || event.altKey || event.isComposing || event.keyCode === 229 || isTextTarget(event.target) ||
+      event.target === outlineResize || graph.isEditing && graph.isEditing()) return;
+    var selected = selectedEditableCells();
+    if (!selected.length) return;
+    var frame = cetzFrame(); if (!frame) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    var cells = selected.filter(function (cell) { return graph.isCellMovable(cell); });
+    var step = snapStep() * (event.shiftKey ? 5 : 1);
+    var dx = direction[0] * step, dy = direction[1] * step, model = graph.getModel();
+    model.beginUpdate();
+    try {
+      cells.forEach(function (cell) {
+        var g = model.getGeometry(cell), style = graph.getCellStyle(cell), anchor = cetzAnchor(cell);
+        // Keep the source reference exact, independent of rounded SVG bounds.
+        // Existing drag targets and unsaved geometry edits remain cumulative.
+        var x = style.cetzReferenceX !== undefined
+          ? Number(style.cetzReferenceX) + (g.x - Number(style.cetzBaseX)) / frame.unitX
+          : (g.x + anchor.x - frame.originX) / frame.unitX;
+        var y = style.cetzReferenceY !== undefined
+          ? Number(style.cetzReferenceY) - (g.y - Number(style.cetzBaseY)) / frame.unitY
+          : (frame.originY - g.y - anchor.y) / frame.unitY;
+        if (style.cetzMoveX !== undefined && style.cetzMoveY !== undefined) {
+          x = Number(style.cetzMoveX); y = Number(style.cetzMoveY);
+        }
+        var pending = keyboardMoves[cell.id] || { positions: [{ x: x, y: y }] };
+        pending.x = Number((x + dx).toFixed(8)); pending.y = Number((y - dy).toFixed(8)); pending.step = snapStep();
+        pending.positions.push({ x: pending.x, y: pending.y }); keyboardMoves[cell.id] = pending;
+        keyboardMoveStyles(cell, pending.x, pending.y, pending.step);
+      });
+      graph.moveCells(cells, dx * frame.unitX, dy * frame.unitY);
+    } finally { model.endUpdate(); }
+  }, true);
   // Native macOS/webview paste can arrive as a clipboard event rather than a
   // V keydown. Draw.io directs these events through its hidden editable div.
   ['copy', 'paste'].forEach(function (name) {
@@ -2506,6 +2586,73 @@ Draw.loadPlugin(function (ui) {
   var outlineDragging = false;
   var outlineDropRow = null, outlineCollapsed = {}, outlineSignature = '', outlineSelection = '';
   var outlineList = null;
+  var outlineHeight = null, outlineResizeDrag = null;
+  var outlineResize = document.createElement('div'); outlineResize.className = 'cetzOutlineResize';
+  outlineResize.tabIndex = 0; outlineResize.setAttribute('role', 'separator');
+  outlineResize.setAttribute('aria-label', 'Resize Outline'); outlineResize.setAttribute('aria-orientation', 'horizontal');
+  outlineResize.title = 'Drag to resize Outline. Arrow keys adjust height; double-click to reset.';
+  try { var savedOutlineHeight = Number(localStorage.getItem('gui-cetz.outlineHeight')); if (savedOutlineHeight > 0) outlineHeight = savedOutlineHeight; } catch (error) {}
+  function applyOutlineHeight(height) {
+    var max = Math.max(140, (typeof window !== 'undefined' && window.innerHeight || 768) - 160);
+    outlineHeight = height === null ? null : Math.round(Math.max(140, Math.min(max, height)));
+    outline.style.height = outlineHeight === null ? '' : outlineHeight + 'px';
+    outline.setAttribute('data-resized', String(outlineHeight !== null));
+    outlineResize.setAttribute('aria-valuemin', '140'); outlineResize.setAttribute('aria-valuemax', String(max));
+    outlineResize.setAttribute('aria-valuenow', String(outlineHeight || outline.offsetHeight || 320));
+  }
+  function rememberOutlineHeight() {
+    try {
+      if (outlineHeight === null) localStorage.removeItem('gui-cetz.outlineHeight');
+      else localStorage.setItem('gui-cetz.outlineHeight', String(outlineHeight));
+    } catch (error) {}
+  }
+  var outlineDownEvent = typeof PointerEvent === 'undefined' ? 'mousedown' : 'pointerdown';
+  var outlineMoveEvent = outlineDownEvent === 'mousedown' ? 'mousemove' : 'pointermove';
+  var outlineUpEvent = outlineDownEvent === 'mousedown' ? 'mouseup' : 'pointerup';
+  function moveOutlineResize(event) {
+    if (!outlineResizeDrag) return;
+    event.preventDefault(); event.stopPropagation();
+    applyOutlineHeight(outlineResizeDrag.height + event.clientY - outlineResizeDrag.y);
+  }
+  function finishOutlineResize(event) {
+    if (!outlineResizeDrag) return;
+    if (event && event.type === 'keydown' && event.key !== 'Escape') return;
+    if (event && (event.type === 'pointercancel' || event.type === 'keydown')) applyOutlineHeight(outlineResizeDrag.previous);
+    document.documentElement.style.cursor = outlineResizeDrag.cursor;
+    document.documentElement.style.userSelect = outlineResizeDrag.userSelect;
+    outlineResizeDrag = null; outlineResize.setAttribute('data-dragging', 'false'); rememberOutlineHeight();
+    document.removeEventListener(outlineMoveEvent, moveOutlineResize, true);
+    document.removeEventListener(outlineUpEvent, finishOutlineResize, true);
+    document.removeEventListener('pointercancel', finishOutlineResize, true);
+    document.removeEventListener('keydown', finishOutlineResize, true);
+    if (event) { event.preventDefault(); event.stopPropagation(); }
+  }
+  outlineResize.addEventListener(outlineDownEvent, function (event) {
+    if (event.button != null && event.button !== 0 || outlineResizeDrag) return;
+    event.preventDefault(); event.stopPropagation();
+    outlineResizeDrag = { y: event.clientY, height: outline.offsetHeight || outlineHeight || 320, previous: outlineHeight,
+      cursor: document.documentElement.style.cursor, userSelect: document.documentElement.style.userSelect };
+    outlineResize.focus({ preventScroll: true }); outlineResize.setAttribute('data-dragging', 'true');
+    document.documentElement.style.cursor = 'row-resize'; document.documentElement.style.userSelect = 'none';
+    document.addEventListener(outlineMoveEvent, moveOutlineResize, true);
+    document.addEventListener(outlineUpEvent, finishOutlineResize, true);
+    document.addEventListener('pointercancel', finishOutlineResize, true);
+    document.addEventListener('keydown', finishOutlineResize, true);
+  });
+  outlineResize.addEventListener('keydown', function (event) {
+    if (['ArrowUp', 'ArrowDown', 'Home', 'End'].indexOf(event.key) < 0) return;
+    event.preventDefault(); event.stopPropagation();
+    var height = outlineHeight || outline.offsetHeight || 320, step = event.shiftKey ? 40 : 16;
+    applyOutlineHeight(event.key === 'Home' ? 140 : event.key === 'End' ? Infinity : height + (event.key === 'ArrowUp' ? -step : step));
+    rememberOutlineHeight();
+  });
+  outlineResize.addEventListener('dblclick', function (event) {
+    event.preventDefault(); event.stopPropagation(); applyOutlineHeight(null); rememberOutlineHeight();
+  });
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('resize', function () { applyOutlineHeight(outlineHeight); });
+    window.addEventListener('blur', finishOutlineResize);
+  }
   function clearOutlineDropLine() {
     if (outlineDropRow) outlineDropRow.style.boxShadow = '';
     outlineDropRow = null;
@@ -2837,6 +2984,8 @@ Draw.loadPlugin(function (ui) {
     }
     appendRows('root', 0);
     outlineList.scrollTop = scroll;
+    outline.appendChild(outlineResize);
+    applyOutlineHeight(outlineHeight);
   }
   function update() {
     suppressCachedSelectionBorders();
@@ -3277,7 +3426,7 @@ Draw.loadPlugin(function (ui) {
       sendSourceAction('select', null, indices);
     lastSourceSelection = selection;
   });
-  graph.getModel().addListener('change', function () { setTimeout(update, 0); });
+  graph.getModel().addListener('change', function () { reconcileKeyboardMoves(); setTimeout(update, 0); });
   new MutationObserver(function (records) {
     // Inspector and Outline redraws are our own DOM changes. Observing them
     // would schedule another redraw and can replace a row during its click.

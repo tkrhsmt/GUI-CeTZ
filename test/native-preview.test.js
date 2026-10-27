@@ -1658,3 +1658,131 @@ test('canvas hover tints nearby CeTZ artwork like Outline without selecting or m
   f.graph.fireMouseEvent(f.w.mxEvent.MOUSE_DOWN, new f.w.mxMouseEvent(down));
   assert.equal(highlighted().length, 0, 'dragging starts without a stationary hover overlay');
 });
+
+test('Outline height resizes independently of the source and survives selection redraws', { skip }, async t => {
+  const f = await fixture(t);
+  f.w.document.body.appendChild(f.ui.sidebar.wrapper);
+  const outline = f.ui.sidebar.wrapper.querySelector('.cetzOutline');
+  Object.defineProperty(outline, 'offsetHeight', { get() { return Number.parseInt(outline.style.height) || 320; } });
+  const handle = outline.querySelector('[role="separator"]');
+  assert.equal(handle.getAttribute('aria-label'), 'Resize Outline');
+  const before = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  function drag(from, to, finish = true) {
+    handle.dispatchEvent(new f.w.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientY: from }));
+    f.w.document.dispatchEvent(new f.w.MouseEvent('mousemove', { bubbles: true, cancelable: true, clientY: to }));
+    if (finish) f.w.document.dispatchEvent(new f.w.MouseEvent('mouseup', { bubbles: true, clientY: to }));
+  }
+  drag(320, 420);
+  assert.equal(outline.style.height, '420px');
+  assert.equal(handle.getAttribute('aria-valuenow'), '420');
+  assert.equal(f.w.localStorage.getItem('gui-cetz.outlineHeight'), '420');
+  assert.equal(f.w.document.documentElement.style.cursor, '');
+  assert.equal(f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)), before);
+  const list = outline.querySelector('.cetzOutlineList'); list.scrollTop = 50;
+  f.select('cetz-edit-2');
+  assert.equal(outline.style.height, '420px');
+  assert.equal(outline.querySelector('.cetzOutlineResize'), handle);
+  assert.equal(outline.querySelector('.cetzOutlineList').scrollTop, 50);
+  handle.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+  assert.equal(outline.style.height, '404px');
+  drag(404, 454, false);
+  f.w.document.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(outline.style.height, '404px', 'Escape cancels a resize');
+  drag(404, -1000); assert.equal(outline.style.height, '140px');
+  drag(140, 5000); assert.equal(outline.style.height, '608px');
+  handle.dispatchEvent(new f.w.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  assert.equal(outline.style.height, '');
+  assert.equal(outline.getAttribute('data-resized'), 'false');
+  assert.equal(f.w.localStorage.getItem('gui-cetz.outlineHeight'), null);
+});
+
+test('arrow keys move selected shapes by one zoom-dependent grid step and Shift moves five', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\nrect((0, 0), (2, 1))\ncircle((3.13, 1.17), radius: 0.5)\n})';
+  for (const scale of [1, 2, 4]) {
+    const f = await fixture(t, source); f.graph.view.setScale(scale);
+    f.graph.setSelectionCells(['cetz-edit-0', 'cetz-edit-1'].map(id => f.graph.model.getCell(id)));
+    function press(key, shiftKey = false, target = f.graph.container) {
+      const event = new f.w.KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true });
+      target.dispatchEvent(event); return event;
+    }
+    const step = 0.25 / scale;
+    for (let i = 0; i < 3; i++) assert.equal(press('ArrowRight').defaultPrevented, true);
+    press('ArrowUp', true);
+    const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+    const patches = patchesFromEditable(source, f.rendered, xml, readAllCells);
+    const next = patches.sort((a, b) => b.start - a.start).reduce((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+    const rendered = await renderEditable(next, parseCanvas(next).canvas, path.resolve('examples/native.typ'));
+    const model = index => JSON.parse(decodeURIComponent(readAllCells(rendered.xml).get('cetz-edit-' + index).cell.style.match(/cetzProperties=([^;]+);/)[1]));
+    assert.deepEqual(model(0).fields.find(field => field.key === '$0').point, [3 * step, 5 * step]);
+    assert.deepEqual(model(1).fields.find(field => field.key === '$0').point, [Number((3.13 + 3 * step).toFixed(8)), Number((1.17 + 5 * step).toFixed(8))]);
+    assert.match(next, /radius: 0\.5/);
+    press('ArrowLeft'); press('ArrowDown', true);
+    assert.equal(Number(f.graph.getCellStyle(f.graph.model.getCell('cetz-edit-0')).cetzMoveX), 2 * step);
+    assert.equal(Number(f.graph.getCellStyle(f.graph.model.getCell('cetz-edit-0')).cetzMoveY), 0);
+    f.select('cetz-edit-0');
+    const input = f.ui.sidebar.wrapper.querySelector('.cetzInspector input');
+    const before = f.graph.model.getCell('cetz-edit-0').geometry.clone();
+    assert.equal(press('ArrowRight', false, input).defaultPrevented, false);
+    const handle = f.ui.sidebar.wrapper.querySelector('.cetzOutlineResize');
+    press('ArrowDown', false, handle);
+    assert.equal(f.graph.model.getCell('cetz-edit-0').geometry.x, before.x);
+    assert.equal(f.graph.model.getCell('cetz-edit-0').geometry.y, before.y);
+  }
+});
+
+test('continuous arrow input survives intermediate source renders without rewinding newer moves', { skip }, async t => {
+  let source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\nrect((0, 0), (2, 1))\n})';
+  const f = await fixture(t, source); f.select('cetz-edit-0');
+  const key = (name, shiftKey = false) => f.graph.container.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: name, shiftKey, bubbles: true, cancelable: true }));
+  const xml = () => f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  async function renderSnapshot(snapshot) {
+    const patches = patchesFromEditable(source, f.rendered, snapshot, readAllCells);
+    const next = patches.sort((a, b) => b.start - a.start).reduce((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+    return { source: next, rendered: await renderEditable(next, parseCanvas(next).canvas, path.resolve('examples/native.typ')) };
+  }
+  function merge(result) {
+    const document = f.w.mxUtils.parseXml(result.rendered.xml), incoming = new f.w.mxGraphModel();
+    new f.w.mxCodec(document).decode(document.getElementsByTagName('mxGraphModel')[0], incoming);
+    f.graph.model.beginUpdate();
+    try {
+      for (const [id, cell] of Object.entries(incoming.cells)) {
+        const current = f.graph.model.getCell(id); if (!current || !cell.geometry) continue;
+        f.graph.model.setStyle(current, cell.style);
+        f.graph.model.setGeometry(current, cell.geometry.clone());
+      }
+    } finally { f.graph.model.endUpdate(); }
+    source = result.source; f.rendered = result.rendered;
+  }
+  key('ArrowRight');
+  const first = await renderSnapshot(xml());
+  key('ArrowRight'); key('ArrowRight');
+  let desired = f.graph.model.getCell('cetz-edit-0').geometry.clone();
+  merge(first);
+  assert.ok(Math.abs(f.graph.model.getCell('cetz-edit-0').geometry.x - desired.x) < 0.00002, 'an earlier .25 render must preserve the newer .75 position');
+  key('ArrowRight');
+  const second = await renderSnapshot(xml());
+  key('ArrowUp', true); key('ArrowRight');
+  desired = f.graph.model.getCell('cetz-edit-0').geometry.clone();
+  merge(second);
+  assert.ok(Math.abs(f.graph.model.getCell('cetz-edit-0').geometry.x - desired.x) < 0.00002);
+  assert.ok(Math.abs(f.graph.model.getCell('cetz-edit-0').geometry.y - desired.y) < 0.00002);
+  const final = await renderSnapshot(xml()); merge(final);
+  assert.match(source, /rect\(\(1\.25, 1\.25\),\s*\(3\.25, 2\.25\)\)/);
+  assert.deepEqual(patchesFromEditable(source, f.rendered, xml(), readAllCells), []);
+  key('ArrowLeft');
+  const last = await renderSnapshot(xml()); merge(last);
+  assert.match(source, /rect\(\(1, 1\.25\),\s*\(3, 2\.25\)\)/);
+  key('ArrowRight');
+  const reversed = await renderSnapshot(xml());
+  key('ArrowLeft');
+  merge(reversed);
+  assert.equal(Number(f.graph.getCellStyle(f.graph.model.getCell('cetz-edit-0')).cetzMoveX), 1, 'returning to the previous source position is still a pending move');
+  const settled = await renderSnapshot(xml()); merge(settled);
+  assert.match(source, /rect\(\(1, 1\.25\),\s*\(3, 2\.25\)\)/);
+  key('ArrowRight');
+  const beforeUndo = await renderSnapshot(xml());
+  key('ArrowRight');
+  f.graph.container.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true }));
+  merge(beforeUndo);
+  assert.equal(f.graph.getCellStyle(f.graph.model.getCell('cetz-edit-0')).cetzMoveX, undefined, 'Undo cancels unacknowledged keyboard movement');
+});

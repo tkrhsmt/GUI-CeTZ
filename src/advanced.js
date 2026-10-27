@@ -778,6 +778,8 @@ async function renderEditable(source, canvas, filePath) {
       (call.name === 'anchor' ? /anchor\(\s*"([^"\\]+)"/.exec(call.call)?.[1] : '') ||
       call.name;
     const settings = Object.entries({ ...editableStyle(call), ...snap,
+      ...(firstPoint ? { cetzReferenceX: firstPoint.x, cetzReferenceY: firstPoint.y,
+        cetzBaseX: pixel(x), cetzBaseY: pixel(y) } : {}),
       cetzLabel: encodeURIComponent(label), cetzGroup: call.group ? calls.indexOf(call.group) : '',
       cetzStart: call.start })
       .map(([key, value]) => `${key}=${value};`).join('');
