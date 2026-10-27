@@ -127,7 +127,8 @@ async function extensionFixture(t, initialText) {
     assert.deepEqual(errors, []);
     assert.ok(predicate(), 'GUI synchronization completes');
   }
-  return { source, gui, save, action, until, ownerIds, selectedIndices, removeShapes, getClipboard: () => clipboard };
+  return { source, gui, save, action, until, ownerIds, selectedIndices, removeShapes,
+    editSource(text) { source.text = text; source.version++; changed({ document: source }); }, getClipboard: () => clipboard };
 }
 
 test('clipboard bridge handles rapid copy-paste, deletion and paste after the originals are gone', async t => {
@@ -306,4 +307,52 @@ test('Boolean native saves remain operable through property changes, movement, d
   save(nativeSave(gui.text).replace('</root>', action('undo') + '</root>'));
   await until(() => source.text === afterProperties && !gui.text.includes('cetzAction=undo;'));
   assert.doesNotMatch(gui.text, /cetzStatus=/);
+});
+
+test('selection operations select their result, support undo, and keep rect-around attached to the originals', async t => {
+  const initial = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\ncircle((0, 0), radius: 1.5, fill: red)\npolygon((0.5, 0), 5, radius: 1.5)\nn-star((0, 0.5), 5, radius: 1.5)\n})';
+  const { source, gui, action, save, until, selectedIndices, ownerIds } = await extensionFixture(t, initial);
+  save(gui.text.replace('</root>', action('boolean-difference', '2,0,1') + '</root>'));
+  await until(() => source.text.includes('op: "difference"') && ownerIds().length === 1 && selectedIndices() === '0');
+  assert.doesNotMatch(source.text, /rect\(/);
+  assert.doesNotMatch(gui.text, /cetzStatus=/);
+  save(gui.text.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === initial && ownerIds().length === 3);
+  save(gui.text.replace('</root>', action('make-rect-around', '0,1,2') + '</root>'));
+  await until(() => source.text.includes('rect-around(') && ownerIds().length === 4 && selectedIndices() === '3');
+  assert.match(source.text, /rect-around\("shape-1", "shape-2", "shape-3", padding: 0.1/);
+  const oldFrame = readAllCells(gui.text).get(ownerIds()[3]).geometry;
+  const id = ownerIds()[0];
+  const moved = gui.text.replace(new RegExp('(<mxCell id="' + id + '"[\\s\\S]*?<mxGeometry x=")([\\d.]+)'),
+    (_, prefix, x) => prefix + (+x + 500));
+  save(moved);
+  await until(() => gui.text !== moved && +readAllCells(gui.text).get(ownerIds()[3]).geometry.width > +oldFrame.width);
+  assert.ok(source.text.includes('rect-around("shape-1", "shape-2", "shape-3"'));
+  assert.doesNotMatch(gui.text, /cetzStatus=/);
+});
+
+test('fixing a source render error clears both file and live scene error status', async t => {
+  const initial = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\ncircle((0, 0), radius: 1)\n})';
+  const { source, gui, editSource, until } = await extensionFixture(t, initial);
+  editSource(initial.replace('radius: 1', 'radius: missing-radius'));
+  await until(() => /cetzStatus=/.test(gui.text));
+  assert.match(gui.text, /cetzError=[^;]+;/);
+  editSource(initial);
+  await until(() => !/cetzStatus=/.test(gui.text));
+  assert.equal(source.text, initial);
+  assert.match(gui.text, /cetzError=;/);
+  assert.equal([...readAllCells(gui.text).keys()].filter(id => /^cetz-edit-/.test(id)).length, 1);
+});
+
+test('a valid unchanged GUI save clears a resolved edit error without changing Typst', async t => {
+  const initial = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\ncircle((0, 0), radius: 1)\n})';
+  const { source, gui, save, until } = await extensionFixture(t, initial);
+  save(gui.text.replace('cetzKind=circle;', 'cetzKind=circle;unsupportedStyle=1;'));
+  await until(() => /cetzStatus=/.test(gui.text));
+  assert.equal(source.text, initial);
+  assert.doesNotMatch(gui.text, /unsupportedStyle/);
+  save(gui.text.replace('cetzKind=circle;', 'cetzKind=circle;cetzSnapStep=0.25;'));
+  await until(() => !/cetzStatus=/.test(gui.text));
+  assert.match(gui.text, /cetzError=;/);
+  assert.equal(source.text, initial);
 });

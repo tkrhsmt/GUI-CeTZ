@@ -8,14 +8,13 @@ Draw.loadPlugin(function (ui) {
   if (ui.guiCetzPluginLoaded) return;
   ui.guiCetzPluginLoaded = true;
 
-  var shapeNames = ['polygon', 'circle-through', 'arc-through', 'bezier-through', 'boolean', 'arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier',
-    'hobby', 'catmull', 'merge-path', 'compound-path'];
+  var shapeNames = ['polygon', 'circle-through', 'arc-through', 'bezier-through', 'arc', 'mark', 'n-star', 'grid', 'bezier',
+    'hobby', 'catmull'];
   var shapeGlyphs = {
     polygon: '<path d="M19 7H45L58 24L45 41H19L6 24Z"/>',
     'circle-through': '<circle cx="32" cy="24" r="17"/><path d="M15 24h1M32 7v1M49 24h1" stroke="#e28b23" stroke-width="6"/>',
     'arc-through': '<path d="M10 36A24 24 0 0 1 54 36"/><circle cx="10" cy="36" r="2"/><circle cx="32" cy="21" r="2"/><circle cx="54" cy="36" r="2"/>',
     'bezier-through': '<path d="M8 36C9 3 45 1 56 30"/><circle cx="8" cy="36" r="2"/><circle cx="30" cy="10" r="2"/><circle cx="56" cy="30" r="2"/>',
-    boolean: '<path d="M9 8H39V19H24V39H9Z"/><path d="M24 19H53V43H24Z" stroke-dasharray="3 3" opacity=".4"/>',
     rect: '<rect x="10" y="10" width="44" height="28" rx="2"/>',
     circle: '<circle cx="32" cy="24" r="17"/>',
     content: '<rect x="8" y="10" width="48" height="28" rx="3" stroke="#93c5fd"/><path d="M18 18 H46 M18 25 H41 M18 32 H35"/>',
@@ -24,12 +23,9 @@ Draw.loadPlugin(function (ui) {
     mark: '<path d="M9 34 H48 M39 25 L51 34 L39 43"/>',
     'n-star': '<path d="M32 5 L38 20 L54 20 L41 30 L46 45 L32 36 L18 45 L23 30 L10 20 L26 20 Z"/>',
     grid: '<path d="M10 8 V42 M21 8 V42 M32 8 V42 M43 8 V42 M54 8 V42 M10 8 H54 M10 19 H54 M10 30 H54 M10 42 H54"/>',
-    'rect-around': '<rect x="11" y="8" width="42" height="34" rx="5"/><path d="M21 18 H43 V32 H21 Z" stroke-dasharray="3 3"/>',
     bezier: '<path d="M8 36 C18 4 43 44 56 12"/><path d="M8 36 L18 10 M56 12 L43 40" stroke="#e28b23" stroke-dasharray="3 3"/>',
     hobby: '<path d="M7 34 C19 12 25 13 33 25 S48 39 57 10"/><circle cx="7" cy="34" r="2"/><circle cx="33" cy="25" r="2"/><circle cx="57" cy="10" r="2"/>',
     catmull: '<path d="M7 36 C17 35 18 8 30 11 S43 36 57 13"/><circle cx="7" cy="36" r="2"/><circle cx="30" cy="11" r="2"/><circle cx="57" cy="13" r="2"/>',
-    'merge-path': '<path d="M9 38 H28 V10 H51 V38 H28"/><circle cx="28" cy="38" r="2"/>',
-    'compound-path': '<rect x="10" y="9" width="34" height="30"/><circle cx="42" cy="28" r="13" fill="#dbeafe"/>'
   };
   function shapeIcon(name) {
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48" viewBox="0 0 64 48">' +
@@ -124,8 +120,19 @@ Draw.loadPlugin(function (ui) {
   var advancedPair = sidebar.palettes['cetz-advanced'];
   var controls = document.createElement('div');
   controls.className = 'cetzPropertyPanel';
-  controls.style.cssText = 'box-sizing:border-box;width:100%;min-width:0;padding:10px 12px 12px;display:none;font:12px -apple-system,BlinkMacSystemFont,sans-serif;color:inherit;';
+  controls.style.cssText = 'box-sizing:border-box;width:100%;min-width:0;padding:10px 12px 12px;white-space:normal;overflow-wrap:anywhere;display:none;font:12px -apple-system,BlinkMacSystemFont,sans-serif;color:inherit;';
   sidebar.wrapper.insertBefore(controls, sidebar.wrapper.firstChild);
+  // Draw.io's sidebar cancels mousedown/selectstart unless this hook allows
+  // the target. Its default permits inputs and selects, but excludes textareas.
+  // Permit CeTZ text fields so clicking them can focus and select text normally.
+  if (typeof ui.isSelectionAllowed === 'function') {
+    var nativeSelectionAllowed = ui.isSelectionAllowed;
+    ui.isSelectionAllowed = function (event) {
+      var target = mxEvent.getSource(event);
+      if (isCetz() && controls.contains(target) && isTextTarget(target)) return true;
+      return nativeSelectionAllowed.apply(this, arguments);
+    };
+  }
   var outline = document.createElement('div');
   outline.className = 'cetzOutline';
   outline.setAttribute('aria-label', 'Document outline');
@@ -143,7 +150,7 @@ Draw.loadPlugin(function (ui) {
     'overflow-x:hidden;scrollbar-width:none;padding:1px;';
   rail.appendChild(paletteStrip);
   var railStyle = document.createElement('style');
-  railStyle.textContent = '.cetzRightRail ::-webkit-scrollbar{width:0;height:0}' +
+  railStyle.textContent = '.cetzPropertyPanel,.cetzOutline{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}.cetzPropertyPanel :where(div,section,header,details,label,summary),.cetzOutline :where(header,div){box-sizing:border-box;min-width:0;max-width:100%}.cetzPropertyPanel :where(h2,small,label,summary,button),.cetzOutline :where(h2,small){white-space:normal;overflow-wrap:anywhere}.cetzOutlineHint,.cetzOutlineEmpty{white-space:normal;overflow-wrap:anywhere}.cetzOutlineCount{flex-shrink:0}.cetzRightRail ::-webkit-scrollbar{width:0;height:0}' +
     '.cetzOutline{--ol-line:var(--vscode-panel-border,#dce0e5);--ol-hover:var(--vscode-list-hoverBackground,#f2f3f5);--ol-selected:var(--vscode-list-inactiveSelectionBackground,#eaf0fe);--ol-accent:var(--vscode-focusBorder,#4675e7);--ol-icon:var(--vscode-input-background,#f2f3f5);color:inherit;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}' +
     '.geDarkMode .cetzOutline{--ol-line:#45474b;--ol-hover:#303236;--ol-selected:#293a57;--ol-icon:#303236}.cetzOutline header{padding:12px 4px 13px}.cetzOutline small{font-size:10px;opacity:.6;letter-spacing:1.2px}.cetzOutlineHeading{display:flex;align-items:center;gap:8px;margin:5px 0}.cetzOutline h2{font-size:17px;font-weight:600;letter-spacing:-.3px;margin:0;flex:1}.cetzOutlineCount{font-size:10px;border:1px solid var(--ol-line);border-radius:5px;padding:2px 6px;opacity:.7;font-variant-numeric:tabular-nums}.cetzOutlineHint{font-size:10px;opacity:.55;line-height:1.5}' +
     '.cetzOutlineList{max-height:240px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:0 0 8px}.cetzOutlineRow{display:flex;box-sizing:border-box;width:100%;align-items:center;gap:2px;min-height:48px;border-radius:6px;margin:2px 0;color:inherit;position:relative}.cetzOutlineRow:hover{background:var(--ol-hover)}.cetzOutlineRow[data-selected=true]{background:var(--ol-selected)}.cetzOutlineRow[data-selected=true]:before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:2px;border-radius:2px;background:var(--ol-accent)}' +
@@ -172,10 +179,10 @@ Draw.loadPlugin(function (ui) {
 
   function field(label, type, values, key) {
     var row = document.createElement('div');
-    row.style.cssText = 'box-sizing:border-box;display:grid;grid-template-columns:76px minmax(0,1fr);align-items:center;column-gap:10px;width:100%;margin:0;padding:5px 2px;min-height:36px;';
+    row.style.cssText = 'box-sizing:border-box;display:grid;grid-template-columns:minmax(0,76px) minmax(0,1fr);align-items:center;column-gap:10px;width:100%;margin:0;padding:5px 2px;min-height:36px;';
     var caption = document.createElement('span');
     caption.textContent = label;
-    caption.style.cssText = 'min-width:0;white-space:nowrap;';
+    caption.style.cssText = 'min-width:0;white-space:normal;overflow-wrap:anywhere;';
     row.appendChild(caption);
     var input = document.createElement(type === 'select' ? 'select' : 'input');
     input.setAttribute('aria-label', label);
@@ -245,12 +252,12 @@ Draw.loadPlugin(function (ui) {
   controls.insertBefore(details, controls.firstChild);
   function actionField(label, action, initial, min, step) {
     var row = document.createElement('div');
-    row.style.cssText = 'display:grid;grid-template-columns:76px minmax(0,1fr);align-items:center;gap:10px;padding:5px 2px;';
+    row.style.cssText = 'box-sizing:border-box;width:100%;min-width:0;display:grid;grid-template-columns:minmax(0,76px) minmax(0,1fr);align-items:center;gap:10px;padding:5px 2px;';
     var caption = document.createElement('span'); caption.textContent = label;
     var input = document.createElement('input');
     input.type = 'number'; input.value = initial; input.min = min; input.step = step;
     input.setAttribute('aria-label', label);
-    input.style.cssText = 'box-sizing:border-box;width:100%;height:28px;padding:2px 6px;border:1px solid #888;border-radius:4px;background:transparent;color:inherit;font:inherit;';
+    input.style.cssText = 'box-sizing:border-box;width:100%;max-width:100%;min-width:0;height:28px;padding:2px 6px;border:1px solid #888;border-radius:4px;background:transparent;color:inherit;font:inherit;';
     input.addEventListener('change', function () { sendSourceAction(action, input.value); });
     row.appendChild(caption); row.appendChild(input); controls.appendChild(row);
     return input;
@@ -285,7 +292,7 @@ Draw.loadPlugin(function (ui) {
   sizeSlider.type = 'range'; sizeSlider.min = '0.25'; sizeSlider.max = '3';
   sizeSlider.step = '0.05'; sizeSlider.value = '1';
   sizeSlider.setAttribute('aria-label', 'Scale selected shape');
-  sizeSlider.style.cssText = 'display:block;width:100%;';
+  sizeSlider.style.cssText = 'box-sizing:border-box;display:block;width:100%;max-width:100%;min-width:0;margin:0;';
   sizeSlider.addEventListener('input', function () { sizeLabel.textContent = 'Size ×' + Number(sizeSlider.value).toFixed(2); });
   sizeSlider.addEventListener('change', function () { sendSourceAction('scale', sizeSlider.value); });
   sizeRow.appendChild(sizeLabel); sizeRow.appendChild(sizeSlider); controls.appendChild(sizeRow);
@@ -350,6 +357,92 @@ Draw.loadPlugin(function (ui) {
     return reconnectEnd.select.value + '-' + reconnectSide.select.value;
   });
   var graph = ui.editor.graph;
+  var pathActions = [
+    ['Unite', 'boolean-union', 'Combine the filled regions'],
+    ['Intersect', 'boolean-intersection', 'Keep the common region'],
+    ['Subtract', 'boolean-difference', 'First object in source order minus the remaining objects'],
+    ['Exclude', 'boolean-xor', 'Keep regions covered an odd number of times'],
+    ['Merge paths', 'make-merge-path', 'Connect paths in source order'],
+    ['Compound path', 'make-compound-path', 'Combine subpaths using the even-odd fill rule'],
+    ['Frame selection', 'make-rect-around', 'Add a rect-around that follows the selected objects']
+  ];
+  var operations = document.createElement('section'); operations.className = 'cetzOperations';
+  operations.setAttribute('aria-label', 'Path operations');
+  controls.insertBefore(operations, details);
+  var operationsEyebrow = document.createElement('small'); operationsEyebrow.textContent = 'SELECTION / CeTZ'; operations.appendChild(operationsEyebrow);
+  var operationsTitle = document.createElement('h2'); operationsTitle.textContent = 'Path operations'; operations.appendChild(operationsTitle);
+  var operationsHint = document.createElement('div'); operationsHint.className = 'cetzOperationsHint'; operations.appendChild(operationsHint);
+  var operationsGrid = document.createElement('div'); operationsGrid.className = 'cetzOperationsGrid'; operations.appendChild(operationsGrid);
+  var operationButtons = [];
+  function pathOperationIcon(action) {
+    var overlap = '<path d="M4 5H18V19H4ZM13 13H27V27H13Z" fill="none" stroke="currentColor" stroke-width="1.25" opacity=".3"/>';
+    var regions = {
+      'boolean-union': 'M4 5H18V13H27V27H13V19H4Z',
+      'boolean-intersection': 'M13 13H18V19H13Z',
+      'boolean-difference': 'M4 5H18V13H13V19H4Z',
+      'boolean-xor': 'M4 5H18V13H27V27H13V19H4ZM13 13V19H18V13Z'
+    };
+    var drawing;
+    if (regions[action]) drawing = overlap + '<path d="' + regions[action] + '" fill="currentColor" fill-opacity=".2" fill-rule="evenodd" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>';
+    else if (action === 'make-merge-path') drawing = '<path d="M4 24C4 12 12 21 16 16S21 5 28 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 19L20 12" stroke="currentColor" stroke-width="3"/><g fill="currentColor"><circle cx="4" cy="24" r="2"/><circle cx="28" cy="8" r="2"/></g><g fill="var(--op-bg)" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="19" r="2.5"/><circle cx="20" cy="12" r="2.5"/></g>';
+    else if (action === 'make-compound-path') drawing = '<path d="M5 5H27V27H5ZM16 10a6 6 0 1 0 0 12a6 6 0 1 0 0-12Z" fill="currentColor" fill-opacity=".2" fill-rule="evenodd" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>';
+    else drawing = '<g fill="currentColor" fill-opacity=".15" stroke="currentColor" stroke-width="1.25" opacity=".6"><rect x="8" y="9" width="9" height="9" rx="1"/><circle cx="21" cy="21" r="4"/></g><path d="M3 10V3H10M22 3H29V10M29 22V29H22M10 29H3V22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>';
+    var icon = document.createElement('span'); icon.className = 'cetzOperationIcon'; icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="28" height="28" focusable="false">' + drawing + '</svg>';
+    return icon;
+  }
+  pathActions.forEach(function (entry) {
+    var button = document.createElement('button'); button.type = 'button'; button.title = entry[2];
+    button.appendChild(pathOperationIcon(entry[1]));
+    var label = document.createElement('span'); label.className = 'cetzOperationLabel'; label.textContent = entry[0]; button.appendChild(label);
+    button.setAttribute('data-cetz-operation', entry[1]); button.setAttribute('aria-label', entry[0]);
+    button.addEventListener('click', function (event) {
+      event.stopPropagation(); if (canApplyPathOperation(entry[1])) sendSourceAction(entry[1]);
+    });
+    operationsGrid.appendChild(button); operationButtons.push(button);
+  });
+  var operationsNote = document.createElement('div'); operationsNote.className = 'cetzOperationsHint';
+  operationsNote.textContent = 'Combine in source order. Subtract uses the first object as its base. Undo restores the inputs.';
+  operations.appendChild(operationsNote);
+  var operationsStyle = document.createElement('style');
+  operationsStyle.textContent = '.cetzOperations{--op-line:var(--vscode-panel-border,#dce0e5);--op-bg:var(--vscode-input-background,#f2f3f5);padding:16px 2px;border-top:1px solid var(--op-line);font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.cetzOperations small{font-size:10px;opacity:.6;letter-spacing:1.2px}.cetzOperations h2{font-size:17px;font-weight:600;letter-spacing:-.3px;margin:5px 0 8px}.cetzOperationsHint{white-space:normal;overflow-wrap:anywhere;min-width:0;max-width:100%;font-size:10px;line-height:1.6;opacity:.6;margin:6px 0}.cetzOperationsGrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;margin:12px 0}.cetzOperationsGrid button{box-sizing:border-box;min-width:0;min-height:72px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;white-space:normal;padding:10px 6px;border:1px solid var(--op-line);border-radius:5px;background:var(--op-bg);color:inherit;font:inherit;cursor:pointer}.cetzOperationIcon{display:flex;flex:none;color:var(--vscode-textLink-foreground,#3564bf)}.cetzOperationIcon svg{display:block}.cetzOperationLabel{min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere;line-height:1.3;text-align:center}.cetzOperationsGrid button:hover:enabled{border-color:var(--vscode-focusBorder,#4675e7);background:var(--vscode-list-hoverBackground,#e9edf4)}.cetzOperationsGrid button:focus-visible{outline:2px solid var(--vscode-focusBorder,#4675e7);outline-offset:1px}.cetzOperationsGrid button:disabled{opacity:.35;cursor:default}.cetzOperationsGrid button:last-child{grid-column:1 / -1;flex-direction:row;min-height:46px;gap:10px}.geDarkMode .cetzOperations{--op-line:#45474b;--op-bg:#303236}.geDarkMode .cetzOperationIcon{color:var(--vscode-textLink-foreground,#8db5ff)}.geDarkMode .cetzOperationsGrid button:hover:enabled{background:var(--vscode-list-hoverBackground,#3a3e46)}';
+  controls.appendChild(operationsStyle);
+  function pathSelection() {
+    return selectedEditableCells().map(function (cell) {
+      var style = graph.getCellStyle(cell), data = null;
+      try { data = JSON.parse(decodeURIComponent(style.cetzProperties || 'null')); } catch (error) {}
+      function argument(key) { var field = data && data.fields.filter(function (field) { return field.key === key; })[0]; return field && field.value; }
+      var kind = style.cetzKind;
+      var closed = ['rect', 'circle', 'polygon', 'n-star', 'circle-through', 'compound-path', 'boolean', 'rect-around'].indexOf(kind) >= 0 ||
+        ['line', 'hobby', 'catmull', 'merge-path'].indexOf(kind) >= 0 && argument('close') === 'true' ||
+        ['arc', 'arc-through'].indexOf(kind) >= 0 && ['"CLOSE"', '"PIE"'].indexOf(argument('mode')) >= 0;
+      return { cell: cell, group: style.cetzGroup || '', kind: kind, closed: closed,
+        path: ['content', 'anchor', 'mark'].indexOf(kind) < 0 };
+    });
+  }
+  function canApplyPathOperation(action) {
+    var selected = pathSelection();
+    if (!isEditablePreview() || !selected.length || selected.some(function (item) { return item.group !== selected[0].group; })) return false;
+    if (action === 'make-rect-around') return true;
+    if (selected.length < 2 || selected.some(function (item) { return !item.path; })) return false;
+    return action.indexOf('boolean-') !== 0 || selected.every(function (item) { return item.closed; });
+  }
+  function updatePathOperations() {
+    var selected = pathSelection();
+    operations.style.display = isEditablePreview() && selected.length ? '' : 'none';
+    operationsHint.textContent = selected.length < 2 ? 'Select two or more path objects to combine. A frame can surround one object.' :
+      selected.some(function (item) { return item.group !== selected[0].group; }) ? 'Select objects in the same group.' :
+      selected.every(function (item) { return item.closed; }) ? selected.length + ' objects selected · Boolean and path operations available' :
+      selected.length + ' objects selected · Boolean operations require closed paths';
+    operationButtons.forEach(function (button, index) { button.disabled = !canApplyPathOperation(pathActions[index][1]); });
+  }
+  function addPathOperationMenu(menu, parent) {
+    var folder = menu.addItem('Path operations', null, null, parent);
+    pathActions.forEach(function (entry, index) {
+      if (index === 4) menu.addSeparator(folder);
+      menu.addItem(entry[0], null, function () { if (canApplyPathOperation(entry[1])) sendSourceAction(entry[1]); }, folder, null, canApplyPathOperation(entry[1]));
+    });
+  }
   var pointScreenSize = 14;
   function isPointState(state) {
     return state && state.view.graph === graph && isEditablePreview() &&
@@ -415,18 +508,14 @@ Draw.loadPlugin(function (ui) {
     'circle-through': ['Point A', 'Point B', 'Point C (not on the A–B line)'],
     'arc-through': ['Start point', 'Point on arc', 'End point (not on the same line)'],
     'bezier-through': ['Start point', 'Point on curve', 'End point'],
-    boolean: ['First corner of operand A (CeTZ 0.5.2)', 'Opposite corner of A', 'First corner of operand B', 'Opposite corner of B (operation in Properties)'],
     content: ['Text position'], line: ['Start point', 'End point'], mark: ['Start point', 'End point'],
     rect: ['First corner', 'Opposite corner'], grid: ['First corner', 'Opposite corner'],
-    'rect-around': ['First corner', 'Opposite corner'],
     circle: ['Center', 'Point on circle'], 'n-star': ['Center', 'Point at outer radius'],
     arc: ['Center', 'Arc start (sets radius)', 'Arc end direction (counterclockwise)'],
     bezier: ['Start point', 'End point', 'First control point', 'Second control point'],
-    'compound-path': ['First outer corner', 'Opposite outer corner', 'Hole center', 'Point on hole'],
     hobby: ['First knot', 'Next knot'], catmull: ['First knot', 'Next knot'],
-    'merge-path': ['First vertex', 'Next vertex']
   };
-  function variablePlacement(name) { return /^(hobby|catmull|merge-path)$/.test(name); }
+  function variablePlacement(name) { return /^(hobby|catmull)$/.test(name); }
   function cancelPlacement() {
     if (!placement) return;
     if (placement.hint.parentNode) placement.hint.parentNode.removeChild(placement.hint);
@@ -451,7 +540,7 @@ Draw.loadPlugin(function (ui) {
     hint.className = 'cetzPlacementHint';
     hint.setAttribute('role', 'status'); hint.setAttribute('aria-live', 'polite');
     hint.style.cssText = 'position:absolute;left:12px;top:12px;z-index:20;pointer-events:none;' +
-      'padding:7px 10px;border:1px solid #2563eb;border-radius:4px;background:#eff6ff;color:#1e3a8a;font:12px sans-serif;';
+      'box-sizing:border-box;max-width:calc(100% - 24px);white-space:normal;overflow-wrap:anywhere;padding:7px 10px;border:1px solid #2563eb;border-radius:4px;background:#eff6ff;color:#1e3a8a;font:12px sans-serif;';
     var preview = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     preview.setAttribute('data-cetz-placement', name); preview.setAttribute('pointer-events', 'none');
     graph.view.getOverlayPane().appendChild(preview);
@@ -480,7 +569,7 @@ Draw.loadPlugin(function (ui) {
     function rectangle(p, q) { return '<rect x="' + Math.min(p[0], q[0]) + '" y="' + Math.min(p[1], q[1]) +
       '" width="' + Math.abs(p[0] - q[0]) + '" height="' + Math.abs(p[1] - q[1]) + '"/>'; }
     function circle(p, q) { return '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="' + Math.hypot(p[0] - q[0], p[1] - q[1]) + '"/>'; }
-    if (a && b && /^(rect|grid|rect-around|compound-path)$/.test(name)) shapes = rectangle(a, b);
+    if (a && b && /^(rect|grid)$/.test(name)) shapes = rectangle(a, b);
     else if (a && b && /^(circle|polygon|n-star|arc)$/.test(name)) shapes = circle(a, b);
     else if (a && b) shapes = '<polyline points="' + points.map(function (p) { return p.join(','); }).join(' ') + '"/>';
     if (name === 'polygon' && b) {
@@ -489,7 +578,6 @@ Draw.loadPlugin(function (ui) {
         var angle = start + i * Math.PI / 3; return [a[0] + radius * Math.cos(angle), a[1] + radius * Math.sin(angle)].join(',');
       }).join(' ') + '"/>';
     }
-    if (name === 'boolean' && b) shapes = rectangle(a, b) + (d ? rectangle(c, d) : '');
     if (/-through$/.test(name) && c) {
       var curves = curveSegments(name, points.map(function (point) { return { x: point[0], y: point[1] }; }), {});
       if (curves.length) shapes = '<path d="M ' + curves[0][0].x + ' ' + curves[0][0].y + ' ' + curves.map(function (curve) {
@@ -506,7 +594,6 @@ Draw.loadPlugin(function (ui) {
         [a[0] + radius * Math.cos(stop), a[1] + radius * Math.sin(stop)].join(' ') + '"/>';
     }
     if (name === 'bezier' && d) shapes = '<path d="M ' + a.join(' ') + ' C ' + c.join(' ') + ' ' + d.join(' ') + ' ' + b.join(' ') + '"/>';
-    if (name === 'compound-path' && d) shapes += circle(c, d);
     placement.preview.innerHTML = '<g fill="none" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="5 3">' + shapes + '</g>' +
       points.map(function (p) { return '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="3.5" fill="white" stroke="#2563eb"/>'; }).join('');
   }
@@ -514,10 +601,10 @@ Draw.loadPlugin(function (ui) {
     if (!placement) return;
     var name = placement.name, points = placement.points;
     if (variablePlacement(name) && points.length < 2) { placementHint('Add at least two points'); return; }
-    var pair = name === 'compound-path' ? points.slice(2) : points;
-    var zeroRadius = /^(circle|polygon|n-star|arc|compound-path)$/.test(name) &&
+    var pair = points;
+    var zeroRadius = /^(circle|polygon|n-star|arc)$/.test(name) &&
       Math.hypot(pair[0][0] - pair[1][0], pair[0][1] - pair[1][1]) < 0.00001;
-    var flatRectangle = /^(rect|grid|rect-around|compound-path)$/.test(name) &&
+    var flatRectangle = /^(rect|grid)$/.test(name) &&
       (points[0][0] === points[1][0] || points[0][1] === points[1][1]);
     var invalidArcEnd = name === 'arc' && points[0][0] === points[2][0] && points[0][1] === points[2][1];
     if (zeroRadius || flatRectangle || invalidArcEnd) {
@@ -548,12 +635,10 @@ Draw.loadPlugin(function (ui) {
       var p = placementPoint(event), previous = placement.points[placement.points.length - 1];
       if (variablePlacement(placement.name) && previous && p[0] === previous[0] && p[1] === previous[1]) return;
       var name = placement.name, points = placement.points, count = points.length;
-      var cornerIndex = name === 'boolean' && count === 3 ? 2 : 0;
-      var flatCorner = (count === 1 && /^(rect|grid|rect-around|compound-path|boolean)$/.test(name) || count === 3 && name === 'boolean') &&
-        (p[0] === points[cornerIndex][0] || p[1] === points[cornerIndex][1]);
+      var flatCorner = count === 1 && /^(rect|grid)$/.test(name) &&
+        (p[0] === points[0][0] || p[1] === points[0][1]);
       var samePoint = previous && p[0] === previous[0] && p[1] === previous[1];
-      var zeroRadius = samePoint && (count === 1 && /^(circle|polygon|n-star|arc|line|mark)$/.test(name) ||
-        count === 3 && name === 'compound-path');
+      var zeroRadius = samePoint && count === 1 && /^(circle|polygon|n-star|arc|line|mark)$/.test(name);
       var invalidArcEnd = name === 'arc' && count === 2 && p[0] === points[0][0] && p[1] === points[0][1];
       var collinear = count === 2 && /^(circle-through|arc-through)$/.test(name) &&
         !circleThroughPoints(points.concat([p]).map(function (point) { return { x: point[0], y: point[1] }; }));
@@ -609,16 +694,16 @@ Draw.loadPlugin(function (ui) {
     'eastern', 'purple', 'fuchsia', 'maroon', 'red', 'orange', 'yellow', 'olive', 'green', 'lime', 'none'];
   var paletteHex = ['#000000','#aaaaaa','#dddddd','#ffffff','#001f3f','#0074d9','#7fdbff','#39cccc','#239dad','#b10dc9','#f012be','#85144b','#ff4136','#ff851b','#ffdc00','#3d9970','#2ecc40','#01ff70'];
   var inspectorCss = document.createElement('style');
-  inspectorCss.textContent = '.cetzPropertyPanel>button{min-height:28px;border:1px solid var(--vscode-panel-border,#dce0e5);border-radius:5px;background:var(--vscode-input-background,transparent);color:inherit;padding:4px 8px;margin:4px 2px;font:inherit;cursor:pointer}.cetzPropertyPanel>div:not(.cetzInspector) input,.cetzPropertyPanel>div:not(.cetzInspector) select{border-color:var(--vscode-panel-border,#dce0e5)!important;border-radius:5px!important}.cetzInspector{--cetz-bg:var(--vscode-input-background,#f2f3f5);--cetz-line:var(--vscode-panel-border,#dce0e5);--cetz-focus:var(--vscode-focusBorder,#4675e7);font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:2px 0 12px}' +
+  inspectorCss.textContent = '.cetzPropertyPanel>button{box-sizing:border-box;max-width:calc(100% - 4px);white-space:normal;overflow-wrap:anywhere;min-height:28px;border:1px solid var(--vscode-panel-border,#dce0e5);border-radius:5px;background:var(--vscode-input-background,transparent);color:inherit;padding:4px 8px;margin:4px 2px;font:inherit;cursor:pointer}.cetzPropertyPanel>div:not(.cetzInspector) input,.cetzPropertyPanel>div:not(.cetzInspector) select{border-color:var(--vscode-panel-border,#dce0e5)!important;border-radius:5px!important}.cetzInspector{--cetz-bg:var(--vscode-input-background,#f2f3f5);--cetz-line:var(--vscode-panel-border,#dce0e5);--cetz-focus:var(--vscode-focusBorder,#4675e7);font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:2px 0 12px}' +
     '.cetzInspector header{padding:12px 4px 16px}.cetzInspector h2{font-size:17px;font-weight:600;margin:5px 0;letter-spacing:-.3px}.cetzInspector small{opacity:.6;font-size:10px;letter-spacing:1.2px;text-transform:uppercase}' +
     '.cetzInspector details{border-top:1px solid var(--cetz-line);padding:12px 2px}.cetzInspector summary{font-size:11px;font-weight:650;letter-spacing:.5px;cursor:pointer;user-select:none;margin-bottom:12px}' +
     '.cetzInspector .cetzProperty{display:block;margin:10px 0}.cetzInspector .cetzProperty>span{display:block;font-size:11px;opacity:.75;margin-bottom:6px}.cetzInspector .cetzPair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}' +
     '.cetzInspector input,.cetzInspector select,.cetzInspector textarea{box-sizing:border-box;width:100%;min-width:0;height:30px;padding:5px 8px;border:1px solid var(--cetz-line);border-radius:5px;background:var(--cetz-bg);color:inherit;font:inherit;outline:none}' +
     '.cetzInspector input:focus,.cetzInspector select:focus,.cetzInspector textarea:focus{border-color:var(--cetz-focus);box-shadow:0 0 0 1px var(--cetz-focus)}' +
     '.cetzInspector textarea{height:88px;resize:vertical;font:11px ui-monospace,monospace;line-height:1.5}.geDarkMode .cetzInspector{--cetz-bg:#303236;--cetz-line:#45474b}.cetzInspector .cetzAxis{position:relative}.cetzInspector .cetzAxis>span{position:absolute;left:9px;top:9px;font-size:10px;opacity:.55}.cetzInspector .cetzAxis>input{padding-left:26px}.cetzInspector input::placeholder{opacity:.5}.cetzInspector .cetzExpression{font-family:ui-monospace,monospace;font-size:11px}' +
-    '.cetzInspector button{height:30px;border:1px solid var(--cetz-line);border-radius:5px;padding:0 10px;background:var(--cetz-bg);color:inherit;cursor:pointer;font:inherit}.cetzInspector button:disabled{opacity:.45;cursor:default}' +
-    '.cetzInspector .cetzStatus{font-size:11px;opacity:.7;line-height:1.5;min-height:18px}.cetzInspector .cetzSwatchRow{display:flex;gap:6px;margin-top:6px;align-items:center}.cetzInspector .cetzSwatchRow input[type=color]{width:30px;padding:3px;flex-shrink:0}.cetzInspector .cetzSwatchRow select{flex:1}' +
-    '.cetzInspector .cetzHint{font-size:10px;line-height:1.5;opacity:.55;margin:8px 0}';
+    '.cetzInspector button{box-sizing:border-box;max-width:100%;min-height:30px;height:auto;white-space:normal;overflow-wrap:anywhere;border:1px solid var(--cetz-line);border-radius:5px;padding:5px 10px;background:var(--cetz-bg);color:inherit;cursor:pointer;font:inherit}.cetzInspector button:disabled{opacity:.45;cursor:default}' +
+    '.cetzInspector .cetzStatus{white-space:normal;overflow-wrap:anywhere;font-size:11px;opacity:.7;line-height:1.5;min-height:18px}.cetzInspector .cetzSwatchRow{display:flex;gap:6px;margin-top:6px;align-items:center}.cetzInspector .cetzSwatchRow input[type=color]{width:30px;padding:3px;flex-shrink:0}.cetzInspector .cetzSwatchRow select{flex:1}' +
+    '.cetzInspector .cetzHint{white-space:normal;overflow-wrap:anywhere;font-size:10px;line-height:1.5;opacity:.55;margin:8px 0}';
   controls.appendChild(inspectorCss);
   function encodedProperties(value) {
     return encodeURIComponent(JSON.stringify(value)).replace(/[!'()*]/g, function (char) {
@@ -818,7 +903,46 @@ Draw.loadPlugin(function (ui) {
       var label = document.createElement('span'); label.textContent = field.label;
       row.appendChild(label); parent.appendChild(row);
       var input;
-      if (field.point) {
+      if (field.text !== undefined) {
+        label.textContent = 'Text';
+        var textInput = inputFor(row, 'Text', field.text, 'Enter text', true);
+        textInput.className = 'cetzTextInput';
+        input = inputFor(row, field.label, field.value, '', true);
+        input.style.display = 'none';
+        var textMode = document.createElement('button'); textMode.type = 'button'; textMode.textContent = 'ƒx';
+        textMode.title = 'Edit Typst content expression'; textMode.setAttribute('aria-label', 'Text expression mode');
+        textMode.setAttribute('aria-pressed', 'false');
+        textMode.style.cssText = 'float:right;min-height:18px;height:18px;padding:0 5px;font-size:10px;';
+        label.appendChild(textMode);
+        var textHint = document.createElement('div'); textHint.className = 'cetzHint';
+        textHint.textContent = 'Enter text directly. Use ƒx for Typst markup or expressions.'; row.appendChild(textHint);
+        textMode.addEventListener('click', function () {
+          var expressionMode = input.style.display === 'none';
+          input.style.display = expressionMode ? '' : 'none'; textInput.style.display = expressionMode ? 'none' : '';
+          textMode.setAttribute('aria-pressed', String(expressionMode));
+          (expressionMode ? input : textInput).focus();
+        });
+        textInput.addEventListener('input', function () {
+          input.value = JSON.stringify(textInput.value); propertyDraftChanged();
+        });
+        textInput.addEventListener('change', function (event) {
+          input.value = JSON.stringify(textInput.value); propertyDraftChanged(event);
+        });
+        textInput.addEventListener('compositionstart', function () { state.composing = true; if (state.timer) clearTimeout(state.timer); });
+        textInput.addEventListener('compositionend', function () {
+          state.composing = false; input.value = JSON.stringify(textInput.value); propertyDraftChanged();
+        });
+        input.addEventListener('input', function () {
+          var text = null;
+          if (/^\[[^\[\]\\#*$<>]*\]$/.test(input.value)) text = input.value.slice(1, -1);
+          else { try { var value = JSON.parse(input.value); if (typeof value === 'string') text = value; } catch (error) {} }
+          textInput.disabled = text === null;
+          if (text !== null) textInput.value = text;
+          else {
+            input.style.display = ''; textInput.style.display = 'none'; textMode.setAttribute('aria-pressed', 'true');
+          }
+        });
+      } else if (field.point) {
         var pair = document.createElement('div'); pair.className = 'cetzPair';
         row.appendChild(pair);
         function axis(axisName, value) {
@@ -834,7 +958,7 @@ Draw.loadPlugin(function (ui) {
         var expressionToggle = document.createElement('button'); expressionToggle.type = 'button';
         expressionToggle.textContent = 'ƒx'; expressionToggle.title = 'Edit coordinate expression';
         expressionToggle.setAttribute('aria-label', field.label + ' expression mode');
-        expressionToggle.style.cssText = 'float:right;height:18px;padding:0 5px;margin-top:-2px;font-size:10px;';
+        expressionToggle.style.cssText = 'float:right;min-height:18px;height:18px;padding:0 5px;margin-top:-2px;font-size:10px;';
         label.appendChild(expressionToggle);
         expressionToggle.addEventListener('click', function () {
           input.style.display = input.style.display === 'none' ? '' : 'none';
@@ -1076,6 +1200,8 @@ Draw.loadPlugin(function (ui) {
           beginPlacement(name);
         }, parent);
       });
+      menu.addSeparator(parent);
+      addPathOperationMenu(menu, parent);
       menu.addSeparator(parent);
       menu.addItem('Copy', null, function () { if (isCetz()) sendSourceAction('copy'); }, parent);
       menu.addItem('Paste', null, function () { if (isCetz()) sendSourceAction('paste'); }, parent);
@@ -1982,13 +2108,18 @@ Draw.loadPlugin(function (ui) {
   errorBar.setAttribute('role', 'status');
   errorBar.setAttribute('aria-live', 'polite');
   errorBar.style.cssText = 'box-sizing:border-box;grid-column:1 / -1;grid-row:4;display:none;' +
-    'max-height:112px;overflow:auto;padding:7px 12px;border-top:1px solid #d97706;' +
+    'min-width:0;max-width:100%;max-height:112px;overflow-wrap:anywhere;overflow:auto;padding:7px 12px;border-top:1px solid #d97706;' +
     'background:#fff7ed;color:#7c2d12;font:12px/1.4 sans-serif;white-space:pre-wrap;z-index:2;';
   if (ui.container) ui.container.appendChild(errorBar);
   function updateErrorBar(active) {
     var file = active && ui.getCurrentFile();
     var data = file && file.getData && file.getData();
     var attribute = typeof data === 'string' && /<mxfile\b[^>]*\bcetzStatus="([^"]*)"/.exec(data);
+    var cells = graph.getModel().cells || {};
+    var scene = Object.keys(cells).filter(function (id) { return /^cetz-scene-\d+$/.test(id); })
+      .sort(function (a, b) { return Number(b.slice(11)) - Number(a.slice(11)); })[0];
+    var liveStatus = scene && /(?:^|;)cetzError=([^;]*)(?:;|$)/.exec(cells[scene].style || '');
+    if (liveStatus) attribute = liveStatus;
     var message = '';
     if (attribute) {
       try { message = decodeURIComponent(attribute[1]); }
@@ -2258,6 +2389,7 @@ Draw.loadPlugin(function (ui) {
   }
   function updateControls() {
     synchronizeInspectorDrafts();
+    updatePathOperations();
     if (isCetz() && ui.formatContainer && rail.parentNode !== ui.formatContainer)
       ui.formatContainer.appendChild(rail);
     function showField(input, visible) {
@@ -2336,7 +2468,7 @@ Draw.loadPlugin(function (ui) {
         item.style.display = canReconnect ? '' : 'none';
       });
       var detailed = updateInspector(cell, style, one);
-      details.style.display = detailed ? 'none' : '';
+      details.style.display = detailed || selected.length > 1 ? 'none' : '';
       if (detailed) [fill, stroke, width, dash, markStart, markEnd, textValue].forEach(function (input) { showField(input, false); });
       return;
     }
@@ -2436,6 +2568,7 @@ Draw.loadPlugin(function (ui) {
         shape.init(graph.view.getOverlayPane()); shape.redraw(); shapes.push(shape);
         if (shape.node && shape.node.querySelectorAll) {
           shape.node.setAttribute('data-cetz-outline-highlight', 'true');
+          shape.node.setAttribute('data-cetz-highlight-owner', state.cell.id);
           shape.node.style.opacity = '0.5';
           Array.prototype.forEach.call(shape.node.querySelectorAll('path, use'), function (path) {
             if (path.getAttribute('fill') !== 'none') path.setAttribute('fill', '#4675e7');
@@ -2445,6 +2578,58 @@ Draw.loadPlugin(function (ui) {
         }
       });
     } };
+  }
+  // Use the Outline's artwork tint for canvas hover as well. The small margin
+  // is in screen pixels, so thin paths remain easy to discover at every zoom.
+  if (graph.addMouseListener) {
+    var canvasHighlight = null, canvasHoverCell = null;
+    function clearCanvasHighlight() {
+      canvasHoverCell = null;
+      if (canvasHighlight) canvasHighlight.highlight(null);
+    }
+    function hoverOwner(cell) {
+      var model = graph.getModel();
+      var point = cell && /^cetz-point-(\d+)-\d+$/.exec(cell.id || '');
+      if (point) return model.getCell('cetz-edit-' + point[1]);
+      while (cell && !/^cetz-edit-\d+$/.test(cell.id || '')) cell = model.getParent(cell);
+      return cell;
+    }
+    graph.addMouseListener({
+      mouseDown: clearCanvasHighlight,
+      mouseUp: function () {},
+      mouseMove: function (sender, event) {
+        var nativeEvent = event.getEvent();
+        if (!isEditablePreview() || placement || outlineDragging || graph.isMouseDown ||
+          graph.isEditing() || nativeEvent.buttons || nativeEvent.touches ||
+          nativeEvent.pointerType && nativeEvent.pointerType !== 'mouse') { clearCanvasHighlight(); return; }
+        var cell = hoverOwner(event.getCell());
+        if (!cell) {
+          var x = event.getGraphX(), y = event.getGraphY(), distance = 6;
+          var cells = graph.getModel().cells || {};
+          Object.keys(cells).forEach(function (id) {
+            if (!/^cetz-edit-\d+$/.test(id)) return;
+            var state = graph.view.getState(cells[id]);
+            if (!state) return;
+            var dx = Math.max(state.x - x, 0, x - state.x - state.width);
+            var dy = Math.max(state.y - y, 0, y - state.y - state.height);
+            var nextDistance = Math.hypot(dx, dy);
+            if (nextDistance <= distance) { distance = nextDistance; cell = cells[id]; }
+          });
+        }
+        if (cell === canvasHoverCell) return;
+        clearCanvasHighlight();
+        if (!cell) return;
+        canvasHoverCell = cell;
+        if (!canvasHighlight) canvasHighlight = makeOutlineHighlight();
+        canvasHighlight.highlight(graph.view.getState(cell));
+      }
+    });
+    graph.container.addEventListener('mouseleave', clearCanvasHighlight);
+    graph.container.addEventListener('scroll', clearCanvasHighlight);
+    graph.getModel().addListener(mxEvent.CHANGE, clearCanvasHighlight);
+    [mxEvent.SCALE, mxEvent.TRANSLATE, mxEvent.SCALE_AND_TRANSLATE].forEach(function (name) {
+      graph.view.addListener(name, clearCanvasHighlight);
+    });
   }
   function outlineIcon(kind) {
     var paths = {
@@ -2936,6 +3121,8 @@ Draw.loadPlugin(function (ui) {
             graph.getSelectionCells().indexOf(cell) < 0) graph.setSelectionCell(cell);
           if (isEditablePreview()) menu.addItem('Paste', null, function () { sendSourceAction('paste'); });
           if (selectedEditableCells().length) {
+            addPathOperationMenu(menu, null);
+            menu.addSeparator();
             menu.addItem('Copy', null, function () { sendSourceAction('copy'); });
             menu.addItem('Duplicate', null, function () { sendSourceAction('duplicate'); });
             if (selectedEditableCells().length >= 2)

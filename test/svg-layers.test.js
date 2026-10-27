@@ -40,7 +40,7 @@ test('layer bounds remain positive with CeTZ 0.4 screen-coordinate marker orderi
 
 test('every shape template carries its Typst artwork as children of its move handle', async () => {
   const file = path.resolve('examples/advanced.typ');
-  for (const version of ['0.4.2', '0.5.2']) for (const shape of SHAPES) {
+  for (const version of ['0.4.2', '0.5.2']) for (const shape of SHAPES.concat(require('./path-operation-fixtures'))) {
     // Boolean operations were added after CeTZ 0.4; every catalog entry is
     // checked on 0.5.2, while older compatible functions are checked on both.
     if (version === '0.4.2' && shape.label === 'boolean') continue;

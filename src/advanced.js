@@ -7,7 +7,7 @@ const { color: parseColor, stroke: parseStroke, typstColor, typstStroke } = requ
 const { sideValues, sideEdits } = require('./marks');
 const { layerInstrumentation, splitSvgLayers } = require('./svg-layers');
 const { coordinate, readSnapStep, snapCoordinate, normalizeCoordinate } = require('./snapping');
-const { propertyModel } = require('./properties');
+const { propertyModel, plainContentText } = require('./properties');
 
 const EDITABLE = new Set(['circle-through', 'arc-through', 'bezier-through', 'boolean', 'arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier', 'hobby',
   'catmull', 'merge-path', 'compound-path', 'rect', 'circle', 'content', 'line', 'polygon', 'anchor']);
@@ -40,8 +40,8 @@ function contentText(call) {
     !/^\s*[\w-]+\s*:/.test(call.call.slice(arg.start, arg.end)));
   if (args.length < 2) return null;
   const raw = call.call.slice(args[1].start, args[1].end).trim();
-  if (!/^\[[^\[\]\\#*$<>]*\]$/.test(raw)) return null;
-  return { range: args[1], text: raw.slice(1, -1) };
+  const text = plainContentText(raw);
+  return text === null ? null : { range: args[1], text, string: raw.startsWith('"') };
 }
 
 function replaceContentText(call, value) {
@@ -49,7 +49,7 @@ function replaceContentText(call, value) {
   if (!content) throw new Error('Edit this rich CeTZ content in Typst.');
   if (/[\[\]\\#*$<>]/.test(value))
     throw new Error('Use Typst source for rich text and markup.');
-  return call.call.slice(0, content.range.start) + `[${value}]` + call.call.slice(content.range.end);
+  return call.call.slice(0, content.range.start) + (content.string ? JSON.stringify(value) : `[${value}]`) + call.call.slice(content.range.end);
 }
 
 function namedArgument(text, name) {
@@ -728,7 +728,7 @@ async function renderEditable(source, canvas, filePath) {
     const points = call.resolvedPoints?.length && call.resolvedPoints.every(Boolean)
       ? call.resolvedPoints : null;
     let b = call.requiresProbe && !points ? null : boundsFor(call, points);
-    if (['circle-through', 'arc-through', 'bezier-through', 'boolean'].includes(call.name)) {
+    if (['circle-through', 'arc-through', 'bezier-through', 'boolean', 'rect-around', 'merge-path', 'compound-path'].includes(call.name)) {
       const bounds = layered.layers.filter(layer => layer.owner === i && layer.bounds).map(layer => layer.bounds);
       if (bounds.length) {
         const left = Math.min(...bounds.map(box => box[0])), top = Math.min(...bounds.map(box => box[1]));
@@ -743,6 +743,14 @@ async function renderEditable(source, canvas, filePath) {
       b = { x: Math.min(...xs), y: Math.min(...ys),
         width: Math.max(...xs) - Math.min(...xs),
         height: Math.max(...ys) - Math.min(...ys) };
+    }
+    if (call.name === 'content' && b) {
+      // Empty text has zero Typst bounds. Keep a selectable owner with positive
+      // dimensions so subsequent native saves remain valid. This only pads the
+      // GUI hit target; the source position and rendered content stay unchanged.
+      const width = pixel(b.width * result.unitX * 2.5) > 0 ? b.width : POINT_HANDLE_SIZE / (result.unitX * 2.5);
+      const height = pixel(b.height * result.unitY * 2.5) > 0 ? b.height : POINT_HANDLE_SIZE / (result.unitY * 2.5);
+      b = { x: b.x - (width - b.width) / 2, y: b.y - (height - b.height) / 2, width, height };
     }
     if (call.name === 'group') {
       const children = calls.filter(child => child.group === call && child.geometry);
@@ -773,7 +781,9 @@ async function renderEditable(source, canvas, filePath) {
       cetzLabel: encodeURIComponent(label), cetzGroup: call.group ? calls.indexOf(call.group) : '',
       cetzStart: call.start })
       .map(([key, value]) => `${key}=${value};`).join('');
-    const fixed = ['anchor', 'group'].includes(call.name);
+    const boundFrame = call.name === 'rect-around' && coordinateRanges(call).some(range =>
+      !new RegExp(`^\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*$`).test(call.call.slice(range.start, range.end)));
+    const fixed = ['anchor', 'group'].includes(call.name) || boundFrame;
     const referencedRect = call.name === 'rect' && call.resolvedPoints?.length === 2 && !call.rotation;
     return `<mxCell id="cetz-edit-${i}" value="" style="rounded=0;fillColor=#ffffff;fillOpacity=0;strokeColor=none;dashed=0;recursiveResize=0;expand=0;dropTarget=0;connectable=0;deletable=0;rotatable=0;${['polygon', 'circle-through', 'arc-through'].includes(call.name) ? 'aspect=fixed;' : ''}${fixed ? 'movable=0;resizable=0;' : call.name === 'content' || call.resolvedPoints?.length && !referencedRect ? 'resizable=0;' : ''}${call.name === 'group' ? 'pointerEvents=0;' : ''}${settings}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x)}" y="${pixel(y)}" width="${pixel(w)}" height="${pixel(h)}" as="geometry"/></mxCell>`;
   });

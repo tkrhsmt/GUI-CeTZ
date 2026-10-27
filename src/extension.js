@@ -5,9 +5,10 @@ const { parseCanvas } = require('./diagram');
 const { readAllCells } = require('./drawio');
 const { patchesFromEditable, renderEditable } = require('./advanced');
 const { renderDiagram } = require('./render-diagram');
-const { ALL_SHAPES, insertionFor, templateInsertions } = require('./templates');
+const { PLACEMENT_SHAPES, insertionFor, templateInsertions } = require('./templates');
 const { EditHistory, historyAction } = require('./history');
 const { sourceAction, sourceActionPatches } = require('./source-actions');
+const { ACTIONS: PATH_ACTIONS } = require('./path-operations');
 const { exportTypst } = require('./export');
 const { withSelectionMarker, withSelectionMarkers, selectSourceCalls } = require('./selection');
 const { bindScene, sceneRevision, sourceIndices } = require('./scene');
@@ -152,6 +153,11 @@ async function syncFromSource(session) {
   session.diagram = diagram;
   session.editable = editable;
 }
+async function acceptDiagramSnapshot(session, xml) {
+  const clean = withDiagramStatus(xml, null);
+  if (clean !== xml) await updateDiagramDocument(session, clean, session.diagramFiles);
+  else session.lastXml = xml;
+}
 async function syncToSource(session) {
   if (session.writingDiagram || session.writingSource) return;
   const gui = await vscode.workspace.openTextDocument(session.diagramUri);
@@ -242,7 +248,7 @@ async function syncToSource(session) {
         if (patches.length) {
           await syncFromSource(session);
           await refreshGuiView(session);
-        } else session.lastXml = xml;
+        } else await acceptDiagramSnapshot(session, xml);
         await selectSourceCalls(vscode, await documentForSession(session),
           session.editable.calls, sourceCommand.indices);
         return;
@@ -256,7 +262,7 @@ async function syncToSource(session) {
         editor.revealRange(new vscode.Range(editor.selection.start, editor.selection.end));
         return;
       }
-      const pending = sourceCommand.action === 'properties'
+      const pending = sourceCommand.action === 'properties' || PATH_ACTIONS.has(sourceCommand.action)
         ? patchesFromEditable(source.getText(), session.editable, xml, readAllCells) : [];
       let patches;
       try { patches = sourceActionPatches(source.getText(), session.editable, sourceCommand, pending); }
@@ -267,6 +273,14 @@ async function syncToSource(session) {
       }
       await applySourcePatches(session, source, patches, sourceCommand.action === 'properties');
       await syncFromSource(session);
+      if (patches.selectStart !== undefined) {
+        const index = session.editable?.calls.findIndex(call => call.start === patches.selectStart);
+        if (index >= 0) {
+          session.selectionSerial = (session.selectionSerial || 0) + 1;
+          await updateDiagramDocument(session, withSelectionMarker(session.lastXml, session.editable.cellIds?.[index] ?? index,
+            `${Date.now()}-${session.selectionSerial}`), session.diagramFiles);
+        }
+      }
       await refreshGuiView(session);
     } catch (error) { await syncFromSource(session); await refreshGuiView(session); throw error; }
     return;
@@ -278,7 +292,7 @@ async function syncToSource(session) {
       throw new Error('Typst changed while the GUI was being edited. The GUI was refreshed from Typst.');
     }
     const patches = patchesFromEditable(source.getText(), session.editable, xml, readAllCells);
-    if (!patches.length) { session.lastXml = xml; return; }
+    if (!patches.length) { await acceptDiagramSnapshot(session, xml); return; }
     await applySourcePatches(session, source, patches);
     await syncFromSource(session);
     if (patches.length) await refreshGuiView(session);
@@ -324,11 +338,11 @@ async function insertShape() {
   const canvas = session ? canvases[session.index] :
     canvases.find(item => offset >= item.start && offset <= item.end);
   if (!canvas) throw new Error('Place the cursor in a CeTZ canvas before inserting a shape.');
-  const selected = await vscode.window.showQuickPick(ALL_SHAPES.map(shape => shape.label), {
+  const selected = await vscode.window.showQuickPick(PLACEMENT_SHAPES.map(shape => shape.label), {
     title: 'CeTZ: Insert Shape', placeHolder: 'Choose a CeTZ draw function'
   });
   if (!selected) return;
-  const shape = ALL_SHAPES.find(item => item.label === selected);
+  const shape = PLACEMENT_SHAPES.find(item => item.label === selected);
   const insertion = insertionFor(source, canvas, shape.call);
   const edit = new vscode.WorkspaceEdit();
   edit.insert(document.uri, document.positionAt(insertion.offset), insertion.text);

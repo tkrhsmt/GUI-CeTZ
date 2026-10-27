@@ -127,7 +127,7 @@ test('deleting adjacent rendered shapes removes their complete lines without ove
 test('all newly added shapes paste with an offset and retain their editable geometry', async () => {
   const { SHAPES } = require('../src/templates');
   const names = new Set(['polygon', 'circle-through', 'arc-through', 'bezier-through', 'boolean']);
-  for (const shape of SHAPES.filter(shape => names.has(shape.label))) {
+  for (const shape of SHAPES.concat(require('./path-operation-fixtures')).filter(shape => names.has(shape.label))) {
     const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' + shape.call + '\n})';
     const original = setup(source);
     const next = apply(source, pasteShapes(source, original, copyShapes(source, original, [0])));

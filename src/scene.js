@@ -32,7 +32,7 @@ function bindScene(session, source, xml, editable) {
   }
   // Hidden, source-neutral revision markers survive Draw.io serialization.
   // They let the bridge reject a delayed save from before a deletion/reindex.
-  const marker = `<mxCell id="cetz-scene-${session.sceneRevision}" value="" visible="0" style="opacity=0;selectable=0;movable=0;deletable=0;cetzAction=scene;" vertex="1" parent="1"><mxGeometry width="1" height="1" as="geometry"/></mxCell>`;
+  const marker = `<mxCell id="cetz-scene-${session.sceneRevision}" value="" visible="0" style="opacity=0;selectable=0;movable=0;deletable=0;cetzAction=scene;cetzError=;" vertex="1" parent="1"><mxGeometry width="1" height="1" as="geometry"/></mxCell>`;
   xml = xml.replace('</root>', marker + '</root>');
   if (editable) editable.xml = xml;
   return xml;

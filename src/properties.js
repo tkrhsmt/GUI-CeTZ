@@ -77,14 +77,22 @@ function positionalLabel(name, index, count) {
   if (index === count - 1) return ['rect', 'grid', 'rect-around'].includes(name) ? 'Corner 2' : 'End';
   return 'Point ' + (index + 1);
 }
+function plainContentText(value) {
+  if (/^\[[^\[\]\\#*$<>]*\]$/.test(value)) return value.slice(1, -1);
+  try { const text = JSON.parse(value); return typeof text === 'string' ? text : null; }
+  catch { return null; }
+}
 function propertyModel(call) {
   if (!SCHEMAS[call.name]) return null;
   const parsed = argumentsOf(call.call), args = parsed.args.filter(arg => !arg.empty);
   const count = args.filter(arg => !arg.named).length;
   const fields = args.map(arg => {
     const match = !arg.named && POINT.exec(arg.value);
-    return { key: arg.key, label: arg.named ? arg.key : positionalLabel(call.name, +arg.key.slice(1), count),
+    const referencedObject = call.name === 'rect-around' && !arg.named && !/^\s*\(/.test(arg.value);
+    const text = call.name === 'content' && arg.key === '$' + (count - 1) ? plainContentText(arg.value) : null;
+    return { key: arg.key, label: arg.named ? arg.key : referencedObject ? 'Object ' + (+arg.key.slice(1) + 1) : positionalLabel(call.name, +arg.key.slice(1), count),
       value: arg.value, section: arg.named ? (['fill', 'stroke', 'fill-rule', 'mark'].includes(arg.key) ? 'Appearance' : 'Shape') : 'Geometry',
+      ...(text !== null ? { text } : {}),
       ...(match ? { point: [Number(match[1]), Number(match[2])] } : {}) };
   });
   const defaults = { ...SCHEMAS[call.name], ...(call.name === 'anchor' ? {} : { name: 'none', stroke: '1pt + black', fill: 'none' }) };
@@ -145,4 +153,4 @@ function propertyPatches(rendered, action) {
   if (call.rotation) text = `scope({ rotate(${call.rotation.angle}deg, origin: (${call.rotation.cx}, ${call.rotation.cy})); ${text} })`;
   return [{ start: call.start, end: call.end, text }];
 }
-module.exports = { propertyModel, propertyPatches, argumentsOf, SCHEMAS };
+module.exports = { propertyModel, propertyPatches, argumentsOf, plainContentText, SCHEMAS };

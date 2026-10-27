@@ -928,7 +928,7 @@ test('advanced shape palette settings update CeTZ stroke and fill arguments', as
 });
 test('moves each advanced CeTZ shape independently in Draw.io', async () => {
   const file = path.resolve('examples/advanced.typ');
-  for (const shape of SHAPES) {
+  for (const shape of SHAPES.concat(require('./path-operation-fixtures'))) {
     const source = `#import "@preview/cetz:0.5.2"\n#cetz.canvas({\nimport cetz.draw: *\n${shape.call}\n})`;
     const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
     assert.equal(rendered.calls.length, 1, shape.label);

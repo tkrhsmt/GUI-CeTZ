@@ -226,8 +226,8 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.match(formatContainer.children[0].children[0].style.cssText, /scrollbar-width:none/);
 
   const icons = vertexTemplates.filter(entry => entry.style.startsWith('shape=image;'));
-  assert.equal(icons.length, 15);
-  assert.equal(new Set(icons.map(entry => entry.style)).size, 15);
+  assert.equal(icons.length, 11);
+  assert.equal(new Set(icons.map(entry => entry.style)).size, 11);
   for (const icon of icons) {
     assert.match(icon.style, new RegExp(`cetzTemplate=${icon.title};`));
     const image = /image=(data:image\/svg\+xml,[^;]+);/.exec(icon.style)?.[1];
@@ -277,6 +277,17 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   context.pollStatus();
   assert.equal(ui.container.children[0].textContent, 'CeTZ error: invalid syntax\nline 3');
   assert.equal(ui.container.children[0].style.display, 'block');
+  // A live graph merge can be healthy while DrawioFile.getData still caches
+  // the outer mxfile attribute from the preceding failure.
+  graphModel.cells['cetz-scene-12'] = { id: 'cetz-scene-12', style: 'cetzAction=scene;cetzError=;' };
+  context.pollStatus();
+  assert.equal(ui.container.children[0].textContent, '');
+  assert.equal(ui.container.children[0].style.display, 'none');
+  graphModel.cells['cetz-scene-12'].style = 'cetzAction=scene;cetzError=' + encodeURIComponent('new error') + ';';
+  context.pollStatus();
+  assert.equal(ui.container.children[0].textContent, 'CeTZ error: new error');
+  assert.equal(ui.container.children[0].style.display, 'block');
+  delete graphModel.cells['cetz-scene-12'];
   fileData = '<mxfile host="GUI-CeTZ">';
   context.pollStatus();
   assert.equal(ui.container.children[0].style.display, 'none');
@@ -331,7 +342,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.equal(wrapper.children.includes(controls), true);
   assert.equal(controls.style.display, '');
   assert.match(controls.style.cssText, /box-sizing:border-box;width:100%/);
-  assert.match(controls.children[1].style.cssText, /grid-template-columns:76px minmax\(0,1fr\)/);
+  assert.match(controls.children[1].style.cssText, /grid-template-columns:minmax\(0,76px\) minmax\(0,1fr\)/);
   assert.match(controls.children[1].children[1].style.cssText, /max-width:100%/);
   assert.equal(controls.children[0].style.display, 'none');
   assert.equal(controls.children[1].style.display, 'grid');

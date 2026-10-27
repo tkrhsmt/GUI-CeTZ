@@ -55,6 +55,21 @@ async function fixture(t, sourceOverride, options = {}) {
     sidebarContainer: element(), menubarContainer: element(), toolbarContainer: element(),
     hsplitPosition: 0, formatWidth: 240, refresh() {},
     getCurrentFile() { return { getTitle() { return 'test.cetz-1.drawio'; }, getData() { return ''; } }; } };
+  if (options.nativeSelection) {
+    const code = fs.readFileSync(path.resolve(path.dirname(editorUi), '../grapheditor/EditorUi.js'), 'utf8');
+    const start = code.indexOf('EditorUi.prototype.isSelectionAllowed = function(evt)');
+    const end = code.indexOf('\n};', start) + '\n};'.length;
+    assert.ok(start >= 0 && end > start);
+    w.EditorUi = function () {};
+    w.eval(code.slice(start, end));
+    ui.isSelectionAllowed = w.EditorUi.prototype.isSelectionAllowed;
+    // The installed editor cancels sidebar mousedown/selectstart unless this
+    // hook permits the event. Programmatic focus alone bypasses that behavior.
+    ui.sidebarContainer.onmousedown = ui.sidebarContainer.onselectstart = event =>
+      graph.isEditing() || ui.isSelectionAllowed(event);
+    ui.sidebarContainer.appendChild(sidebar.container);
+    w.document.body.appendChild(ui.sidebarContainer);
+  }
   if (options.nativeClipboard) {
     const code = fs.readFileSync(editorUi, 'utf8');
     const start = code.indexOf('EditorUi.prototype.installNativeClipboardHandler = function()');
@@ -518,7 +533,7 @@ test('placement supports cancellation, retrying invalid points and finishing a v
   assert.match(f.graph.container.querySelector('.cetzPlacementHint').textContent, /different point/);
   click(3, 3);
   assert.equal(count(), 1);
-  arm('line'); click(1, 1); arm('merge-path');
+  arm('line'); click(1, 1); arm('hobby');
   click(2, 2); click(3, 3); click(4, 2); click(4, 2, 2);
   f.graph.container.dispatchEvent(new f.w.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
   assert.equal(count(), 2);
@@ -1464,4 +1479,182 @@ test('moving a selection shares one translation and preserves relative positions
   const next = patches.sort((a, b) => b.start - a.start).reduce((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
   assert.match(next, /polygon\(\(0.5, 0.75\), 6, radius: 0.70710678\)/);
   assert.match(next, /circle\(\(3.53, 4.72\), radius: 0.3\)/);
+});
+
+test('selection operations replace composite palette tools and apply Boolean to selected non-rectangle shapes', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\ncircle((0, 0), radius: 1.5, fill: red)\npolygon((0.5, 0), 5, radius: 1.5)\n})';
+  const f = await fixture(t, source);
+  const names = f.paletteEntries['cetz-preview-primitives'].concat(f.paletteEntries['cetz-advanced']).map(entry => entry.getAttribute('aria-label'));
+  assert.equal(names.length, 15);
+  for (const name of ['boolean', 'rect-around', 'merge-path', 'compound-path']) assert.equal(names.includes(name), false);
+  f.select('cetz-edit-0');
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzOperations');
+  const button = action => panel.querySelector('[data-cetz-operation="' + action + '"]');
+  assert.equal(button('boolean-union').disabled, true);
+  assert.equal(button('make-rect-around').disabled, false);
+  f.graph.setSelectionCells([f.graph.model.getCell('cetz-edit-1'), f.graph.model.getCell('cetz-edit-0')]);
+  assert.equal(button('boolean-union').disabled, false);
+  assert.equal(button('make-compound-path').disabled, false);
+  button('boolean-xor').click();
+  assert.equal(f.graph.container.querySelector('.cetzPlacementHint'), null);
+  assert.equal(Object.values(f.graph.model.cells).some(cell => /cetzTemplate=/.test(cell.style || '')), false);
+  const { sourceAction, sourceActionPatches } = require('../src/source-actions');
+  const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  const action = sourceAction(readAllCells(xml), readAllCells(f.rendered.xml));
+  assert.equal(action.action, 'boolean-xor');
+  const patches = sourceActionPatches(source, f.rendered, action, patchesFromEditable(source, f.rendered, xml, readAllCells));
+  const next = [...patches].sort((a, b) => b.start - a.start).reduce((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+  assert.ok(next.includes('circle((0, 0), radius: 1.5, fill: red)'));
+  assert.ok(next.includes('polygon((0.5, 0), 5, radius: 1.5)'));
+  assert.ok(next.includes('op: "xor"'));
+  assert.doesNotMatch(next, /rect\(/);
+  const result = await renderEditable(next, parseCanvas(next).canvas, path.resolve('examples/basic.typ'));
+  assert.equal(result.calls.length, 1); assert.equal(result.calls[0].start, patches.selectStart);
+});
+
+test('path-operation availability follows closed paths, object type and selection scope', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 1))\nbezier((2, 1), (4, 0), (3, 2))\ncontent((0, 3), [Title])\n})';
+  const f = await fixture(t, source);
+  f.graph.setSelectionCells([f.graph.model.getCell('cetz-edit-0'), f.graph.model.getCell('cetz-edit-1')]);
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzOperations');
+  const button = action => panel.querySelector('[data-cetz-operation="' + action + '"]');
+  assert.equal(button('boolean-union').disabled, true);
+  assert.equal(button('make-merge-path').disabled, false);
+  assert.equal(button('make-compound-path').disabled, false);
+  assert.match(panel.querySelector('.cetzOperationsHint').textContent, /closed paths/);
+  f.graph.setSelectionCells([f.graph.model.getCell('cetz-edit-0'), f.graph.model.getCell('cetz-edit-2')]);
+  assert.equal(button('make-merge-path').disabled, true);
+  assert.equal(button('make-rect-around').disabled, false, 'text can be surrounded by a frame');
+  const items = [];
+  f.graph.popupMenuHandler.factoryMethod({ addItem(label, icon, callback, parent, iconClass, enabled) { const item = { label, callback, parent, enabled }; items.push(item); return item; }, addSeparator() {} });
+  const folder = items.find(item => item.label === 'Path operations');
+  assert.ok(folder);
+  assert.equal(items.find(item => item.label === 'Frame selection').parent, folder);
+  assert.equal(items.find(item => item.label === 'Unite').enabled, false);
+});
+
+test('content Text accepts literal text, IME, punctuation and empty values without Typst brackets', { skip }, async t => {
+  let source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\ncontent((0, 0), [Hello])\n})';
+  const f = await fixture(t, source); f.select('cetz-edit-0');
+  f.w.document.body.appendChild(f.ui.sidebar.wrapper);
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  const text = panel.querySelector('[aria-label="Text"]');
+  assert.equal(text.value, 'Hello');
+  const literal = '日本語 [text] # * $ "quote" \\ path\nsecond line';
+  text.focus();
+  text.dispatchEvent(new f.w.CompositionEvent('compositionstart', { bubbles: true }));
+  text.value = literal; text.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 450));
+  assert.equal(inspectorCommands(f).length, 0);
+  text.dispatchEvent(new f.w.CompositionEvent('compositionend', { bubbles: true }));
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  source = await acceptInspectorCommand(f, source);
+  assert.ok(source.includes(JSON.stringify(literal)));
+  assert.equal(text.value, literal);
+  assert.equal(f.w.document.activeElement, text);
+  assert.match(panel.querySelector('.cetzStatus').textContent, /saved automatically/);
+  const metadata = JSON.parse(decodeURIComponent(f.graph.getCellStyle(f.graph.model.getCell('cetz-edit-0')).cetzProperties));
+  assert.equal(metadata.fields.find(field => field.key === '$1').text, literal);
+  text.value = ''; text.dispatchEvent(new f.w.Event('change', { bubbles: true }));
+  source = await acceptInspectorCommand(f, source);
+  assert.match(source, /content\(\(0, 0\), ""\)/);
+  assert.equal(text.value, '');
+});
+
+test('content Text keeps an explicit Typst expression mode for rich content', { skip }, async t => {
+  let source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\ncontent((0, 0), [Hello])\n})';
+  const f = await fixture(t, source); f.select('cetz-edit-0');
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  panel.querySelector('[aria-label="Text expression mode"]').click();
+  const expression = panel.querySelector('[aria-label="Text / content"]');
+  assert.equal(expression.style.display, '');
+  expression.value = '[*Bold* and $x^2$]'; expression.dispatchEvent(new f.w.Event('change', { bubbles: true }));
+  source = await acceptInspectorCommand(f, source);
+  assert.ok(source.includes('[*Bold* and $x^2$]'));
+  assert.equal(expression.value, '[*Bold* and $x^2$]');
+});
+
+test('content Text permits the first mouse click and text selection with native Draw.io sidebar guards', { skip }, async t => {
+  let source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\ncontent((0, 0), "Text")\n})';
+  const f = await fixture(t, source, { nativeSelection: true }); f.select('cetz-edit-0');
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  const text = panel.querySelector('[aria-label="Text"]');
+  const mode = panel.querySelector('[aria-label="Text expression mode"]');
+  assert.equal(mode.getAttribute('aria-pressed'), 'false');
+  for (const type of ['mousedown', 'selectstart']) {
+    const event = new f.w.MouseEvent(type, { bubbles: true, cancelable: true });
+    text.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, false, type + ' must allow native text editing before touching ƒx');
+  }
+  assert.equal(f.ui.isSelectionAllowed({ target: f.graph.container }), false, 'canvas keeps native selection behavior');
+  text.focus(); text.value = 'First edit'; text.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  source = await acceptInspectorCommand(f, source);
+  assert.match(source, /content\(\(0, 0\), "First edit"\)/);
+  mode.click();
+  const expression = panel.querySelector('[aria-label="Text / content"]');
+  const event = new f.w.MouseEvent('mousedown', { bubbles: true, cancelable: true }); expression.dispatchEvent(event);
+  assert.equal(event.defaultPrevented, false, 'Typst expression textareas also permit mouse editing');
+});
+
+test('empty content stays selectable and survives repeated native saves and later text edits', { skip }, async t => {
+  for (const value of ['""', '[]']) {
+    const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\ncontent((1, 2), ' + value + ')\n})';
+    const f = await fixture(t, source); f.select('cetz-edit-0');
+    const cell = f.graph.model.getCell('cetz-edit-0');
+    assert.ok(cell);
+    for (let i = 0; i < 3; i++) {
+      const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+      assert.deepEqual(patchesFromEditable(source, f.rendered, xml, readAllCells), [], 'idle saves of empty content must leave the source intact');
+    }
+    assert.ok(cell.geometry.width > 0 && cell.geometry.height > 0, 'empty content retains a usable selection target');
+    const text = f.ui.sidebar.wrapper.querySelector('.cetzInspector [aria-label="Text"]');
+    assert.equal(text.value, '');
+    text.value = 'Restored'; text.dispatchEvent(new f.w.Event('change', { bubbles: true }));
+    assert.match(await acceptInspectorCommand(f, source), /content\(\(1, 2\), "Restored"\)/);
+  }
+});
+
+test('canvas hover tints nearby CeTZ artwork like Outline without selecting or modifying it', { skip }, async t => {
+  const f = await fixture(t);
+  const highlighted = () => f.graph.view.getOverlayPane().querySelectorAll('[data-cetz-highlight-owner]');
+  function hover(id, dx, dy) {
+    const state = id && f.graph.view.getState(f.graph.model.getCell(id));
+    const x = state ? state.x + dx : dx, y = state ? state.y + dy : dy;
+    const event = new f.w.MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y });
+    Object.defineProperty(event, 'target', { value: f.graph.container });
+    f.graph.fireMouseEvent(f.w.mxEvent.MOUSE_MOVE, new f.w.mxMouseEvent(event, state));
+  }
+  const before = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  hover('cetz-edit-0', 10, 10);
+  assert.ok(highlighted().length);
+  assert.equal(highlighted()[0].getAttribute('data-cetz-highlight-owner'), 'cetz-edit-0');
+  const first = highlighted()[0];
+  hover('cetz-edit-0', 12, 12);
+  assert.equal(highlighted()[0], first, 'hovering the same object reuses its overlay');
+  hover('cetz-edit-2', 10, 10);
+  assert.equal(highlighted()[0].getAttribute('data-cetz-highlight-owner'), 'cetz-edit-2');
+  assert.equal(f.graph.getSelectionCells().length, 0);
+  assert.equal(f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)), before);
+  f.select('cetz-edit-2');
+  hover('cetz-point-2-0', 7, 7);
+  assert.equal(highlighted()[0].getAttribute('data-cetz-highlight-owner'), 'cetz-edit-2');
+  hover(null, -1000, -1000);
+  assert.equal(highlighted().length, 0);
+  for (const scale of [1, 2, 0.5]) {
+    f.graph.view.setScale(scale);
+    const state = f.graph.view.getState(f.graph.model.getCell('cetz-edit-0'));
+    hover(null, state.x - 4, state.y + state.height / 2);
+    assert.equal(highlighted()[0].getAttribute('data-cetz-highlight-owner'), 'cetz-edit-0', 'nearby hover works at scale ' + scale);
+    f.graph.container.dispatchEvent(new f.w.MouseEvent('mouseleave'));
+    assert.equal(highlighted().length, 0);
+  }
+  hover('cetz-edit-0', 10, 10);
+  f.graph.view.setScale(1.5);
+  assert.equal(highlighted().length, 0, 'zoom removes stale overlays');
+  hover('cetz-edit-0', 10, 10);
+  const down = new f.w.MouseEvent('mousedown', { button: 0 });
+  Object.defineProperty(down, 'target', { value: f.graph.container });
+  f.graph.fireMouseEvent(f.w.mxEvent.MOUSE_DOWN, new f.w.mxMouseEvent(down));
+  assert.equal(highlighted().length, 0, 'dragging starts without a stationary hover overlay');
 });
