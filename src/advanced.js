@@ -1,26 +1,56 @@
 'use strict';
 
-const { closing, skipTrivia, splitArgs } = require('./scanner');
+const { closing, skipTrivia, splitArgs, deletionRange } = require('./scanner');
 const { renderCanvas } = require('./preview');
 const { templateInsertions } = require('./templates');
 const { color: parseColor, stroke: parseStroke, typstColor, typstStroke } = require('./style');
 const { sideValues, sideEdits } = require('./marks');
+const { layerInstrumentation, splitSvgLayers } = require('./svg-layers');
+const { coordinate, readSnapStep, snapCoordinate, normalizeCoordinate } = require('./snapping');
+const { propertyModel, plainContentText } = require('./properties');
 
-const EDITABLE = new Set(['arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier', 'hobby',
-  'catmull', 'merge-path', 'compound-path', 'rect', 'circle', 'content', 'line', 'polygon']);
+const EDITABLE = new Set(['circle-through', 'arc-through', 'bezier-through', 'boolean', 'arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier', 'hobby',
+  'catmull', 'merge-path', 'compound-path', 'rect', 'circle', 'content', 'line', 'polygon', 'anchor']);
 const NUMBER = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)';
 const TARGET_ORIGIN = 500;
 const GRID_FRACTIONS = 4;
 const POINT = new RegExp(`\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)`, 'g');
-const POINT_HANDLE_NAMES = new Set(['bezier', 'hobby', 'catmull', 'line']);
+const POINT_HANDLE_NAMES = new Set(['circle-through', 'arc-through', 'bezier-through', 'bezier', 'hobby', 'catmull', 'line', 'anchor', 'content']);
 const POINT_HANDLE_SIZE = 14;
 const WRAPPER = new RegExp(`^scope\\(\\{\\s*translate\\(x:\\s*(${NUMBER}),\\s*y:\\s*(${NUMBER})\\)\\s*scale\\(x:\\s*(${NUMBER}),\\s*y:\\s*(${NUMBER})\\)\\s*`);
+const ROTATED_WRAPPER = new RegExp(`^scope\\(\\{\\s*rotate\\(\\s*(${NUMBER})deg\\s*,\\s*origin:\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*\\)\\s*;\\s*`);
 const round = n => Number(n.toFixed(2));
 const pixel = n => Number(n.toFixed(5));
-const snapCoordinate = n => round(Math.round(n * GRID_FRACTIONS) / GRID_FRACTIONS);
-const FILLABLE = new Set(['rect', 'circle', 'polygon', 'n-star', 'rect-around', 'merge-path', 'compound-path']);
+function rotatedCall(call, inner) {
+  if (!call.rotation) return inner;
+  const { angle, cx, cy } = call.rotation;
+  return `scope({ rotate(${angle}deg, origin: (${cx}, ${cy})); ${inner} })`;
+}
+
+const FILLABLE = new Set(['circle-through', 'arc-through', 'bezier-through', 'boolean', 'rect', 'circle', 'polygon', 'n-star', 'rect-around', 'merge-path', 'compound-path']);
 const STYLE_KEYS = new Set(['cetzFillColor', 'cetzStrokeColor', 'cetzStrokeWidth', 'cetzDash',
-  'cetzStartMark', 'cetzEndMark']);
+  'cetzStartMark', 'cetzEndMark', 'cetzText']);
+
+function contentText(call) {
+  if (call.name !== 'content') return null;
+  const open = skipTrivia(call.call, call.name.length);
+  const end = closing(call.call, open, '(', ')');
+  if (end < 0) return null;
+  const args = splitArgs(call.call, open + 1, end).filter(arg =>
+    !/^\s*[\w-]+\s*:/.test(call.call.slice(arg.start, arg.end)));
+  if (args.length < 2) return null;
+  const raw = call.call.slice(args[1].start, args[1].end).trim();
+  const text = plainContentText(raw);
+  return text === null ? null : { range: args[1], text, string: raw.startsWith('"') };
+}
+
+function replaceContentText(call, value) {
+  const content = contentText(call);
+  if (!content) throw new Error('Edit this rich CeTZ content in Typst.');
+  if (/[\[\]\\#*$<>]/.test(value))
+    throw new Error('Use Typst source for rich text and markup.');
+  return call.call.slice(0, content.range.start) + (content.string ? JSON.stringify(value) : `[${value}]`) + call.call.slice(content.range.end);
+}
 
 function namedArgument(text, name) {
   const open = skipTrivia(text, /^[\w-]+/.exec(text)?.[0].length || 0);
@@ -39,7 +69,30 @@ function editableStyle(call) {
   const fill = namedArgument(call.call, 'fill')?.value;
   const stroke = namedArgument(call.call, 'stroke')?.value;
   const parsedStroke = parseStroke(stroke);
-  return { cetzKind: call.name,
+  function curveParameter(name, fallback) {
+    const value = namedArgument(call.call, name)?.value;
+    if (value == null || value === 'auto') return fallback;
+    if (new RegExp(`^${NUMBER}$`).test(value)) return Number(value);
+    if (new RegExp(`^\\(\\s*${NUMBER}(?:\\s*,\\s*${NUMBER})*\\s*,?\\s*\\)$`).test(value))
+      return value.slice(1, -1).split(',').filter(part => part.trim()).map(Number);
+    return fallback;
+  }
+  return { cetzKind: call.name, cetzProperties: encodeURIComponent(JSON.stringify(propertyModel(call))),
+    ...(['circle-through', 'arc-through'].includes(call.name) ? {
+      cetzCurveClose: call.name === 'circle-through' || ['"CLOSE"', '"PIE"'].includes(namedArgument(call.call, 'mode')?.value) ? '1' : '0',
+      cetzThroughMode: (namedArgument(call.call, 'mode')?.value || '"OPEN"').replace(/"/g, '') } : {}),
+    ...(['bezier', 'catmull', 'hobby'].includes(call.name) ? {
+      cetzCurveClose: namedArgument(call.call, 'close')?.value === 'true' ? '1' : '0',
+      cetzCurveTension: curveParameter('tension', 0.5),
+      cetzCurveOmega: encodeURIComponent(JSON.stringify(curveParameter('omega', [0, 0]))),
+      cetzCurveTa: encodeURIComponent(JSON.stringify(curveParameter('ta', null))),
+      cetzCurveTb: encodeURIComponent(JSON.stringify(curveParameter('tb', null))) } : {}),
+    ...(['polygon', 'n-star', 'content'].includes(call.name) || call.rotation ?
+      { cetzAngle: call.rotation ? call.rotation.angle :
+        /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))deg$/.exec(namedArgument(call.call, 'angle')?.value || '')?.[1] || '0' } : {}),
+    ...(call.rotation ? { cetzRotationCx: call.rotation.cx,
+      cetzRotationCy: call.rotation.cy } : {}),
+    ...(contentText(call) ? { cetzText: encodeURIComponent(contentText(call).text) } : {}),
     cetzFillColor: FILLABLE.has(call.name) && parseColor(fill) !== 'none' ? parseColor(fill) || '#ffffff' : '#ffffff',
     cetzStrokeColor: parsedStroke?.color && parsedStroke.color !== 'none' ? parsedStroke.color : '#000000',
     cetzStrokeWidth: parsedStroke?.width || 1,
@@ -77,6 +130,15 @@ function rewriteEditableStyle(call, beforeStyle, afterStyle) {
   if (!changed.length) return null;
   const edits = [];
   let appended = '';
+  if (changed.includes('cetzText')) {
+    const content = contentText(call);
+    if (!content) throw new Error('Edit this rich CeTZ content in Typst.');
+    let value;
+    try { value = decodeURIComponent(afterStyle.cetzText); }
+    catch { throw new Error('Invalid CeTZ text.'); }
+    edits.push({ start: content.range.start, end: content.range.end, text: `[${value}]` });
+    replaceContentText(call, value);
+  }
   if (changed.some(key => ['cetzStrokeColor', 'cetzStrokeWidth', 'cetzDash'].includes(key))) {
     const arg = namedArgument(call.call, 'stroke');
     if (!arg || arg.value != null && !parseStroke(arg.value))
@@ -120,6 +182,8 @@ function rewriteEditableStyle(call, beforeStyle, afterStyle) {
 
 function rewriteLiteralCall(call, transform) {
   const edits = [];
+  const round = transform.snapStep !== undefined ? value => normalizeCoordinate(value, transform.snapStep) :
+    value => Number(value.toFixed(2));
   const { sx, sy } = transform;
   const tx = transform.snapTx === false ? transform.tx : snapCoordinate(transform.tx);
   const ty = transform.snapTy === false ? transform.ty : snapCoordinate(transform.ty);
@@ -161,13 +225,19 @@ function rewriteLiteralCall(call, transform) {
     const args = splitArgs(call, open + 1, end);
     args.end = end;
     const positional = args.filter(arg => !/^\s*[\w-]+\s*:/.test(call.slice(arg.start, arg.end)));
-    if (name === 'merge-path' || name === 'compound-path') {
-      const body = call.slice(positional[0].start, positional[0].end);
-      const nested = /\b(rect|circle|line|arc|bezier|hobby|catmull)\s*\(/g;
-      for (const match of body.matchAll(nested)) visit(positional[0].start + match.index, match[1]);
+    if (['merge-path', 'compound-path', 'boolean'].includes(name)) {
+      for (const operand of positional) {
+        const brace = skipTrivia(call, operand.start);
+        if (call[brace] !== '{') throw new Error('Move Boolean results with named operands by editing their operands.');
+        const bodyEnd = closing(call, brace, '{', '}');
+        const nested = locateEditableCalls(call, { bodyStart: brace + 1, bodyEnd });
+        for (const child of nested.filter(child => !child.group)) visit(child.start, child.name);
+      }
       return;
     }
-    const count = { arc: 1, mark: 2, 'n-star': 1, grid: 2, 'rect-around': 2,
+    if (['circle-through', 'arc-through'].includes(name) && !uniform)
+      throw new Error('A three-point circle or arc must be resized uniformly.');
+    const count = { 'circle-through': 3, 'arc-through': 3, 'bezier-through': 3, arc: 1, mark: 2, 'n-star': 1, grid: 2, 'rect-around': 2,
       rect: 2, circle: 1, content: 1, polygon: 1 }[name];
     const coordinates = count == null ? positional : positional.slice(0, count);
     if (!coordinates.length || count != null && coordinates.length < count)
@@ -199,10 +269,11 @@ function rewriteLiteralCall(call, transform) {
     text.slice(0, edit.start) + edit.text + text.slice(edit.end), call);
 }
 
-function rewriteReferencedCall(call, dx, dy) {
+function rewriteReferencedCall(call, dx, dy, pointOffsets, guide = {}) {
   const ranges = coordinateRanges(call);
   if (!ranges.length) throw new Error('This CeTZ call has no coordinates to move.');
   const edits = ranges.map((range, index) => {
+    const offset = pointOffsets?.[index] || { x: dx, y: dy };
     const raw = call.call.slice(range.start, range.end).trim();
     const existing = new RegExp(`^\\(\\s*rel:\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*,\\s*to:\\s*([\\s\\S]*)\\)$`).exec(raw);
     const base = existing ? existing[3].trim() : raw;
@@ -212,8 +283,9 @@ function rewriteReferencedCall(call, dx, dy) {
     const fromPrevious = previous && /^\(\s*\)\s*$/.test(base);
     const vertical = previous && /^\(\s*\(\s*\)\s*,\s*"\|-"\s*,/.test(base);
     const horizontal = previous && /^\(\s*\(\s*\)\s*,\s*"-\|"\s*,/.test(base);
-    const x = snapCoordinate((existing ? +existing[1] : 0) + (fromPrevious || vertical ? 0 : dx));
-    const y = snapCoordinate((existing ? +existing[2] : 0) + (fromPrevious || horizontal ? 0 : dy));
+    const quantize = guide.step !== undefined ? value => normalizeCoordinate(value, guide.step) : snapCoordinate;
+    const x = (guide.x ? coordinate : quantize)((existing ? +existing[1] : 0) + (fromPrevious || vertical ? 0 : offset.x));
+    const y = (guide.y ? coordinate : quantize)((existing ? +existing[2] : 0) + (fromPrevious || horizontal ? 0 : offset.y));
     return { start: range.start, end: range.end,
       text: `(rel: (${x}, ${y}), to: ${base})` };
   });
@@ -223,12 +295,13 @@ function rewriteReferencedCall(call, dx, dy) {
 
 function locateEditableCalls(source, canvas) {
   const result = [];
-  for (let i = canvas.bodyStart; i < canvas.bodyEnd;) {
+  function scan(bodyStart, bodyEnd, group = null) {
+  for (let i = bodyStart; i < bodyEnd;) {
     const next = skipTrivia(source, i);
     if (next !== i) { i = next; continue; }
     if (source[i] === '"') {
       i++;
-      while (i < canvas.bodyEnd) {
+      while (i < bodyEnd) {
         if (source[i] === '\\') i += 2;
         else if (source[i++] === '"') break;
       }
@@ -243,20 +316,43 @@ function locateEditableCalls(source, canvas) {
     const name = match[0], open = skipTrivia(source, i + name.length);
     if (source[open] !== '(') { i += name.length; continue; }
     const end = closing(source, open, '(', ')');
-    if (end < 0 || end >= canvas.bodyEnd) { i += name.length; continue; }
+    if (end < 0 || end >= bodyEnd) { i += name.length; continue; }
     if (EDITABLE.has(name)) result.push({ name, start: i, end: end + 1,
-      call: source.slice(i, end + 1), transform: { tx: 0, ty: 0, sx: 1, sy: 1 } });
+      call: source.slice(i, end + 1), group, transform: { tx: 0, ty: 0, sx: 1, sy: 1 } });
+    else if (name === 'group') {
+      const args = splitArgs(source, open + 1, end);
+      const body = args.find(arg => source[skipTrivia(source, arg.start)] === '{');
+      const brace = body && skipTrivia(source, body.start);
+      const bodyEnd = brace != null && closing(source, brace, '{', '}');
+      if (body && bodyEnd >= 0 && !source.slice(bodyEnd + 1, body.end).trim()) {
+        const groupCall = { name, start: i, end: end + 1, call: source.slice(i, end + 1),
+          group, transform: { tx: 0, ty: 0, sx: 1, sy: 1 } };
+        scan(brace + 1, bodyEnd, groupCall);
+        result.push(groupCall);
+      }
+    }
     else if (name === 'scope') {
       const full = source.slice(i, end + 1), head = WRAPPER.exec(full);
       if (head) {
         const tail = full.slice(head[0].length, -2).trim();
         const inner = /^([\w-]+)\s*\(/.exec(tail);
         if (inner && EDITABLE.has(inner[1])) result.push({ name: inner[1], start: i, end: end + 1,
-          call: tail, transform: { tx: +head[1], ty: +head[2], sx: +head[3], sy: +head[4] } });
+          call: tail, group, transform: { tx: +head[1], ty: +head[2], sx: +head[3], sy: +head[4] } });
+      } else {
+        const rotated = ROTATED_WRAPPER.exec(full);
+        if (rotated) {
+          const tail = full.slice(rotated[0].length, -2).trim();
+          const inner = /^([\w-]+)\s*\(/.exec(tail);
+          if (inner && EDITABLE.has(inner[1])) result.push({ name: inner[1], start: i, end: end + 1,
+            call: tail, group, rotation: { angle: +rotated[1], cx: +rotated[2], cy: +rotated[3] },
+            transform: { tx: 0, ty: 0, sx: 1, sy: 1 } });
+        }
       }
     }
     i = end + 1;
   }
+  }
+  scan(canvas.bodyStart, canvas.bodyEnd);
   return result;
 }
 
@@ -266,12 +362,20 @@ function coordinateRanges(call) {
   if (end < 0) return [];
   const positional = splitArgs(call.call, open + 1, end).filter(arg =>
     !/^\s*[\w-]+\s*:/.test(call.call.slice(arg.start, arg.end)));
-  const count = { rect: 2, circle: 1, content: 1, polygon: 1, arc: 1,
+  if (call.name === 'anchor') return positional.slice(1, 2);
+  const count = { 'circle-through': 3, 'arc-through': 3, 'bezier-through': 3, boolean: 2, rect: 2, circle: 1, content: 1, polygon: 1, arc: 1,
     mark: 2, 'n-star': 1, grid: 2, 'rect-around': 2 }[call.name];
   return count == null ? positional : positional.slice(0, count);
 }
 
 function boundsFor(call, resolvedPoints) {
+  if (call.name === 'anchor') {
+    const range = coordinateRanges(call)[0];
+    const match = range && new RegExp(`^\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*$`)
+      .exec(call.call.slice(range.start, range.end));
+    const point = resolvedPoints?.[0] || (match && [+match[1], +match[2]]);
+    return point ? { x: point[0] - 0.12, y: point[1] - 0.12, width: 0.24, height: 0.24 } : null;
+  }
   let points = resolvedPoints?.length ? resolvedPoints :
     [...call.call.matchAll(POINT)].map(m => [+m[1], +m[2]]);
   if (call.name === 'rect' && !resolvedPoints?.length) {
@@ -280,6 +384,16 @@ function boundsFor(call, resolvedPoints) {
     points = [[rect.first.x, rect.first.y],
       [rect.second.x + (rect.second.relative ? rect.first.x : 0),
         rect.second.y + (rect.second.relative ? rect.first.y : 0)]];
+  }
+  if (call.name === 'grid' && !resolvedPoints?.length) {
+    // A tuple-valued step is spacing, not a third corner of the grid.
+    const ranges = coordinateRanges(call);
+    points = ranges.slice(0, 2).map(range => {
+      const match = new RegExp(`^\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*$`)
+        .exec(call.call.slice(range.start, range.end));
+      return match && [+match[1], +match[2]];
+    });
+    if (points.length !== 2 || points.some(point => !point)) return null;
   }
   if (!points.length) return null;
   if ((call.name === 'rect' || call.name === 'line') && points.length < 2) return null;
@@ -316,8 +430,17 @@ function boundsFor(call, resolvedPoints) {
   if (maxX - minX < 0.25) { minX -= 0.125; maxX += 0.125; }
   if (maxY - minY < 0.25) { minY -= 0.125; maxY += 0.125; }
   const t = call.transform;
-  return { x: t.tx + t.sx * minX, y: t.ty + t.sy * minY,
+  const box = { x: t.tx + t.sx * minX, y: t.ty + t.sy * minY,
     width: t.sx * (maxX - minX), height: t.sy * (maxY - minY) };
+  if (!call.rotation) return box;
+  const { angle, cx, cy } = call.rotation, radians = angle * Math.PI / 180;
+  const corners = [[box.x, box.y], [box.x + box.width, box.y],
+    [box.x, box.y + box.height], [box.x + box.width, box.y + box.height]]
+    .map(([x, y]) => [cx + (x - cx) * Math.cos(radians) - (y - cy) * Math.sin(radians),
+      cy + (x - cx) * Math.sin(radians) + (y - cy) * Math.cos(radians)]);
+  const xs = corners.map(point => point[0]), ys = corners.map(point => point[1]);
+  return { x: Math.min(...xs), y: Math.min(...ys),
+    width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
 }
 
 function literalPointRanges(call) {
@@ -327,12 +450,27 @@ function literalPointRanges(call) {
   if (end < 0) return [];
   return splitArgs(call.call, open + 1, end)
     .filter(arg => !/^\s*[\w-]+\s*:/.test(call.call.slice(arg.start, arg.end)))
+    .slice(call.name === 'anchor' ? 1 : 0)
     .map(arg => {
       const raw = call.call.slice(arg.start, arg.end);
       const match = new RegExp(`^\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*$`).exec(raw);
       return match ? { start: arg.start, end: arg.end, x: +match[1], y: +match[2] } : null;
     })
     .filter(Boolean);
+}
+
+function referencePoint(call) {
+  let point = call.resolvedPoints?.[0];
+  if (!point) {
+    const match = [...call.call.matchAll(POINT)][0];
+    if (!match) return null;
+    point = [call.transform.tx + call.transform.sx * +match[1],
+      call.transform.ty + call.transform.sy * +match[2]];
+  }
+  if (!call.rotation) return { x: point[0], y: point[1] };
+  const { angle, cx, cy } = call.rotation, radians = angle * Math.PI / 180;
+  return { x: cx + (point[0] - cx) * Math.cos(radians) - (point[1] - cy) * Math.sin(radians),
+    y: cy + (point[0] - cx) * Math.sin(radians) + (point[1] - cy) * Math.cos(radians) };
 }
 
 function arcArguments(text) {
@@ -382,7 +520,8 @@ function arcControlPoints(call) {
     { x: origin.x + arc.rx * Math.cos(radians), y: origin.y + arc.ry * Math.sin(radians) }];
 }
 
-function rewriteArcControl(text, index, x, y) {
+function rewriteArcControl(text, index, x, y, precise = false) {
+  const format = precise ? coordinate : round;
   const arc = arcArguments(text);
   if (!arc) throw new Error('Arc control points require literal center, angles, and radius.');
   if (index === 0) {
@@ -391,7 +530,7 @@ function rewriteArcControl(text, index, x, y) {
     const dy = y - arcControlPoints({ call: text })[0].y;
     const px = arc.anchor === 'origin' ? origin.x + dx : x;
     const py = arc.anchor === 'origin' ? origin.y + dy : y;
-    return text.slice(0, arc.center.start) + `(${round(px)}, ${round(py)})` + text.slice(arc.center.end);
+    return text.slice(0, arc.center.start) + `(${format(px)}, ${format(py)})` + text.slice(arc.center.end);
   }
   if (index !== 1 && index !== 2) throw new Error('Unknown arc control point.');
   const origin = arcOrigin(arc);
@@ -406,13 +545,13 @@ function rewriteArcControl(text, index, x, y) {
     const nextStart = angle + 360 * Math.round((oldStart - angle) / 360);
     const nextStop = nextStart + oldStop - oldStart;
     const radius = arc.tuple || Math.abs(aspect - 1) > 1e-10
-      ? `(${round(rx)}, ${round(ry)})` : String(round(rx));
+      ? `(${format(rx)}, ${format(ry)})` : String(format(rx));
     const edits = [
-      { start: arc.start.start, end: arc.start.end, text: `${round(nextStart)}deg` },
-      { start: arc.stop.start, end: arc.stop.end, text: `${round(nextStop)}deg` }
+      { start: arc.start.start, end: arc.start.end, text: `${format(nextStart)}deg` },
+      { start: arc.stop.start, end: arc.stop.end, text: `${format(nextStop)}deg` }
     ];
     if (arc.anchor === 'origin') edits.push({ start: arc.center.start, end: arc.center.end,
-      text: `(${round(x)}, ${round(y)})` });
+      text: `(${format(x)}, ${format(y)})` });
     if (arc.radius) edits.push({ start: arc.radius.start, end: arc.radius.end, text: radius });
     else edits.push({ start: arc.end, end: arc.end, text: `, radius: ${radius}` });
     return edits.sort((a, b) => b.start - a.start).reduce((value, edit) =>
@@ -426,7 +565,7 @@ function rewriteArcControl(text, index, x, y) {
   const oldAngle = +arc.stop.value.slice(0, -3);
   while (angle - oldAngle > 180) angle -= 360;
   while (angle - oldAngle < -180) angle += 360;
-  return text.slice(0, arc.stop.start) + `${Math.round(angle)}deg` + text.slice(arc.stop.end);
+  return text.slice(0, arc.stop.start) + `${precise ? coordinate(angle) : Math.round(angle)}deg` + text.slice(arc.stop.end);
 }
 
 function calibration(svg) {
@@ -450,9 +589,40 @@ function calibration(svg) {
 async function renderEditable(source, canvas, filePath) {
   const calls = locateEditableCalls(source, canvas);
   const probes = [];
+  const contentProbes = [];
   const insertions = [];
+  let layerFunction = '__gui_cetz_layer';
+  while (source.includes(layerFunction)) layerFunction += '_';
+  insertions.push({ offset: canvas.bodyStart, text: layerInstrumentation(layerFunction), order: 3 });
   for (const [index, call] of calls.entries()) {
-    if (!['rect', 'circle', 'content', 'line', 'polygon'].includes(call.name)) continue;
+    if (!['group', 'anchor'].includes(call.name)) {
+      insertions.push({ offset: call.start, text: `${layerFunction}(`, order: 0 });
+      insertions.push({ offset: call.end, text: `, ${index})`, order: 2 });
+    }
+    if (call.name === 'content') {
+      const innerStart = source.indexOf(call.call, call.start);
+      const innerEnd = innerStart + call.call.length;
+      const existing = namedArgument(call.call, 'name')?.value;
+      const named = /^"([^"\\]+)"$/.exec(existing || '');
+      if (innerStart >= 0 && (!existing || named)) {
+        let name = named?.[1];
+        if (!name) {
+          name = `__gui_cetz_content_${index}`;
+          while (source.includes(`"${name}"`)) name += '_';
+          insertions.push({ offset: innerEnd - 1, text: `, name: "${name}"` });
+        }
+        const corners = ['north-west', 'north-east', 'south-west', 'south-east'];
+        const markers = corners.map((corner, side) => {
+          const color = '#' + (0xb00000 + index * 16 + side).toString(16).padStart(6, '0');
+          contentProbes.push({ index, color });
+          return `rect("${name}.${corner}", (rel: (0.01, 0.01)), fill: rgb("${color}"), stroke: none)`;
+        });
+        // A scope keeps these temporary rectangles from changing the current
+        // CeTZ position used by following calls such as line((), ...).
+        insertions.push({ offset: innerEnd, text: `; scope({ ${markers.join('; ')} })` });
+      }
+    }
+    if (!['rect', 'circle', 'content', 'line', 'polygon', 'circle-through', 'arc-through', 'bezier-through'].includes(call.name)) continue;
     const ranges = coordinateRanges(call);
     if (!ranges.length || call.name === 'line' && ranges.length < 2) continue;
     const literal = new RegExp(`^\\s*\\(\\s*${NUMBER}\\s*,\\s*${NUMBER}\\s*\\)\\s*$`);
@@ -475,8 +645,8 @@ async function renderEditable(source, canvas, filePath) {
   }
   const markers = '\nrect((0, 0), (0.01, 0.01), fill: rgb("#010203"), stroke: none)\n' +
     'rect((1, 1), (1.01, 1.01), fill: rgb("#040506"), stroke: none)\n';
-  insertions.push({ offset: canvas.bodyEnd, text: markers });
-  const calibrated = insertions.sort((a, b) => b.offset - a.offset).reduce((value, item) =>
+  insertions.push({ offset: canvas.bodyEnd, text: markers, order: -1 });
+  const calibrated = insertions.sort((a, b) => b.offset - a.offset || (a.order ?? 1) - (b.order ?? 1)).reduce((value, item) =>
     value.slice(0, item.offset) + item.text + value.slice(item.offset), source);
   const added = insertions.reduce((sum, item) => sum + item.text.length, 0);
   const updatedCanvas = { ...canvas, bodyEnd: canvas.bodyEnd + added, end: canvas.end + added };
@@ -484,23 +654,39 @@ async function renderEditable(source, canvas, filePath) {
   try {
     result = calibration(await renderCanvas(calibrated, updatedCanvas, filePath));
   } catch (error) {
-    if (!probes.length) throw error;
-    const plain = source.slice(0, canvas.bodyEnd) + markers + source.slice(canvas.bodyEnd);
+    if (!probes.length && !contentProbes.length) throw error;
+    const withoutProbes = insertions.filter(item => item.order != null);
+    const plain = withoutProbes.reduce((value, item) =>
+      value.slice(0, item.offset) + item.text + value.slice(item.offset), source);
+    const extra = withoutProbes.reduce((sum, item) => sum + item.text.length, 0);
     result = calibration(await renderCanvas(plain, {
-      ...canvas, bodyEnd: canvas.bodyEnd + markers.length, end: canvas.end + markers.length
+      ...canvas, bodyEnd: canvas.bodyEnd + extra, end: canvas.end + extra
     }, filePath));
   }
   for (const probe of probes) {
     const match = new RegExp(`<path\\b[^>]*fill="${probe.color}"[^>]*\\/>`, 'i').exec(result.svg);
     const position = match && /transform="translate\(([^)]+)\)"/.exec(match[0]);
-    if (!position) continue;
-    const [x, y = 0] = position[1].trim().split(/[\s,]+/).map(Number);
+    if (!match) continue;
+    const [x, y = 0] = position ? position[1].trim().split(/[\s,]+/).map(Number) : [0, 0];
     if (!calls[probe.index].resolvedPoints) calls[probe.index].resolvedPoints = [];
     calls[probe.index].resolvedPoints[probe.pointIndex] = [
       (x - result.zero.x) / result.unitX, (result.zero.y - y) / result.unitY
     ];
     result.svg = result.svg.replace(match[0], '');
   }
+  for (const probe of contentProbes) {
+    const match = new RegExp(`<path\\b[^>]*fill="${probe.color}"[^>]*\\/>`, 'i').exec(result.svg);
+    const position = match && /transform="translate\(([^)]+)\)"/.exec(match[0]);
+    if (!match) continue;
+    const [x, y = 0] = position ? position[1].trim().split(/[\s,]+/).map(Number) : [0, 0];
+    if (!calls[probe.index].contentCorners) calls[probe.index].contentCorners = [];
+    calls[probe.index].contentCorners.push([
+      (x - result.zero.x) / result.unitX, (result.zero.y - y) / result.unitY
+    ]);
+    result.svg = result.svg.replace(match[0], '');
+  }
+  const layered = splitSvgLayers(result.svg, calls.length);
+  result.svg = layered.svg;
   result.gridSize = pixel(result.unitX * 2.5 / GRID_FRACTIONS);
   const majorGrid = result.gridSize * GRID_FRACTIONS;
   result.originX = pixel(Math.round(TARGET_ORIGIN / majorGrid) * majorGrid);
@@ -518,6 +704,8 @@ async function renderEditable(source, canvas, filePath) {
   const backgroundX = result.originX - result.zero.x * 2.5;
   const backgroundY = result.originY - result.zero.y * 2.5;
   const background = `<mxCell id="cetz-preview-background" value="" style="shape=rect;fillColor=none;strokeColor=none;opacity=0;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;selectable=0;pointerEvents=0;cetzOriginX=${result.originX};cetzOriginY=${result.originY};cetzUnitX=${pixel(result.unitX * 2.5)};cetzUnitY=${pixel(result.unitY * 2.5)};" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(backgroundX)}" y="${pixel(backgroundY)}" width="${width}" height="${height}" as="geometry"/></mxCell>`;
+  // Always keep a visible complete drawing in the file. The plugin switches
+  // the view to individual fragments only after their images have loaded.
   const previewImage = `<mxCell id="cetz-preview-image" value="" style="shape=image;imageAspect=1;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;selectable=0;pointerEvents=0;image=${image};" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(backgroundX)}" y="${pixel(backgroundY)}" width="${width}" height="${height}" as="geometry"/></mxCell>`;
   const axisLeft = pixel(Math.min(backgroundX, result.originX) - 160);
   const axisRight = pixel(Math.max(backgroundX + width, result.originX) + 160);
@@ -536,32 +724,105 @@ async function renderEditable(source, canvas, filePath) {
     axisLabel('y', 'y', '#1d4ed8', result.originX + 5, axisTop + 5, 20) +
     `<mxCell id="cetz-origin-dot" value="" style="ellipse;fillColor=#1f2937;strokeColor=#ffffff;strokeWidth=1;movable=0;resizable=0;deletable=0;selectable=0;pointerEvents=0;" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(result.originX - 4)}" y="${pixel(result.originY - 4)}" width="8" height="8" as="geometry"/></mxCell>` +
     axisLabel('origin', '(0, 0)', '#1f2937', result.originX + 7, result.originY + 7, 48);
-  const handles = calls.map((call, i) => {
+  const handleCells = calls.map((call, i) => {
     const points = call.resolvedPoints?.length && call.resolvedPoints.every(Boolean)
       ? call.resolvedPoints : null;
-    const b = call.requiresProbe && !points ? null : boundsFor(call, points);
+    let b = call.requiresProbe && !points ? null : boundsFor(call, points);
+    if (['circle-through', 'arc-through', 'bezier-through', 'boolean', 'rect-around', 'merge-path', 'compound-path'].includes(call.name)) {
+      const bounds = layered.layers.filter(layer => layer.owner === i && layer.bounds).map(layer => layer.bounds);
+      if (bounds.length) {
+        const left = Math.min(...bounds.map(box => box[0])), top = Math.min(...bounds.map(box => box[1]));
+        const right = Math.max(...bounds.map(box => box[0] + box[2])), bottom = Math.max(...bounds.map(box => box[1] + box[3]));
+        b = { x: (left - result.zero.x) / result.unitX, y: (result.zero.y - bottom) / result.unitY,
+          width: (right - left) / result.unitX, height: (bottom - top) / result.unitY };
+      } else if (call.name === 'boolean' && !b) b = { x: 0, y: 0, width: 0.25, height: 0.25 };
+    }
+    if (call.name === 'content' && call.contentCorners?.length === 4) {
+      const xs = call.contentCorners.map(point => point[0]);
+      const ys = call.contentCorners.map(point => point[1]);
+      b = { x: Math.min(...xs), y: Math.min(...ys),
+        width: Math.max(...xs) - Math.min(...xs),
+        height: Math.max(...ys) - Math.min(...ys) };
+    }
+    if (call.name === 'content' && b) {
+      // Empty text has zero Typst bounds. Keep a selectable owner with positive
+      // dimensions so subsequent native saves remain valid. This only pads the
+      // GUI hit target; the source position and rendered content stay unchanged.
+      const width = pixel(b.width * result.unitX * 2.5) > 0 ? b.width : POINT_HANDLE_SIZE / (result.unitX * 2.5);
+      const height = pixel(b.height * result.unitY * 2.5) > 0 ? b.height : POINT_HANDLE_SIZE / (result.unitY * 2.5);
+      b = { x: b.x - (width - b.width) / 2, y: b.y - (height - b.height) / 2, width, height };
+    }
+    if (call.name === 'group') {
+      const children = calls.filter(child => child.group === call && child.geometry);
+      if (children.length) {
+        const left = Math.min(...children.map(child => child.geometry.x));
+        const top = Math.min(...children.map(child => child.geometry.y));
+        const right = Math.max(...children.map(child => child.geometry.x + child.geometry.width));
+        const bottom = Math.max(...children.map(child => child.geometry.y + child.geometry.height));
+        const w = result.unitX * 2.5, h = result.unitY * 2.5;
+        b = { x: (left - result.originX) / w, y: (result.originY - bottom) / h,
+          width: (right - left) / w, height: (bottom - top) / h };
+      }
+    }
     if (!b) return '';
     const x = result.originX + b.x * result.unitX * 2.5;
     const y = result.originY - (b.y + b.height) * result.unitY * 2.5;
     const w = b.width * result.unitX * 2.5, h = b.height * result.unitY * 2.5;
     call.geometry = { x, y, width: w, height: h };
-    const firstPoint = [...call.call.matchAll(POINT)][0];
+    const firstPoint = referencePoint(call);
     const snap = firstPoint ? {
-      cetzSnapOffsetX: pixel((call.transform.tx + call.transform.sx * +firstPoint[1] - b.x) * result.unitX * 2.5),
-      cetzSnapOffsetY: pixel((b.y + b.height - call.transform.ty - call.transform.sy * +firstPoint[2]) * result.unitY * 2.5)
+      cetzSnapOffsetX: pixel((firstPoint.x - b.x) * result.unitX * 2.5),
+      cetzSnapOffsetY: pixel((b.y + b.height - firstPoint.y) * result.unitY * 2.5)
     } : {};
-    const settings = Object.entries({ ...editableStyle(call), ...snap })
+    const label = /^"([^"\\]+)"$/.exec(namedArgument(call.call, 'name')?.value || '')?.[1] ||
+      (call.name === 'anchor' ? /anchor\(\s*"([^"\\]+)"/.exec(call.call)?.[1] : '') ||
+      call.name;
+    const settings = Object.entries({ ...editableStyle(call), ...snap,
+      ...(firstPoint ? { cetzReferenceX: firstPoint.x, cetzReferenceY: firstPoint.y,
+        cetzBaseX: pixel(x), cetzBaseY: pixel(y) } : {}),
+      cetzLabel: encodeURIComponent(label), cetzGroup: call.group ? calls.indexOf(call.group) : '',
+      cetzStart: call.start })
       .map(([key, value]) => `${key}=${value};`).join('');
-    return `<mxCell id="cetz-edit-${i}" value="" style="rounded=0;fillColor=#ffffff;fillOpacity=1;strokeColor=#4f79ff;strokeOpacity=35;dashed=1;connectable=0;deletable=0;rotatable=0;${settings}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x)}" y="${pixel(y)}" width="${pixel(w)}" height="${pixel(h)}" as="geometry"/></mxCell>`;
+    const boundFrame = call.name === 'rect-around' && coordinateRanges(call).some(range =>
+      !new RegExp(`^\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*$`).test(call.call.slice(range.start, range.end)));
+    const fixed = ['anchor', 'group'].includes(call.name) || boundFrame;
+    const referencedRect = call.name === 'rect' && call.resolvedPoints?.length === 2 && !call.rotation;
+    return `<mxCell id="cetz-edit-${i}" value="" style="rounded=0;fillColor=#ffffff;fillOpacity=0;strokeColor=none;dashed=0;recursiveResize=0;expand=0;dropTarget=0;connectable=0;deletable=0;rotatable=0;${['polygon', 'circle-through', 'arc-through'].includes(call.name) ? 'aspect=fixed;' : ''}${fixed ? 'movable=0;resizable=0;' : call.name === 'content' || call.resolvedPoints?.length && !referencedRect ? 'resizable=0;' : ''}${call.name === 'group' ? 'pointerEvents=0;' : ''}${settings}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x)}" y="${pixel(y)}" width="${pixel(w)}" height="${pixel(h)}" as="geometry"/></mxCell>`;
+  });
+  const emitted = new Set();
+  const layers = layered.layers.map((layer, index) => {
+    const owner = layer.owner == null ? null : calls[layer.owner];
+    const parent = owner?.geometry ? `cetz-edit-${layer.owner}` : '1';
+    let handle = '';
+    if (owner?.geometry && !emitted.has(layer.owner)) {
+      handle = handleCells[layer.owner]; emitted.add(layer.owner);
+    }
+    const [x, y, w, h] = layer.bounds || [0, 0, width / 2.5, height / 2.5];
+    const localX = backgroundX + x * 2.5 - (owner?.geometry?.x || 0);
+    const localY = backgroundY + y * 2.5 - (owner?.geometry?.y || 0);
+    const image = `data:image/svg+xml,${encodeURIComponent(layer.svg)}`;
+    return handle + `<mxCell id="cetz-render-${index}" value="" style="shape=image;imageAspect=0;movable=0;resizable=0;editable=0;deletable=0;rotatable=0;connectable=0;selectable=0;pointerEvents=0;image=${image};" visible="0" vertex="1" parent="${parent}" connectable="0"><mxGeometry x="${pixel(localX)}" y="${pixel(localY)}" width="${pixel(w * 2.5)}" height="${pixel(h * 2.5)}" as="geometry"/></mxCell>`;
   }).join('');
+  const handles = layers + handleCells.filter((_, index) => !emitted.has(index)).join('');
   function screenPoint(call, point) {
+    let x = call.transform.tx + call.transform.sx * point.x;
+    let y = call.transform.ty + call.transform.sy * point.y;
+    if (call.rotation) {
+      const { angle, cx, cy } = call.rotation, r = angle * Math.PI / 180;
+      [x, y] = [cx + (x - cx) * Math.cos(r) - (y - cy) * Math.sin(r),
+        cy + (x - cx) * Math.sin(r) + (y - cy) * Math.cos(r)];
+    }
     return {
-      x: result.originX + (call.transform.tx + call.transform.sx * point.x) * result.unitX * 2.5,
-      y: result.originY - (call.transform.ty + call.transform.sy * point.y) * result.unitY * 2.5
+      x: result.originX + x * result.unitX * 2.5,
+      y: result.originY - y * result.unitY * 2.5
     };
   }
   const pointHandles = calls.map((call, i) => {
     call.points = call.geometry ? call.name === 'arc' ? arcControlPoints(call) : literalPointRanges(call) : [];
+    if (call.name === 'content' && !call.points.length && call.resolvedPoints?.[0]) {
+      call.points = [{ x: call.resolvedPoints[0][0], y: call.resolvedPoints[0][1] }];
+      call.pointUsesReference = true;
+    }
     const arc = call.name === 'arc' && call.points.length === 3 ? arcArguments(call.call) : null;
     const arcCenter = arc && screenPoint(call, call.points[1]);
     const arcRadiusX = arc && Math.abs(arc.rx * call.transform.sx * result.unitX * 2.5);
@@ -572,7 +833,8 @@ async function renderEditable(source, canvas, filePath) {
         ? '#e28b23' : '#2563eb';
       const constraint = arc && j === 1 ? 'cetzArcHandle=center;' : arc && j === 2
         ? `cetzArcHandle=end;cetzArcCenterX=${pixel(arcCenter.x)};cetzArcCenterY=${pixel(arcCenter.y)};` +
-          `cetzArcRadiusX=${pixel(arcRadiusX)};cetzArcRadiusY=${pixel(arcRadiusY)};` : '';
+          `cetzArcRadiusX=${pixel(arcRadiusX)};cetzArcRadiusY=${pixel(arcRadiusY)};` +
+          `cetzArcSpan=${pixel(+arc.stop.value.slice(0, -3) - +arc.start.value.slice(0, -3))};` : '';
       return `<mxCell id="cetz-point-${i}-${j}" value="" style="ellipse;fillColor=#ffffff;strokeColor=${color};strokeWidth=2;resizable=0;deletable=0;rotatable=0;connectable=0;${constraint}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x - POINT_HANDLE_SIZE / 2)}" y="${pixel(y - POINT_HANDLE_SIZE / 2)}" width="${POINT_HANDLE_SIZE}" height="${POINT_HANDLE_SIZE}" as="geometry"/></mxCell>`;
     }).join('');
   }).join('');
@@ -592,27 +854,65 @@ function patchesFromEditable(source, rendered, xml, readCells) {
   const cells = readCells(xml), original = readCells(rendered.xml), patches = [];
   for (const [id, item] of cells)
     if (!original.has(id) &&
+      !/^cetz-select-[\w-]+$/.test(id) &&
       !/(?:^|;)cetzTemplate=[\w-]+(?:;|$)/.test(item.cell.style || '') &&
-      !/(?:^|;)cetzAction=(?:undo|redo)(?:;|$)/.test(item.cell.style || ''))
+      !/(?:^|;)cetzAction=[\w-]+(?:;|$)/.test(item.cell.style || ''))
       throw new Error('Use the CeTZ menu to add shapes to this canvas.');
   const background = cells.get('cetz-preview-background');
-  const canonical = value => value && typeof value === 'object'
-    ? Array.isArray(value) ? value.map(canonical) : Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])]))
-    : value;
+  const canonical = (value, key) => {
+    if (!value || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(item => canonical(item));
+    if (key === 'geometry') {
+      // mxCodec omits zero-valued rectangle fields on save. In particular,
+      // tightly bounded Boolean artwork has local x=y=0. Compare geometry
+      // values, so an ordinary native save is not mistaken for an SVG edit.
+      value = { ...value };
+      for (const name of ['x', 'y', 'width', 'height']) {
+        const number = Number(value[name] ?? 0);
+        value[name] = Number.isFinite(number) ? number : value[name];
+      }
+    }
+    return Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k], k)]));
+  };
   if (!background || JSON.stringify(canonical(background)) !== JSON.stringify(canonical(original.get('cetz-preview-background'))))
     throw new Error('The CeTZ preview background cannot be edited.');
   if (JSON.stringify(canonical(cells.get('cetz-preview-image'))) !==
     JSON.stringify(canonical(original.get('cetz-preview-image'))))
     throw new Error('The CeTZ preview image cannot be edited.');
+  for (const [id, item] of original) {
+    if (!/^cetz-render-\d+$/.test(id)) continue;
+    const owner = /^cetz-edit-(\d+)$/.exec(item.cell.parent || '');
+    if (owner && !cells.has(item.cell.parent)) continue;
+    if (JSON.stringify(canonical(cells.get(id))) !== JSON.stringify(canonical(item)))
+      throw new Error('The CeTZ rendered shape cannot be edited directly.');
+  }
   for (let i = 0; i < rendered.calls.length; i++) {
-    const call = rendered.calls[i], id = `cetz-edit-${i}`;
+    const cellId = rendered.cellIds?.[i] ?? i;
+    const call = rendered.calls[i], id = `cetz-edit-${cellId}`;
+    let ancestorDeleted = false;
+    for (let group = call.group; group; group = group.group) {
+      const index = rendered.calls.indexOf(group);
+      if (!cells.has(`cetz-edit-${rendered.cellIds?.[index] ?? index}`)) { ancestorDeleted = true; break; }
+    }
+    if (ancestorDeleted) continue;
     const item = cells.get(id), before = original.get(id);
     if (!before) continue;
-    if (!item) { patches.push({ start: call.start, end: call.end, text: '' }); continue; }
+    if (!item) {
+      if (call.name === 'anchor') {
+        const name = /anchor\(\s*"([^"\\]+)"/.exec(call.call)?.[1];
+        if (name && source.slice(call.end).includes(`"${name}"`))
+          throw new Error('Detach references before deleting this shared point.');
+      }
+      patches.push({ ...deletionRange(source, call.start, call.end), text: '' }); continue;
+    }
     const beforeStyle = styleMap(before.cell.style), afterStyle = styleMap(item.cell.style);
+    const step = readSnapStep(afterStyle.cetzSnapStep);
+    const precise = afterStyle.cetzSnapStep !== undefined;
+    const metadata = new Set(['cetzSnapStep', 'cetzGuideX', 'cetzGuideY', 'cetzMoveX', 'cetzMoveY', 'cetzMoveGrid']);
     const otherStyleChanged = Object.keys({ ...beforeStyle, ...afterStyle })
-      .some(key => !STYLE_KEYS.has(key) && beforeStyle[key] !== afterStyle[key]);
-    if (otherStyleChanged || item.cell.value !== before.cell.value)
+      .some(key => !STYLE_KEYS.has(key) && !metadata.has(key) && beforeStyle[key] !== afterStyle[key]);
+    const valueChanged = item.cell.value !== before.cell.value;
+    if (otherStyleChanged || valueChanged && call.name !== 'content')
       throw new Error('Edit this CeTZ shape style in Typst.');
     const styleChanged = [...STYLE_KEYS].some(key => beforeStyle[key] !== afterStyle[key]);
     const a = before.geometry, b = item.geometry;
@@ -621,9 +921,16 @@ function patchesFromEditable(source, rendered, xml, readCells) {
       throw new Error('Invalid CeTZ shape bounds.');
     const pointMoves = [];
     for (let j = 0; j < (call.points || []).length; j++) {
-      const pointId = `cetz-point-${i}-${j}`;
+      const pointId = `cetz-point-${cellId}-${j}`;
       const pointBefore = original.get(pointId), pointAfter = cells.get(pointId);
-      if (!pointAfter || pointAfter.cell.style !== pointBefore.cell.style || pointAfter.cell.value !== pointBefore.cell.value ||
+      const pointStyle = styleMap(pointAfter?.cell.style || '');
+      const originalStyle = styleMap(pointBefore.cell.style);
+      const pointStep = readSnapStep(pointStyle.cetzSnapStep);
+      const guideKeys = new Set(['cetzGuideX', 'cetzGuideY']);
+      const invalidStyle = Object.keys({ ...pointStyle, ...originalStyle }).some(key =>
+        key === 'cetzSnapStep' ? false : guideKeys.has(key) ? pointStyle[key] !== undefined && !/^[01]$/.test(pointStyle[key]) :
+          pointStyle[key] !== originalStyle[key]);
+      if (!pointAfter || invalidStyle || pointAfter.cell.value !== pointBefore.cell.value ||
         pointAfter.cell.parent !== pointBefore.cell.parent ||
         ![pointAfter.geometry.x, pointAfter.geometry.y, pointAfter.geometry.width, pointAfter.geometry.height]
           .every(value => Number.isFinite(Number(value))) ||
@@ -632,14 +939,30 @@ function patchesFromEditable(source, rendered, xml, readCells) {
         throw new Error('CeTZ control points can only be moved.');
       if (Math.abs(+pointAfter.geometry.x - +pointBefore.geometry.x) > 0.001 ||
         Math.abs(+pointAfter.geometry.y - +pointBefore.geometry.y) > 0.001) {
-        pointMoves.push({ index: j, x: +pointAfter.geometry.x, y: +pointAfter.geometry.y });
+        pointMoves.push({ index: j, x: +pointAfter.geometry.x, y: +pointAfter.geometry.y,
+          guideX: pointStyle.cetzGuideX === '1', guideY: pointStyle.cetzGuideY === '1',
+          step: pointStep, precise: pointStyle.cetzSnapStep !== undefined });
       }
     }
-    const boxChanged = !['x', 'y', 'width', 'height'].every(k => Math.abs(+a[k] - +b[k]) < 0.001);
+    const contentResize = call.name === 'content' &&
+      (Math.abs(+b.width - +a.width) > 0.001 || Math.abs(+b.height - +a.height) > 0.001);
+    const boxChanged = !contentResize &&
+      !['x', 'y', 'width', 'height'].every(k => Math.abs(+a[k] - +b[k]) < 0.001);
+    if (call.name === 'group' && (boxChanged || styleChanged || valueChanged || pointMoves.length))
+      throw new Error('Use Group or Ungroup to edit a CeTZ group.');
+    if (call.name === 'anchor' && boxChanged)
+      throw new Error('Move the shared point handle to edit its anchor.');
+    if (valueChanged) {
+      if (styleChanged || boxChanged || pointMoves.length)
+        throw new Error('Edit CeTZ text and geometry one at a time.');
+      patches.push({ start: call.start, end: call.end,
+        text: rotatedCall(call, replaceContentText(call, item.cell.value)) });
+      continue;
+    }
     if (styleChanged) {
       if (boxChanged || pointMoves.length) throw new Error('Edit CeTZ style and geometry one at a time.');
       patches.push({ start: call.start, end: call.end,
-        text: rewriteEditableStyle(call, beforeStyle, afterStyle) });
+        text: rotatedCall(call, rewriteEditableStyle(call, beforeStyle, afterStyle)) });
       continue;
     }
     if (pointMoves.length) {
@@ -649,48 +972,133 @@ function patchesFromEditable(source, rendered, xml, readCells) {
       const flattened = call.transform.tx || call.transform.ty || call.transform.sx !== 1 || call.transform.sy !== 1
         ? rewriteLiteralCall(call.call, call.transform) : call.call;
       const coordinates = pointMoves.map(move => {
-        const x = (move.x + POINT_HANDLE_SIZE / 2 - rendered.calibration.originX) /
+        let x = (move.x + POINT_HANDLE_SIZE / 2 - rendered.calibration.originX) /
           (rendered.calibration.unitX * 2.5);
-        const y = (rendered.calibration.originY - move.y - POINT_HANDLE_SIZE / 2) /
+        let y = (rendered.calibration.originY - move.y - POINT_HANDLE_SIZE / 2) /
           (rendered.calibration.unitY * 2.5);
+        if (call.rotation) {
+          const { angle, cx, cy } = call.rotation, radians = -angle * Math.PI / 180;
+          [x, y] = [cx + (x - cx) * Math.cos(radians) - (y - cy) * Math.sin(radians),
+            cy + (x - cx) * Math.sin(radians) + (y - cy) * Math.cos(radians)];
+        }
         const arcEndpoint = call.name === 'arc' && move.index === 2;
-        return { index: move.index, x: arcEndpoint ? x : snapCoordinate(x),
-          y: arcEndpoint ? y : snapCoordinate(y) };
+        const rotatedGuide = call.rotation && (move.guideX || move.guideY);
+        const quantize = value => normalizeCoordinate(value, move.step);
+        return { index: move.index, x: arcEndpoint || move.guideX || rotatedGuide ? x : move.precise ? quantize(x) : snapCoordinate(x),
+          y: arcEndpoint || move.guideY || rotatedGuide ? y : move.precise ? quantize(y) : snapCoordinate(y),
+          guideX: move.guideX || !!rotatedGuide, guideY: move.guideY || !!rotatedGuide,
+          step: move.step, precise: move.precise };
       });
       let replacement;
       if (call.name === 'arc') {
         const point = coordinates[0];
-        replacement = rewriteArcControl(flattened, point.index, point.x, point.y);
+        replacement = rewriteArcControl(flattened, point.index, point.x, point.y, point.guideX || point.guideY || point.step < 0.25);
+      } else if (call.name === 'content' && call.pointUsesReference) {
+        const point = coordinates[0], original = call.points[0];
+        replacement = rewriteReferencedCall(call,
+          (point.x - call.transform.tx) / call.transform.sx - original.x,
+          (point.y - call.transform.ty) / call.transform.sy - original.y, undefined,
+          { x: point.guideX, y: point.guideY, ...(point.precise ? { step: point.step } : {}) });
       } else {
         const ranges = literalPointRanges({ name: call.name, call: flattened });
-        const edits = coordinates.map(point => ({ start: ranges[point.index].start, end: ranges[point.index].end,
-          text: `(${round(point.x)}, ${round(point.y)})` }));
+        const edits = coordinates.map(point => {
+          const range = ranges[point.index];
+          const original = flattened.slice(range.start, range.end);
+          return { start: range.start, end: range.end,
+            text: original.match(/^\s*/)[0] + `(${point.precise || point.guideX ? coordinate(point.x) : round(point.x)}, ${point.precise || point.guideY ? coordinate(point.y) : round(point.y)})` +
+              original.match(/\s*$/)[0] };
+        });
         replacement = edits.sort((a, b) => b.start - a.start).reduce((text, edit) =>
           text.slice(0, edit.start) + edit.text + text.slice(edit.end), flattened);
       }
-      patches.push({ start: call.start, end: call.end, text: replacement });
+      patches.push({ start: call.start, end: call.end, text: rotatedCall(call, replacement) });
+      continue;
+    }
+    const guide = { x: afterStyle.cetzGuideX === '1', y: afterStyle.cetzGuideY === '1', ...(precise ? { step } : {}) };
+    if (afterStyle.cetzMoveX !== undefined || afterStyle.cetzMoveY !== undefined) {
+      const target = { x: Number(afterStyle.cetzMoveX), y: Number(afterStyle.cetzMoveY) };
+      if (!Number.isFinite(target.x) || !Number.isFinite(target.y) || !/^[01]$/.test(afterStyle.cetzMoveGrid || ''))
+        throw new Error('Invalid CeTZ movement coordinates.');
+      const origin = referencePoint(call) || {
+        x: (+a.x - rendered.calibration.originX) / (rendered.calibration.unitX * 2.5),
+        y: (rendered.calibration.originY - +a.y) / (rendered.calibration.unitY * 2.5) };
+      for (const axis of ['x', 'y']) {
+        if (afterStyle.cetzMoveGrid === '1' && !guide[axis] && Math.abs(target[axis] - origin[axis]) > 0.00001)
+          target[axis] = snapCoordinate(target[axis], step);
+      }
+      let dx = target.x - origin.x, dy = target.y - origin.y;
+      if (Math.abs(dx) < 0.00001 && Math.abs(dy) < 0.00001) continue;
+      if (call.rotation) {
+        const radians = -call.rotation.angle * Math.PI / 180;
+        [dx, dy] = [dx * Math.cos(radians) - dy * Math.sin(radians), dx * Math.sin(radians) + dy * Math.cos(radians)];
+      }
+      // An explicit drag is a translation, even if Draw.io's rendered bounds
+      // were rounded while saving. Never infer a scale from those bounds.
+      const replacement = call.resolvedPoints?.length
+        ? rewriteReferencedCall(call, dx, dy, undefined, guide)
+        : rewriteLiteralCall(call.call, { sx: call.transform.sx, sy: call.transform.sy,
+          tx: call.transform.tx + dx, ty: call.transform.ty + dy,
+          snapTx: false, snapTy: false, snapStep: step });
+      patches.push({ start: call.start, end: call.end, text: rotatedCall(call, replacement) });
       continue;
     }
     if (!boxChanged) continue;
     const sx = +b.width / +a.width, sy = +b.height / +a.height;
+    if (call.name === 'rect' && call.resolvedPoints?.length === 2 && !call.rotation) {
+      const unitX = rendered.calibration.unitX * 2.5;
+      const unitY = rendered.calibration.unitY * 2.5;
+      const offsets = call.resolvedPoints.map(([x, y]) => {
+        const oldX = rendered.calibration.originX + x * unitX;
+        const oldY = rendered.calibration.originY - y * unitY;
+        const newX = +b.x + (oldX - +a.x) * sx;
+        const newY = +b.y + (oldY - +a.y) * sy;
+        const format = precise ? coordinate : snapCoordinate;
+        return { x: format((newX - rendered.calibration.originX) / unitX - x),
+          y: format((rendered.calibration.originY - newY) / unitY - y) };
+      });
+      patches.push({ start: call.start, end: call.end,
+        text: rewriteReferencedCall(call, 0, 0, offsets, guide) });
+      continue;
+    }
+    if (call.rotation) {
+      const dx = (+b.x + +b.width / 2 - +a.x - +a.width / 2) /
+        (rendered.calibration.unitX * 2.5);
+      const dy = (+a.y + +a.height / 2 - +b.y - +b.height / 2) /
+        (rendered.calibration.unitY * 2.5);
+      const radians = -call.rotation.angle * Math.PI / 180;
+      const localDx = dx * Math.cos(radians) - dy * Math.sin(radians);
+      const localDy = dx * Math.sin(radians) + dy * Math.cos(radians);
+      if (call.resolvedPoints?.length && (Math.abs(sx - 1) > 0.00001 || Math.abs(sy - 1) > 0.00001))
+        throw new Error('Resize anchor-based CeTZ shapes in Typst. Their GUI handles support moving.');
+      const replacement = call.resolvedPoints?.length
+        ? rewriteReferencedCall(call, localDx, localDy, undefined, guide)
+        : rewriteLiteralCall(call.call, { sx, sy,
+          tx: call.rotation.cx * (1 - sx) + localDx,
+          ty: call.rotation.cy * (1 - sy) + localDy,
+          snapTx: !precise && Math.abs(sx - 1) < 0.00001,
+          snapTy: !precise && Math.abs(sy - 1) < 0.00001, ...(precise ? { snapStep: step } : {}) });
+      patches.push({ start: call.start, end: call.end, text: rotatedCall(call, replacement) });
+      continue;
+    }
     if (call.resolvedPoints?.length && (Math.abs(sx - 1) > 0.00001 || Math.abs(sy - 1) > 0.00001))
       throw new Error('Resize anchor-based CeTZ shapes in Typst. Their GUI handles support moving.');
     if (call.resolvedPoints?.length) {
       const dx = (+b.x - +a.x) / (rendered.calibration.unitX * 2.5);
       const dy = (+a.y - +b.y) / (rendered.calibration.unitY * 2.5);
       patches.push({ start: call.start, end: call.end,
-        text: rewriteReferencedCall(call, dx, dy) });
+        text: rewriteReferencedCall(call, dx, dy, undefined, guide) });
       continue;
     }
     const dx = +b.x - sx * +a.x, dy = +b.y - sy * +a.y;
     const tx = call.transform.tx * sx + (dx + (sx - 1) * rendered.calibration.originX) / (rendered.calibration.unitX * 2.5);
     const ty = call.transform.ty * sy + ((1 - sy) * rendered.calibration.originY - dy) / (rendered.calibration.unitY * 2.5);
     const replacement = rewriteLiteralCall(call.call, { tx, ty, sx: call.transform.sx * sx,
-      sy: call.transform.sy * sy, snapTx: Math.abs(sx - 1) < 0.00001,
-      snapTy: Math.abs(sy - 1) < 0.00001 });
+      sy: call.transform.sy * sy, snapTx: !precise && Math.abs(sx - 1) < 0.00001,
+      snapTy: !precise && Math.abs(sy - 1) < 0.00001, ...(precise ? { snapStep: step } : {}) });
     patches.push({ start: call.start, end: call.end, text: replacement });
   }
-  return patches.concat(templateInsertions(source, rendered.canvas, cells, original));
+  return patches.concat(templateInsertions(source, rendered.canvas, cells, original, rendered.calibration));
 }
 
-module.exports = { locateEditableCalls, boundsFor, renderEditable, patchesFromEditable };
+module.exports = { locateEditableCalls, boundsFor, renderEditable, patchesFromEditable,
+  rewriteLiteralCall, rewriteReferencedCall, coordinateRanges };

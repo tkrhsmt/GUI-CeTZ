@@ -11,3 +11,12 @@ test('diagram status encodes multiline errors and clears after a successful sync
   assert.equal(withDiagramStatus(failed, null), xml);
   assert.equal(withDiagramStatus(failed, 'next error'), withDiagramStatus(xml, 'next error'));
 });
+
+test('scene status updates and clears idempotently alongside the cached file attribute', () => {
+  const xml = '<mxfile><diagram><mxGraphModel><root><mxCell id="cetz-scene-12" style="cetzAction=scene;cetzError=;"/></root></mxGraphModel></diagram></mxfile>';
+  const failed = withDiagramStatus(xml, 'bad "value";\ntry again');
+  assert.match(failed, /cetzError=bad%20%22value%22%3B%0Atry%20again;/);
+  assert.equal(withDiagramStatus(failed, null), xml);
+  assert.equal(withDiagramStatus(failed, 'next'), withDiagramStatus(xml, 'next'));
+  assert.equal(withDiagramStatus(xml, null), xml);
+});

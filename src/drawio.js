@@ -1,4 +1,5 @@
 'use strict';
+const { deletionRange } = require('./scanner');
 const zlib = require('zlib');
 const { color, stroke: parseStroke, typstColor, typstStroke, dashStyle, fromDrawio, PX_PER_PT } = require('./style');
 const { templateInsertions } = require('./templates');
@@ -200,7 +201,7 @@ function patchesFromXml(source, diagram, xml) {
   }
   for (const element of diagram.elements) {
     const item = cells.get(element.id);
-    if (!item) { patches.push({ start: element.start, end: element.end, text: '' }); continue; }
+    if (!item) { patches.push({ ...deletionRange(source, element.start, element.end), text: '' }); continue; }
     const originalItem = originalCells.get(element.id);
     if (item.cell.edge !== originalItem.cell.edge || item.cell.vertex !== originalItem.cell.vertex)
       throw new Error('Changing the kind of a linked CeTZ shape is not supported.');
