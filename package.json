@@ -4,6 +4,10 @@
   "description": "Edit CeTZ shapes in Draw.io while preserving Typst source and exact advanced SVG rendering.",
   "version": "0.1.1",
   "publisher": "tkrhsmt",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tkrhsmt/GUI-CeTZ.git"
+  },
   "license": "MIT",
   "engines": { "vscode": "^1.90.0" },
   "categories": ["Visualization", "Other"],

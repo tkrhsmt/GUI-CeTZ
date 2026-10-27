@@ -4,9 +4,11 @@ GUI CeTZ is a VS Code extension that opens `cetz.canvas({ ... })` in the existin
 
 ## See it in action
 
-GUI CeTZ enables both GUI-based operations—which are essential for creating diagrams—and direct manipulation of Typst code.
+GUI CeTZ supports visual editing alongside direct manipulation of Typst code. Open `examples/demo.typ` and click **▶ GUI CeTZ** to try the drawing shown below.
 
-https://github.com/user-attachments/assets/2c03376b-6c1c-4ebf-ae6e-29fe69fe6987
+Select a shape in the canvas or Outline to edit its coordinates, size, fill, and stroke in Properties. Changes update the Typst source automatically.
+
+![GUI CeTZ with a circle selected, showing the Outline, position, radius, fill, and stroke controls](docs/images/properties.png)
 
 ## Properties inspector
 
