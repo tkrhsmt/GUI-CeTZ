@@ -79,6 +79,8 @@ function templateInsertions(source, canvas, cells, originalCells = new Map(), ca
     } else calls.push(callFromGeometry(name, item, calibration) || shape.call);
   }
   if (!calls.length) return [];
+  if (require('./three-dimensional').is3DCanvas(source, canvas))
+    throw new Error(require('./three-dimensional').MESSAGE);
   const insertion = insertionFor(source, canvas, calls.join('\n'));
   return [{ start: insertion.offset, end: insertion.offset, text: insertion.text }];
 }

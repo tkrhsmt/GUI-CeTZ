@@ -138,6 +138,9 @@ function pasteShapes(source, rendered, clipboard, pasteIndex = 1) {
       try { const item = definition(call); if (item) names.add(item.name); } catch { /* Existing computed names stay untouched. */ }
     }
   }
+  if(rendered.planeContext) for(const call of require('./three-dimensional').locate3DCalls(source,locateCanvases(source).find(canvas=>canvas.start===rendered.canvas.start))){
+    try{const item=definition(call);if(item)names.add(item.name);}catch{}
+  }
   const definitions = new Map(calls.map(call => [call, definition(call)]));
   const replacements = new Map();
   for (const call of calls) {

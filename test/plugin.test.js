@@ -389,7 +389,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   graphModel.cells['cetz-point-1-1'] = { id: 'cetz-point-1-1',
     geometry: { x: 933, y: 503, width: 14, height: 14 } };
   selectionChanged();
-  const outline = wrapper.children[1];
+  const outline = wrapper.children.find(child => child.className === 'cetzOutline');
   const rows = outline.children.filter(child => child.className === 'cetzOutlineList').at(-1).children.slice(-2);
   assert.match(outline.style.cssText, /border-bottom:1px solid/);
   assert.equal(rows[1].children[1].title, 'line pos: (0, -0.25) size: 11');

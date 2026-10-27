@@ -133,6 +133,11 @@ Draw.loadPlugin(function (ui) {
       return nativeSelectionAllowed.apply(this, arguments);
     };
   }
+  var threeHint = document.createElement('div');
+  threeHint.className = 'cetz3DHint'; threeHint.setAttribute('role', 'note');
+  threeHint.style.cssText = 'display:none;padding:12px;font:12px sans-serif;line-height:1.6;';
+  threeHint.textContent = '3D: 右の面アイコンで描画面を作成し、位置・角度を設定します。「この面を2D描画」で面を正面から編集できます。Alt＋ドラッグで視点を回転します。';
+  sidebar.wrapper.insertBefore(threeHint, controls);
   var outline = document.createElement('div');
   outline.className = 'cetzOutline';
   outline.setAttribute('aria-label', 'Document outline');
@@ -422,6 +427,7 @@ Draw.loadPlugin(function (ui) {
     });
   }
   function canApplyPathOperation(action) {
+    if (is3D()) return false;
     var selected = pathSelection();
     if (!isEditablePreview() || !selected.length || selected.some(function (item) { return item.group !== selected[0].group; })) return false;
     if (action === 'make-rect-around') return true;
@@ -430,7 +436,7 @@ Draw.loadPlugin(function (ui) {
   }
   function updatePathOperations() {
     var selected = pathSelection();
-    operations.style.display = isEditablePreview() && selected.length ? '' : 'none';
+    operations.style.display = !is3D() && isEditablePreview() && selected.length ? '' : 'none';
     operationsHint.textContent = selected.length < 2 ? 'Select two or more path objects to combine. A frame can surround one object.' :
       selected.some(function (item) { return item.group !== selected[0].group; }) ? 'Select objects in the same group.' :
       selected.every(function (item) { return item.closed; }) ? selected.length + ' objects selected · Boolean and path operations available' :
@@ -532,11 +538,15 @@ Draw.loadPlugin(function (ui) {
     if (!placement) return;
     var steps = placementSteps[placement.name], count = placement.points.length;
     placement.hint.textContent = placement.name + ': ' + (message || steps[Math.min(count, steps.length - 1)]) +
-      ' · ' + count + ' points · step ' + snapStep() + ' · ' + (variablePlacement(placement.name) ? 'Enter / double-click to finish · ' : '') + 'Esc to cancel';
+      (placement.workspace ? ' · ' + placement.workspace.plane.toUpperCase() + ' @ ' + placement.workspace.offset : '') + ' · ' + count + ' points · step ' + snapStep() + ' · ' + (variablePlacement(placement.name) ? 'Enter / double-click to finish · ' : '') + 'Esc to cancel';
   }
   function beginPlacement(name, icon) {
-    if (!isEditablePreview() || !cetzFrame() || !placementSteps[name] || !graph.container) return;
+    var workspace = is3D() ? threePlane() : null;
+    if (is3D() && !workspace) { threeNotice.textContent = 'Choose a visible drawing plane before placing a shape.'; return; }
+    if (!isEditablePreview() || !workspace && !cetzFrame() || !placementSteps[name] || !graph.container) return;
+    threeOrbitMode = false; threePanMode = false;
     cancelPlacement();
+    if (is3D()) graph.container.style.cursor = '';
     var hint = document.createElement('div');
     hint.className = 'cetzPlacementHint';
     hint.setAttribute('role', 'status'); hint.setAttribute('aria-live', 'polite');
@@ -546,7 +556,7 @@ Draw.loadPlugin(function (ui) {
     preview.setAttribute('data-cetz-placement', name); preview.setAttribute('pointer-events', 'none');
     graph.view.getOverlayPane().appendChild(preview);
     graph.container.appendChild(hint);
-    placement = { name: name, points: [], hint: hint, preview: preview, icon: icon,
+    placement = { name: name, points: [], hint: hint, preview: preview, icon: icon, workspace: workspace,
       cursor: graph.container.style.cursor, outline: icon && icon.style.outline };
     graph.container.style.cursor = 'crosshair';
     if (icon) { icon.style.outline = '2px solid #2563eb'; icon.setAttribute('aria-pressed', 'true'); }
@@ -556,11 +566,18 @@ Draw.loadPlugin(function (ui) {
   function placementPoint(event) {
     var frame = cetzFrame(), view = graph.view, scale = view.scale || 1;
     var local = mxUtils.convertPoint(graph.container, event.clientX, event.clientY);
+    if (placement && placement.workspace) {
+      var point = applyThree(placement.workspace.inverse, [local.x/scale-view.translate.x,local.y/scale-view.translate.y]);
+      var homogeneous = point && placement.workspace.matrix[2];
+      if (point && homogeneous[0]*point[0]+homogeneous[1]*point[1]+homogeneous[2] <= 1e-7) return null;
+      return point && point.every(function (value) { return Number.isFinite(value) && Math.abs(value) < 1000000; }) ? point.map(snapValue) : null;
+    }
     return [snapValue((local.x / scale - view.translate.x - frame.originX) / frame.unitX),
       snapValue((frame.originY - local.y / scale + view.translate.y) / frame.unitY)];
   }
   function previewPlacement(cursor) {
     if (!placement) return;
+    if (placement.workspace) { previewThreePlacement(cursor); return; }
     var frame = cetzFrame(), view = graph.view, scale = view.scale || 1;
     var points = placement.points.concat(cursor ? [cursor] : []).map(function (p) {
       return [(frame.originX + p[0] * frame.unitX + view.translate.x) * scale,
@@ -598,6 +615,39 @@ Draw.loadPlugin(function (ui) {
     placement.preview.innerHTML = '<g fill="none" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="5 3">' + shapes + '</g>' +
       points.map(function (p) { return '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="3.5" fill="white" stroke="#2563eb"/>'; }).join('');
   }
+  function previewThreePlacement(cursor) {
+    if (!placement || !placement.workspace) return;
+    var local = placement.points.concat(cursor ? [cursor] : []), path = local.slice();
+    var a = local[0], b = local[1], c = local[2], name = placement.name;
+    if (a && b && /^(rect|grid)$/.test(name)) path = [a,[b[0],a[1]],b,[a[0],b[1]],a];
+    if (a && b && /^(circle|polygon|n-star|arc)$/.test(name)) {
+      var radius = Math.hypot(b[0]-a[0],b[1]-a[1]), start = name === 'polygon' || name === 'arc' ? Math.atan2(b[1]-a[1],b[0]-a[0]) : 0;
+      var span = 2*Math.PI, steps = name === 'polygon' ? 6 : 64;
+      if (name === 'arc' && c) { span = Math.atan2(c[1]-a[1],c[0]-a[0])-start; while (span <= 0) span += 2*Math.PI; }
+      path = Array.from({length:steps+1}, function (_, i) { return [a[0]+radius*Math.cos(start+span*i/steps),a[1]+radius*Math.sin(start+span*i/steps)]; });
+    }
+    if (local.length >= 3 && /-through$/.test(name)) {
+      var curves = curveSegments(name, local.map(function (p) { return {x:p[0],y:p[1]}; }), {});
+      if (curves.length) {
+        path = [];
+        curves.forEach(function (curve) {
+          for (var i=0;i<=32;i++) {
+            var t=i/32, q=1-t;
+            path.push([q*q*q*curve[0].x+3*q*q*t*curve[2].x+3*q*t*t*curve[3].x+t*t*t*curve[1].x,
+              q*q*q*curve[0].y+3*q*q*t*curve[2].y+3*q*t*t*curve[3].y+t*t*t*curve[1].y]);
+          }
+        });
+      }
+    }
+    var view = graph.view, scale=view.scale||1;
+    function screen(p) {
+      var q=applyThree(placement.workspace.matrix,p,true);
+      return q && [(q[0]+view.translate.x)*scale,(q[1]+view.translate.y)*scale];
+    }
+    var points=path.map(screen).filter(Boolean), handles=local.map(screen).filter(Boolean);
+    placement.preview.innerHTML = '<polyline fill="none" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="5 3" points="' + points.map(function(p){return p.join(',');}).join(' ') + '"/>' +
+      handles.map(function(p){return '<circle cx="'+p[0]+'" cy="'+p[1]+'" r="3.5" fill="white" stroke="#2563eb"/>';}).join('');
+  }
   function finishPlacement() {
     if (!placement) return;
     var name = placement.name, points = placement.points;
@@ -612,9 +662,10 @@ Draw.loadPlugin(function (ui) {
       points.pop(); placementHint('Choose a different point'); return;
     }
     var encoded = encodeURIComponent(JSON.stringify(points));
+    var spatial = placement.workspace ? ';cetzPlacement3D=' + encodeURIComponent(JSON.stringify({view:placement.workspace.view, plane:placement.workspace.plane,offset:placement.workspace.offset,points:points})) : '';
     cancelPlacement();
     graph.insertVertex(graph.getDefaultParent(), null, '', -1000, -1000, 1, 1,
-      'opacity=0;strokeColor=none;fillColor=none;cetzTemplate=' + name + ';cetzPoints=' + encoded + ';');
+      'opacity=0;strokeColor=none;fillColor=none;cetzTemplate=' + name + ';cetzPoints=' + encoded + spatial + ';');
   }
   if (graph.container && graph.container.addEventListener) {
     ['pointerdown', 'mousedown', 'pointerup', 'mouseup'].forEach(function (type) {
@@ -634,6 +685,7 @@ Draw.loadPlugin(function (ui) {
       event.preventDefault(); event.stopImmediatePropagation();
       if (event.detail > 1) return;
       var p = placementPoint(event), previous = placement.points[placement.points.length - 1];
+      if (!p) { placementHint('Point is outside the visible drawing plane'); return; }
       if (variablePlacement(placement.name) && previous && p[0] === previous[0] && p[1] === previous[1]) return;
       var name = placement.name, points = placement.points, count = points.length;
       var flatCorner = count === 1 && /^(rect|grid)$/.test(name) &&
@@ -717,6 +769,9 @@ Draw.loadPlugin(function (ui) {
     var fileKey = file && (typeof file.getId === 'function' && file.getId() || file.getTitle());
     if (fileKey === inspectorFileKey) return;
     Object.keys(inspectorStates).forEach(function (id) { if (inspectorStates[id].timer) clearTimeout(inspectorStates[id].timer); });
+    if (threeCameraTimer) clearTimeout(threeCameraTimer);
+    threeDrag = null; threeViewSignature = '';
+    workspacePending=[];workspaceFlight=null;dimensionPending=null;planeDraft=null;cameraDraft=null;planeUIKey=null;selectedPlaneKey=null;serverActivePlane=null;lastPlaneIdentity=null;viewMemory={};
     inspectorStates = {}; inspectorFlight = null; inspectorCurrent = null; inspectorSignature = ''; inspectorFileKey = fileKey;
     keyboardMoves = {};
     outlineSignature = ''; outlineSelection = ''; outlineCollapsed = {};
@@ -743,7 +798,7 @@ Draw.loadPlugin(function (ui) {
   }
   function flushInspectorDrafts() {
     synchronizeInspectorDocument();
-    if (inspectorFlight || !isEditablePreview()) return;
+    if (inspectorFlight || workspaceFlight || !isEditablePreview()) return;
     var ids = Object.keys(inspectorStates);
     for (var i = 0; i < ids.length; i++) {
       var state = inspectorStates[ids[i]];
@@ -760,7 +815,7 @@ Draw.loadPlugin(function (ui) {
       // Serialize writes until Draw.io receives the new source scene. A second
       // edit made during rendering is rebased on that scene instead of dropped.
       inspectorFlight = { id: state.id, base: data.base, values: values, scene: inspectorScene() };
-      sendSourceAction('properties', encodedProperties({ base: data.base, values: values }), [Number(state.id.slice(10))]);
+      sendSourceAction('properties', encodedProperties({ base: data.base, values: values, ...(state.historyGroup ? {historyGroup:state.historyGroup} : {}) }), [Number(state.id.slice(10))]);
       break;
     }
     updateInspectorStatus();
@@ -793,12 +848,436 @@ Draw.loadPlugin(function (ui) {
       }
       state.model = data;
     });
+    if(!inspectorFlight&&(dimensionPending||workspacePending&&workspacePending.length||pendingThreeAngles))setTimeout(function(){
+      if(pendingThreeAngles&&!workspaceFlight){var angles=pendingThreeAngles;pendingThreeAngles=null;queueThreeCamera(angles,true);}
+      flushWorkspaceActions();flushDimensionRequest();
+    },0);
     if (!inspectorFlight && Object.keys(inspectorStates).some(function (id) { return inspectorStates[id].ready && !inspectorStates[id].error; }))
       setTimeout(flushInspectorDrafts, 0);
+  }
+  // 3D workspace. Camera changes use the same serialized, source-validated
+  // property queue as the inspector, including newer edits during rendering.
+  var threePanel = document.createElement('details'); threePanel.className = 'cetz3DWorkspace'; threePanel.open = true;
+  threePanel.style.cssText = 'display:none;padding:12px;font:12px sans-serif;line-height:1.5;';
+  sidebar.wrapper.insertBefore(threePanel, threeHint);
+  var threeTitle = document.createElement('summary'); threeTitle.textContent = '3D workspace'; threePanel.appendChild(threeTitle);
+  function threeField(title, type) {
+    var label = document.createElement('label'); label.style.cssText = 'display:block;margin-top:8px;';
+    var caption = document.createElement('span'); caption.textContent = title + ' '; label.appendChild(caption);
+    var input = document.createElement(type === 'select' ? 'select' : 'input');
+    if (type !== 'select') input.type = type;
+    input.setAttribute('aria-label', title); input.style.cssText = 'box-sizing:border-box;max-width:100%;';
+    label.appendChild(input); threePanel.appendChild(label); return input;
+  }
+  function threeOption(select, value, label) {
+    var option = document.createElement('option'); option.value = value; option.textContent = label; select.appendChild(option);
+  }
+  var threeViewSelect = threeField('3D view', 'select');
+  var threePlaneSelect = threeField('Drawing plane', 'select');
+  [['xy','XY · Z offset'],['xz','XZ · Y offset'],['zy','ZY · X offset']].forEach(function (entry) { threeOption(threePlaneSelect, entry[0], entry[1]); });
+  threePlaneSelect.value = 'xy';
+  var threeDepth = threeField('Plane offset', 'number'); threeDepth.value = '0'; threeDepth.step = 'any';
+  var threeAngles = ['X','Y','Z'].map(function (axis) {
+    var input = threeField('Camera ' + axis + ' °', 'number'); input.step = 'any';
+    input.addEventListener('change', function () {
+      var values = threeAngles.map(function (control) { return control.value === '' ? NaN : Number(control.value); });
+      if (values.every(Number.isFinite)) queueThreeCamera(values, true);
+    });
+    return input;
+  });
+  var threeAngleRow = document.createElement('div');
+  threeAngleRow.style.cssText = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;';
+  threeAngles.forEach(function (input,i) {
+    input.style.width='100%'; input.parentNode.children[0].textContent=['X °','Y °','Z °'][i];
+    threeAngleRow.appendChild(input.parentNode);
+  });
+  threePanel.appendChild(threeAngleRow);
+  function threeButton(label, callback) {
+    var button = document.createElement('button'); button.type = 'button'; button.textContent = label;
+    button.style.cssText = 'margin:8px 4px 0 0;'; button.addEventListener('click', callback); threePanel.appendChild(button); return button;
+  }
+  var threeOrbitMode = false, threePanMode = false, threeDrag = null, threeCameraTimer = null;
+  var threeOrbitButton = threeButton('Orbit', function () {
+    cancelPlacement(); threeOrbitMode = !threeOrbitMode; threePanMode = false; updateThreeWorkspace();
+  });
+  var threePanButton = threeButton('Pan', function () {
+    cancelPlacement(); threePanMode = !threePanMode; threeOrbitMode = false; updateThreeWorkspace();
+  });
+  [['Isometric',[35.264,45,0]],['Front XY',[0,0,0]],['Top XZ',[90,0,0]],['Side ZY',[0,90,0]]].forEach(function (entry) {
+    threeButton(entry[0], function () { queueThreeCamera(entry[1], true); });
+  });
+  var threeCreateButton = threeButton('Enable 3D view', function () { sendSourceAction('create-view', null, []); });
+  var planeSelect=threeField('描画面','select');
+  var planePosition=['X','Y','Z'].map(function(axis){var input=threeField('平面位置 '+axis,'number');input.step='any';return input;});
+  var planeAngles=['X','Y','Z'].map(function(axis){var input=threeField('平面回転 '+axis+' °','number');input.step='any';return input;});
+  var cameraPosition=['X','Y','Z'].map(function(axis){var input=threeField('カメラ位置 '+axis,'number');input.step='any';return input;});
+  function compactVector(inputs){var row=document.createElement('div');row.style.cssText='display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;';
+    inputs.forEach(function(input){input.style.width='100%';row.appendChild(input.parentNode);});threePanel.appendChild(row);}
+  compactVector(cameraPosition);compactVector(planePosition);compactVector(planeAngles);
+  threeDepth.parentNode.style.display='none';
+  var editPlaneButton=threeButton('この面を2D描画',function(){if(currentPlane())requestDimension('2d',currentPlane().key);});
+  var addPlaneButton=threeButton('平面を追加',function(){queueWorkspaceAction('plane-create',{viewKey:threeView()&&threeView().key,kind:threePlaneSelect.value,position:[0,0,0],angles:[0,0,0]});});
+  planeSelect.addEventListener('change',function(){selectedPlaneKey=planeSelect.value;planeSelectionSerial++;planeUIKey=null;planeDraft=null;updateThreeWorkspace();});
+  function poseDraftChanged(){
+    var plane=currentPlane();if(!plane){updateThreeWorkspace();return;}
+    var position=planePosition.map(function(i){return i.value===''?NaN:Number(i.value);}),angles=planeAngles.map(function(i){return i.value===''?NaN:Number(i.value);});
+    planeDraft={key:plane.key,kind:threePlaneSelect.value,position:position,angles:angles,invalid:!position.concat(angles).every(Number.isFinite)};
+    if(planeDraft.invalid){threeNotice.textContent='平面の位置と角度を数値で入力してください。';return;}
+    queueWorkspaceAction('plane-settings',planeDraft);
+  }
+  planePosition.concat(planeAngles).concat([threePlaneSelect]).forEach(function(input){input.addEventListener('change',poseDraftChanged);});
+  cameraPosition.forEach(function(input){input.addEventListener('change',function(){var position=cameraPosition.map(function(i){return i.value===''?NaN:Number(i.value);});
+    if(position.every(Number.isFinite)){cameraDraft={viewKey:threeView()&&threeView().key,position:position};queueWorkspaceAction('camera-position',{viewKey:threeView()&&threeView().key,position:position});}});});
+  var threeGridToggle = threeField('3D grid', 'checkbox'); threeGridToggle.checked = true;
+  var threeAxesToggle = threeField('3D axes', 'checkbox'); threeAxesToggle.checked = true;
+  var threeNotice = document.createElement('div'); threeNotice.setAttribute('role', 'status'); threeNotice.style.marginTop = '8px'; threePanel.appendChild(threeNotice);
+  var threeViewSignature = '', threePlaneGrid = null;
+  function drawThreePlaneGrid(frame) {
+    if (!graph.view.getBackgroundPane) return;
+    if (!threePlaneGrid) {
+      threePlaneGrid = document.createElementNS('http://www.w3.org/2000/svg','g');
+      threePlaneGrid.setAttribute('data-cetz-3d-workplane','true'); threePlaneGrid.setAttribute('pointer-events','none');
+    }
+    var pane = graph.view.getBackgroundPane();
+    if (threePlaneGrid.parentNode !== pane) pane.appendChild(threePlaneGrid);
+    if (!frame || !is3D()) { threePlaneGrid.innerHTML = ''; return; }
+    var bounds=frame.bounds||{x:-5,y:-5,width:10,height:10};
+    var left=Math.min(-2.5,bounds.x-0.5),right=Math.max(2.5,bounds.x+bounds.width+0.5),bottom=Math.min(-2.5,bounds.y-0.5),top=Math.max(2.5,bounds.y+bounds.height+0.5);
+    var step = snapStep(); while (Math.max(right-left,top-bottom)/step > 160) step *= 2;
+    var shapes = [], scale=graph.view.scale||1, translate=graph.view.translate;
+    function line(a,b) {
+      var p=applyThree(frame.matrix,a,true),q=applyThree(frame.matrix,b,true);
+      if (!p || !q || p.concat(q).some(function(value){return Math.abs(value)>100000;})) return;
+      shapes.push('<path d="M '+p.join(' ')+' L '+q.join(' ')+'"/>');
+    }
+    if(threeGridToggle.checked){
+      for(var i=Math.ceil(left/step);i<=Math.floor(right/step);i++)line([i*step,bottom],[i*step,top]);
+      for(var j=Math.ceil(bottom/step);j<=Math.floor(top/step);j++)line([left,j*step],[right,j*step]);
+    }
+    var corners=[[left,bottom],[right,bottom],[right,top],[left,top]].map(function(p){return applyThree(frame.matrix,p,true);});
+    var surface=frame.key&&corners.every(Boolean)?'<polygon data-cetz-plane-surface="true" points="'+corners.map(function(p){return p.join(',');}).join(' ')+'" fill="#4675c8" fill-opacity="0.07" stroke="#4675c8" stroke-opacity="0.35" stroke-width="'+(0.8/scale)+'"/>':'';
+    threePlaneGrid.setAttribute('transform','translate('+(translate.x*scale)+' '+(translate.y*scale)+') scale('+scale+')');
+    threePlaneGrid.innerHTML=surface+'<g fill="none" stroke="#4675c8" stroke-opacity="0.22" stroke-width="'+(0.7/scale)+'">'+shapes.join('')+'</g>';
+  }
+  threeViewSelect.addEventListener('change',function(){var data=threeWorkspace(),planes=data&&data.planes||[],chosen=planes.filter(function(p){return p.view===Number(threeViewSelect.value);});
+    selectedPlaneKey=chosen.length?chosen[0].key:null;planeUIKey=null;planeDraft=null;threeViewSelect.cetzViewKey=(threeView()||{}).key;});
+  [threeViewSelect, threeDepth, threeGridToggle, threeAxesToggle].forEach(function (control) {
+    control.addEventListener('change', function () { cancelPlacement(); updateThreeWorkspace(); });
+  });
+  function threeWorkspace() {
+    var background = graph.getModel().getCell('cetz-preview-background');
+    try { return JSON.parse(decodeURIComponent(graph.getCellStyle(background).cetzWorkspace || 'null')); }
+    catch (error) { return null; }
+  }
+  function threeView() {
+    var data = threeWorkspace();
+    return data && data.views.filter(function (view) { return String(view.index) === threeViewSelect.value; })[0];
+  }
+  function threeCameraCell(view) {
+    if (!view) return null;
+    var cells = graph.getModel().cells || {};
+    var ids = Object.keys(cells).filter(function (id) {
+      return /^cetz-edit-/.test(id) && String(graph.getCellStyle(cells[id]).cetzSourceIndex) === String(view.index);
+    });
+    return ids.length ? cells[ids[0]] : null;
+  }
+  function threeCameraAngles() {
+    var cell = threeCameraCell(threeView()), data = cell && inspectorData(cell);
+    if (!data) return null;
+    var state = inspectorStates[cell.id];
+    return ['x','y','z'].map(function (key, index) {
+      var value = state && state.values[key] !== undefined ? state.values[key] : inspectorValue(data, key);
+      if (!value) return [35.264,45,0][index];
+      var angle = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+))deg$/.exec(value.trim());
+      return angle ? Number(angle[1]) : NaN;
+    });
+  }
+  function queueThreeCamera(angles, immediate) {
+    if(workspaceFlight){pendingThreeAngles=angles;return;}
+    cancelPlacement();
+    var cell = threeCameraCell(threeView()), data = cell && inspectorData(cell);
+    if (!data || !angles.every(Number.isFinite)) return;
+    synchronizeInspectorDocument();
+    var state = inspectorState(cell, data);
+    ['x','y','z'].forEach(function (key, i) { state.values[key] = String(Number(angles[i].toFixed(6))) + 'deg'; });
+    state.valid = true; state.error = false; state.ready = true;
+    state.historyGroup = threeDrag && !threeDrag.pan ? threeDrag.token : null;
+    if (immediate) { if (threeCameraTimer) clearTimeout(threeCameraTimer); threeCameraTimer = null; flushInspectorDrafts(); }
+    else if (!threeCameraTimer) threeCameraTimer = setTimeout(function () { threeCameraTimer = null; flushInspectorDrafts(); }, 160);
+    threeAngles.forEach(function (input, i) { if (document.activeElement !== input) input.value = String(Number(angles[i].toFixed(3))); });
+  }
+  function inverseThree(matrix) {
+    var a = matrix[0][0], b = matrix[0][1], c = matrix[0][2], d = matrix[1][0], e = matrix[1][1], f = matrix[1][2],
+      g = matrix[2][0], h = matrix[2][1], i = matrix[2][2];
+    var det = a*(e*i-f*h) - b*(d*i-f*g) + c*(d*h-e*g);
+    if (Math.abs(det) < 1e-8) return null;
+    return [[e*i-f*h,c*h-b*i,b*f-c*e],[f*g-d*i,a*i-c*g,c*d-a*f],[d*h-e*g,b*g-a*h,a*e-b*d]].map(function (row) {
+      return row.map(function (value) { return value/det; });
+    });
+  }
+  function applyThree(matrix, point, frontOnly) {
+    var p = [point[0],point[1],1];
+    var q = matrix.map(function (row) { return row.reduce(function (sum, value, i) { return sum + value*p[i]; }, 0); });
+    if (Math.abs(q[2]) < 1e-8 || frontOnly && q[2] <= 1e-7) return null;
+    return [q[0]/q[2],q[1]/q[2]];
+  }
+  function threePlane() {
+    var selected=currentPlane();
+    if(selected&&selected.matrix){
+      var h=selected.matrix.map(function(row){return [row[0],row[1],row[3]];}),inv=inverseThree(h);
+      return inv?{view:selected.view,plane:selected.kind,offset:0,key:selected.key,bounds:selected.localBounds,matrix:h,inverse:inv}:null;
+    }
+    var view = threeView(), offset = threeDepth.value === '' ? NaN : Number(threeDepth.value), plane = threePlaneSelect.value;
+    if (!view || !view.matrix || !Number.isFinite(offset) || Math.abs(offset) > 1000000) return null;
+    var axes = {xy:[0,1,2],xz:[0,2,1],zy:[2,1,0]}[plane];
+    if (!axes) return null;
+    var matrix = view.matrix.map(function (row) { return [row[axes[0]],row[axes[1]],row[3]+offset*row[axes[2]]]; });
+    var inverse = inverseThree(matrix), o = applyThree(matrix,[0,0],true), u = applyThree(matrix,[1,0],true), v = applyThree(matrix,[0,1],true);
+    if (!inverse || !o || !u || !v) return null;
+    var area = Math.abs((u[0]-o[0])*(v[1]-o[1])-(u[1]-o[1])*(v[0]-o[0]));
+    if (area < 0.005*Math.hypot(u[0]-o[0],u[1]-o[1])*Math.hypot(v[0]-o[0],v[1]-o[1])) return null;
+    return { view:view.index, plane:plane, offset:offset, matrix:matrix, inverse:inverse };
+  }
+  function updateThreeWorkspace() {
+    var active = is3D(); threePanel.style.display = active ? '' : 'none';
+    if (!active) { threeOrbitMode = false; threePanMode = false; drawThreePlaneGrid(null); return; }
+    var data = threeWorkspace(), views = data && data.views || [];
+    var signature = views.map(function (view) { return view.index + ':' + view.key + ':' + view.kind; }).join(',');
+    if (signature !== threeViewSignature) {
+      var previous = threeViewSelect.value,previousKey=threeViewSelect.cetzViewKey;
+      while (threeViewSelect.firstChild) threeViewSelect.removeChild(threeViewSelect.firstChild);
+      views.forEach(function (view, i) { threeOption(threeViewSelect, String(view.index), (i+1) + ' · ' + view.kind); });
+      var previousView=views.filter(function(view){return view.key===previousKey;})[0];
+      threeViewSelect.value = previousView?String(previousView.index):views.some(function (view) { return String(view.index) === previous; }) ? previous : views.length ? String(views[0].index) : '';
+      threeViewSignature = signature;
+    }
+    var planes=data&&data.planes||[];
+    if(data&&data.activePlaneKey!==serverActivePlane){if(!selectedPlaneKey&&!lastPlaneIdentity)selectedPlaneKey=data.activePlaneKey;serverActivePlane=data.activePlaneKey;}
+    if(selectedPlaneKey&&selectedPlaneKey.indexOf('source-plane-')===0&&!planes.some(function(p){return p.key===selectedPlaneKey;})&&lastPlaneIdentity){
+      var matches=planes.filter(function(p){return !p.managed&&p.base===lastPlaneIdentity.base;});
+      if(matches.length===1){
+        var oldKey=selectedPlaneKey;selectedPlaneKey=matches[0].key;
+        if(dimensionPending&&dimensionPending.planeKey===oldKey)dimensionPending.planeKey=selectedPlaneKey;
+        if(planeDraft&&planeDraft.key===oldKey)planeDraft.key=selectedPlaneKey;
+        if(planeUIKey===oldKey)planeUIKey=selectedPlaneKey;
+        workspacePending.forEach(function(item){if(item.payload.key===oldKey)item.payload.key=selectedPlaneKey;});
+      }
+    }
+    if(!planes.some(function(p){return p.key===selectedPlaneKey;})){var inView=planes.filter(function(p){return p.view===Number(threeViewSelect.value);});selectedPlaneKey=inView.length?inView[0].key:null;}
+    var planeSignature=planes.map(function(p){return p.key+':'+p.label;}).join('|');
+    if(planeSelect.cetzSignature!==planeSignature){
+      while(planeSelect.firstChild)planeSelect.removeChild(planeSelect.firstChild);
+      planes.forEach(function(p){threeOption(planeSelect,p.key,p.label);});planeSelect.cetzSignature=planeSignature;
+    }
+    planeSelect.value=selectedPlaneKey||'';
+    var selected=currentPlane();
+    if(selected){
+      if(planeUIKey!==selected.key){planeDraft=null;planeUIKey=selected.key;}
+      var accepted=planeDraft&&!planeDraft.invalid&&planeDraft.kind===selected.kind&&planeDraft.position.every(function(v,i){return selected.position&&v===selected.position[i];})&&planeDraft.angles.every(function(v,i){return selected.angles&&v===selected.angles[i];});
+      if(accepted)planeDraft=null;
+      var pose=planeDraft&&planeDraft.key===selected.key?planeDraft:selected;
+      if(document.activeElement!==threePlaneSelect)threePlaneSelect.value=pose.kind;
+      planePosition.forEach(function(input,i){if(document.activeElement!==input)input.value=pose.position&&Number.isFinite(pose.position[i])?String(pose.position[i]):'';});
+      planeAngles.forEach(function(input,i){if(document.activeElement!==input)input.value=pose.angles&&Number.isFinite(pose.angles[i])?String(pose.angles[i]):'';});
+    }
+    planePosition.concat(planeAngles).forEach(function(input){input.disabled=!selected;});editPlaneButton.disabled=!selected||!!workspaceFlight;
+    var view=threeView();
+    if(selected&&!workspaceFlight&&selected.view!==Number(threeViewSelect.value))threeViewSelect.value=String(selected.view);
+    view=threeView();threeViewSelect.cetzViewKey=view&&view.key;lastPlaneIdentity=selected?{key:selected.key,base:selected.base}:null;
+    if(cameraDraft&&view&&cameraDraft.viewKey===view.key&&cameraDraft.position.every(function(v,i){return v===view.position[i];}))cameraDraft=null;
+    var cameraPose=cameraDraft&&view&&cameraDraft.viewKey===view.key?cameraDraft.position:view&&view.position;
+    cameraPosition.forEach(function(input,i){if(document.activeElement!==input)input.value=cameraPose?String(cameraPose[i]):'0';});
+    threeCreateButton.style.display = views.length ? 'none' : '';
+    var angles = threeCameraAngles();
+    if (!threeDrag && angles) threeAngles.forEach(function (input, i) {
+      if (document.activeElement !== input) input.value = Number.isFinite(angles[i]) ? String(angles[i]) : '';
+    });
+    threeOrbitButton.setAttribute('aria-pressed', threeOrbitMode ? 'true' : 'false');
+    threePanButton.setAttribute('aria-pressed', threePanMode ? 'true' : 'false');
+    graph.container.style.cursor = placement ? 'crosshair' : threeOrbitMode ? 'grab' : threePanMode ? 'move' : '';
+    var frame = threePlane();
+    drawThreePlaneGrid(frame);
+    threeNotice.textContent = angles && !angles.every(Number.isFinite) ? 'Camera angles are expressions. Choose a preset or enter X/Y/Z angles to orbit.' : !views.length ? 'Choose Enable 3D view to orbit this scene and use the drawing tools.' : !frame ?
+      'This plane is edge-on or cannot be calibrated. 「この面を2D描画」で正面から編集できます。' :
+      planeDraft&&planeDraft.invalid?'平面の位置と角度を数値で完成させてください。':selected?
+      '位置・回転は親座標系です。「この面を2D描画」で通常の2D編集を行えます。':
+      '右の面アイコンから描画面を追加してください。Alt＋ドラッグで視点を回転できます。';
+    var cells = graph.getModel().cells || {}, model = graph.getModel();
+    Object.keys(cells).forEach(function (id) {
+      var match = /^cetz-(grid3d|axis-3d)-(\d+)-/.exec(id);
+      if (!match || !model.setVisible) return;
+      var visible = String(match[2]) === threeViewSelect.value && (match[1] === 'grid3d' ? threeGridToggle.checked : threeAxesToggle.checked);
+      if ((cells[id].visible !== false) !== visible) model.setVisible(cells[id], visible);
+    });
+  }
+  var threeDownEvent = typeof PointerEvent === 'undefined' ? 'mousedown' : 'pointerdown';
+  var threeMoveEvent = threeDownEvent === 'mousedown' ? 'mousemove' : 'pointermove';
+  var threeUpEvent = threeDownEvent === 'mousedown' ? 'mouseup' : 'pointerup';
+  if (graph.container && graph.container.addEventListener) graph.container.addEventListener(threeDownEvent, function (event) {
+    if (!is3D() || workspaceFlight || workspacePending.length || placement || event.button !== 0 || !(threeOrbitMode || threePanMode || event.altKey)) return;
+    var angles = threeCameraAngles();
+    if (!threePanMode && (!angles || !angles.every(Number.isFinite))) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    threeDrag = {x:event.clientX,y:event.clientY,angles:angles,pan:threePanMode,token:'orbit-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2), tx:graph.view.translate.x,ty:graph.view.translate.y};
+  }, true);
+  document.addEventListener(threeMoveEvent, function (event) {
+    if (!threeDrag) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    var dx = event.clientX-threeDrag.x, dy = event.clientY-threeDrag.y;
+    if (threeDrag.pan) graph.view.setTranslate(threeDrag.tx+dx/graph.view.scale,threeDrag.ty+dy/graph.view.scale);
+    else queueThreeCamera([threeDrag.angles[0]+dy*0.5,threeDrag.angles[1]+dx*0.5,threeDrag.angles[2]], false);
+  }, true);
+  document.addEventListener(threeUpEvent, function (event) {
+    if (!threeDrag) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (!threeDrag.pan) queueThreeCamera([threeDrag.angles[0]+(event.clientY-threeDrag.y)*0.5,
+      threeDrag.angles[1]+(event.clientX-threeDrag.x)*0.5,threeDrag.angles[2]], true);
+    threeDrag = null;
+  }, true);
+  function finishThreeDrag() {
+    if (!threeDrag) return;
+    if (!threeDrag.pan) { var angles=threeCameraAngles(); if (angles && angles.every(Number.isFinite)) queueThreeCamera(angles,true); }
+    threeDrag=null;
+  }
+  document.addEventListener('pointercancel',finishThreeDrag,true);
+  if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('blur',finishThreeDrag);
+  // The tab state is acknowledged by a new source-neutral scene. Never remap
+  // a 3D image locally and then treat those pixels as editable plane geometry.
+  var dimensionTabs=document.createElement('div'); dimensionTabs.className='cetzDimensionTabs';
+  dimensionTabs.setAttribute('role','tablist'); dimensionTabs.setAttribute('aria-label','描画モード');
+  dimensionTabs.style.cssText='display:none;align-items:center;gap:4px;margin-left:18px;vertical-align:middle;';
+  var tab2D=document.createElement('button'),tab3D=document.createElement('button');
+  [[tab2D,'2D描画','2d'],[tab3D,'3D描画','3d']].forEach(function(entry){
+    entry[0].type='button';entry[0].textContent=entry[1];entry[0].setAttribute('role','tab');
+    entry[0].style.cssText='padding:5px 12px;border:1px solid var(--vscode-panel-border,#cbd2dc);border-radius:5px;background:transparent;color:inherit;cursor:pointer;';
+    entry[0].addEventListener('click',function(){requestDimension(entry[2]);});dimensionTabs.appendChild(entry[0]);
+  });
+  dimensionTabs.addEventListener('keydown',function(event){
+    if(event.key!=='ArrowLeft'&&event.key!=='ArrowRight')return;event.preventDefault();
+    var tab=event.key==='ArrowLeft'?tab2D:tab3D;if(!tab.disabled){tab.focus();requestDimension(tab===tab2D?'2d':'3d');}
+  });
+  var dimensionNotice=document.createElement('span');dimensionNotice.setAttribute('role','status');dimensionNotice.setAttribute('aria-live','polite');
+  dimensionNotice.style.cssText='font-size:11px;margin-left:6px;';dimensionTabs.appendChild(dimensionNotice);
+  var planeRail=document.createElement('div');planeRail.className='cetzPlaneRail';
+  planeRail.style.cssText='display:none;flex-direction:column;align-items:center;gap:5px;padding:5px 0;';rail.appendChild(planeRail);
+  [['xy','XY'],['xz','XZ'],['zy','ZY'],['custom','自由']].forEach(function(entry){
+    var button=document.createElement('button');button.type='button';button.setAttribute('aria-label','描画面 '+entry[1]);
+    button.title=entry[0]==='custom'?'任意の位置・角度の平面を追加':'on-'+entry[0]+'平面を追加';
+    button.style.cssText='width:42px;min-height:46px;padding:3px;border:1px solid var(--vscode-panel-border,#cbd2dc);border-radius:5px;background:transparent;color:inherit;cursor:pointer;';
+    button.innerHTML='<svg width="28" height="24" viewBox="0 0 28 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M3 15L12 3L25 9L16 21Z" fill="currentColor" fill-opacity=".12"/><path d="M7 16L20 8M9 7L20 14" opacity=".45"/></svg>';
+    var label=document.createElement('span');label.textContent=entry[1];label.style.display='block';button.appendChild(label);
+    button.addEventListener('click',function(){
+      finishThreeDrag();cancelPlacement();threePanel.open=true;
+      queueWorkspaceAction('plane-create',{kind:entry[0]==='custom'?'xy':entry[0],position:[0,0,0],angles:[0,0,0],viewKey:threeView()&&threeView().key});
+    });planeRail.appendChild(button);
+  });
+  var twoPanel=document.createElement('details');twoPanel.open=true;twoPanel.className='cetz2DWorkspace';
+  twoPanel.style.cssText='display:none;padding:12px;font:12px sans-serif;line-height:1.6;';
+  var twoTitle=document.createElement('summary');twoTitle.textContent='2D描画設定';twoPanel.appendChild(twoTitle);
+  var twoContext=document.createElement('div');twoContext.style.marginTop='8px';twoPanel.appendChild(twoContext);
+  var twoGridLabel=document.createElement('label');twoGridLabel.style.cssText='display:block;margin:8px 0;';
+  var twoGrid=document.createElement('input');twoGrid.type='checkbox';twoGrid.setAttribute('aria-label','2Dグリッドとスナップ');
+  twoGrid.addEventListener('change',function(){graph.gridEnabled=twoGrid.checked;if(graph.view.validateBackground)graph.view.validateBackground();});
+  twoGridLabel.appendChild(twoGrid);var twoGridText=document.createElement('span');twoGridText.textContent='グリッドとスナップ';twoGridLabel.appendChild(twoGridText);twoPanel.appendChild(twoGridLabel);
+  var twoBack=document.createElement('button');twoBack.type='button';twoBack.textContent='3D描画へ戻る';
+  twoBack.addEventListener('click',function(){requestDimension('3d');});twoPanel.appendChild(twoBack);
+  sidebar.wrapper.insertBefore(twoPanel,controls);
+  var workspacePending=[],workspaceFlight=null,dimensionPending=null,pendingThreeAngles=null;
+  var planeUIKey=null,planeDraft=null,cameraDraft=null,serverActivePlane=null,selectedPlaneKey=null,planeSelectionSerial=0,lastPlaneIdentity=null,viewMemory={};
+  function planeContext(){
+    var cell=graph.getModel().getCell('cetz-preview-background');
+    try{return JSON.parse(decodeURIComponent(graph.getCellStyle(cell).cetzPlaneContext||'null'));}catch(error){return null;}
+  }
+  function workspaceStamp(){
+    var data=threeWorkspace();return inspectorScene()+':'+(is3D()?'3d':'2d')+':'+JSON.stringify(data)+':'+JSON.stringify(planeContext());
+  }
+  function currentPlane(){var data=threeWorkspace();return data&&(data.planes||[]).filter(function(p){return p.key===selectedPlaneKey;})[0];}
+  function queueWorkspaceAction(name,payload){
+    finishThreeDrag();cancelPlacement();
+    var item={name:name,payload:payload};
+    var existing=workspacePending.filter(function(p){return p.name===name&&name!=='plane-create'&&(p.payload.key||p.payload.viewKey)===(payload.key||payload.viewKey);})[0];
+    if(existing)existing.payload=payload;else workspacePending.push(item);
+    flushWorkspaceActions();
+  }
+  function flushWorkspaceActions(){
+    if(workspaceFlight||inspectorFlight||!workspacePending.length)return;
+    var drafts=Object.keys(inspectorStates).map(function(id){return inspectorStates[id];}).filter(function(state){return Object.keys(state.values).length||!state.valid||state.composing;});
+    if(drafts.length){
+      drafts.forEach(function(state){if(state.valid&&!state.composing)state.ready=true;});flushInspectorDrafts();
+      if(!inspectorFlight)dimensionNotice.textContent='編集中のプロパティを完成させてください。';return;
+    }
+    var item=workspacePending.shift(),payload=Object.assign({},item.payload),data=threeWorkspace();
+    if(!data)return;
+    if(item.name==='plane-create'||item.name==='camera-position'){
+      var view=data.views.filter(function(v){return v.key===payload.viewKey;})[0];
+      if(!view){threeNotice.textContent='3Dビューを選び直してください。';return;}
+      payload.view=view.index;payload.base=view.base;
+    }
+    if(item.name==='plane-settings'){
+      var plane=(data.planes||[]).filter(function(p){return p.key===payload.key;})[0];
+      if(!plane){threeNotice.textContent='描画面を選び直してください。';return;}
+      payload.base=plane.base;
+    }
+    workspaceFlight={name:item.name,payload:payload,selectionSerial:planeSelectionSerial,stamp:workspaceStamp()};
+    sendSourceAction(item.name,encodedProperties(payload),[]);
+  }
+  function requestDimension(mode,key){
+    finishThreeDrag();cancelPlacement();
+    dimensionPending={mode:mode,planeKey:key||selectedPlaneKey||(planeContext()&&planeContext().key)};
+    flushInspectorDrafts();flushWorkspaceActions();flushDimensionRequest();
+  }
+  function flushDimensionRequest(){
+    if(!dimensionPending||!isCetz()||workspaceFlight||workspacePending.length||inspectorFlight||pendingThreeAngles)return;
+    var dirty=Object.keys(inspectorStates).some(function(id){return Object.keys(inspectorStates[id].values).length||!inspectorStates[id].valid||inspectorStates[id].composing||inspectorStates[id].error;});
+    if(dirty||planeDraft&&planeDraft.invalid){dimensionNotice.textContent='編集中の値を完成させてから切り替えてください。';return;}
+    var request=dimensionPending;dimensionPending=null;
+    if(request.mode===(is3D()?'3d':'2d')&&(!request.planeKey||request.planeKey===(planeContext()&&planeContext().key)))return;
+    var memoryKey=is3D()?'3d':('2d:'+(planeContext()&&planeContext().key||'canvas'));
+    viewMemory[memoryKey]={scale:graph.view.scale,tx:graph.view.translate.x,ty:graph.view.translate.y,grid:graph.gridEnabled};
+    dimensionNotice.textContent='切り替え中…';
+    workspaceFlight={name:'workspace-mode',payload:request,stamp:workspaceStamp()};
+    sendSourceAction('workspace-mode',encodedProperties(request),[]);
+  }
+  function updateDimensionUI(){
+    var active=isCetz(),parent=ui.menubar&&ui.menubar.container||ui.menubarContainer||ui.container;
+    if(parent&&dimensionTabs.parentNode!==parent)parent.appendChild(dimensionTabs);
+    dimensionTabs.style.display=active?'inline-flex':'none';
+    var spatial=active&&is3D(),context=planeContext();
+    tab2D.setAttribute('aria-selected',!spatial?'true':'false');tab3D.setAttribute('aria-selected',spatial?'true':'false');
+    tab2D.tabIndex=!spatial?0:-1;tab3D.tabIndex=spatial?0:-1;
+    tab2D.style.fontWeight=!spatial?'700':'400';tab3D.style.fontWeight=spatial?'700':'400';
+    twoPanel.style.display=active&&!spatial?'':'none';
+    twoContext.textContent=context?'編集面: '+context.label+' · 面のローカルX/Y座標 · グリッド '+snapStep():'キャンバスのX/Y座標 · グリッド '+snapStep();
+    twoBack.style.display=context?'':'none';twoGrid.checked=graph.gridEnabled;
+    planeRail.style.display=spatial?'flex':'none';paletteStrip.style.display=spatial?'none':'';
+    if(workspaceFlight&&workspaceFlight.stamp!==workspaceStamp()){
+      var completed=workspaceFlight;workspaceFlight=null;
+      var data=threeWorkspace();
+      if(completed.name==='plane-create'&&data&&data.activePlaneKey){selectedPlaneKey=data.activePlaneKey;planeUIKey=null;planeDraft=null;if(dimensionPending&&dimensionPending.mode==='2d')dimensionPending.planeKey=data.activePlaneKey;}
+      if(completed.name==='plane-settings'&&data&&data.activePlaneKey){
+        if(completed.selectionSerial===planeSelectionSerial)selectedPlaneKey=data.activePlaneKey;
+        if(dimensionPending&&dimensionPending.planeKey===completed.payload.key)dimensionPending.planeKey=data.activePlaneKey;
+        if(completed.selectionSerial!==planeSelectionSerial)serverActivePlane=data.activePlaneKey;
+        workspacePending.forEach(function(item){if(item.name==='plane-settings'&&item.payload.key===completed.payload.key)item.payload.key=data.activePlaneKey;});
+      }
+      if(completed.name==='workspace-mode'){
+        dimensionNotice.textContent=completed.payload.mode===(spatial?'3d':'2d')?'':'3D設定から描画面を選んでください。';
+        var state=viewMemory[spatial?'3d':('2d:'+(context&&context.key||'canvas'))];
+        if(state){graph.view.setScale(state.scale);graph.view.setTranslate(state.tx,state.ty);graph.gridEnabled=state.grid;}
+        else graph.gridEnabled=!spatial;
+      }
+      setTimeout(function(){
+        if(pendingThreeAngles){var angles=pendingThreeAngles;pendingThreeAngles=null;queueThreeCamera(angles,true);}
+        flushWorkspaceActions();flushDimensionRequest();
+      },0);
+    }
+    tab2D.disabled=tab3D.disabled=!!workspaceFlight;
+    if(!workspaceFlight&&!inspectorFlight){if(workspacePending.length)setTimeout(flushWorkspaceActions,0);else if(dimensionPending)setTimeout(flushDimensionRequest,0);}
   }
   function propertyDraftChanged(event) {
     if (inspectorUpdating || !inspectorCurrent) return;
     var state = inspectorCurrent;
+    state.historyGroup = null;
     if (state.timer) { clearTimeout(state.timer); state.timer = null; }
     state.ready = false; state.error = false;
     state.valid = !inspectorFields.some(function (field) { return field.input.cetzInvalid; });
@@ -819,11 +1298,12 @@ Draw.loadPlugin(function (ui) {
   function updateInspector(cell, style, one) {
     var data;
     try { data = JSON.parse(decodeURIComponent(style.cetzProperties || 'null')); } catch (error) { data = null; }
+    if(data&&data.mode==='3d'&&data.kind==='scope'&&!data.fields.length)data=null;
     inspector.style.display = data && one ? '' : 'none';
     if (!data || !one) { inspectorSignature = ''; return false; }
     var state = inspectorState(cell, data);
     inspectorCurrent = state;
-    var signature = cell.id + ':' + data.kind + ':' + data.fields.map(function (field) { return field.key; }).sort().join(',');
+    var signature = cell.id + ':' + data.kind + ':' + (data.mode || '2d') + ':' + data.fields.map(function (field) { return field.key + ':' + (field.point ? field.point.length : 0); }).sort().join(',');
     if (signature === inspectorSignature) {
       inspectorUpdating = true;
       inspectorFields.forEach(function (field) {
@@ -849,7 +1329,7 @@ Draw.loadPlugin(function (ui) {
     var eyebrow = document.createElement('small'); eyebrow.textContent = 'PROPERTIES / CeTZ';
     var title = document.createElement('h2'); title.textContent = data.kind;
     var sub = document.createElement('div'); sub.className = 'cetzHint';
-    sub.textContent = 'Coordinates · Shape · Appearance';
+    sub.textContent = data.mode === '3d' ? '3D · Local X/Y/Z coordinates · Projection settings' : 'Coordinates · Shape · Appearance';
     header.appendChild(eyebrow); header.appendChild(title); header.appendChild(sub); inspector.appendChild(header);
     function section(name, opened) {
       var group = document.createElement('details'); group.open = Object.prototype.hasOwnProperty.call(openSections, name) ? openSections[name] : opened;
@@ -954,8 +1434,11 @@ Draw.loadPlugin(function (ui) {
           wrapper.appendChild(caption); pair.appendChild(wrapper);
           return inputFor(wrapper, field.label + ' ' + axisName, String(value), axisName);
         }
-        var x = axis('X', field.point[0]), y = axis('Y', field.point[1]);
-        x.type = y.type = 'number'; x.step = y.step = 'any';
+        var axes = field.point.map(function (value, index) {
+          var control = axis(['X', 'Y', 'Z'][index], value);
+          control.type = 'number'; control.step = 'any'; return control;
+        });
+        pair.style.gridTemplateColumns = 'repeat(' + axes.length + ',minmax(0,1fr))';
         input = inputFor(row, field.label + ' expression', field.value);
         input.style.display = 'none';
         var expressionToggle = document.createElement('button'); expressionToggle.type = 'button';
@@ -968,20 +1451,23 @@ Draw.loadPlugin(function (ui) {
           if (input.style.display !== 'none') input.focus();
         });
         input.addEventListener('input', function () {
-          var point = /^\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*\)$/.exec(input.value.trim());
-          x.disabled = y.disabled = !point;
-          if (point) { x.value = point[1]; y.value = point[2]; }
+          var values = input.value.trim().slice(1, -1).split(',').map(function (part) { return part.trim(); });
+          if (values[values.length - 1] === '') values.pop();
+          var valid = /^\([\s\S]*\)$/.test(input.value.trim()) && values.length === axes.length &&
+            values.every(function (value) { return /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value); });
+          axes.forEach(function (control, index) { control.disabled = !valid; if (valid) control.value = values[index]; });
           input.cetzInvalid = false;
         });
         function coordinateChange(event) {
-          if (x.value === '' || y.value === '' || !isFinite(Number(x.value)) || !isFinite(Number(y.value))) {
+          if (axes.some(function (control) { return control.value === '' || !isFinite(Number(control.value)); })) {
             input.cetzInvalid = true; propertyDraftChanged(); return;
           }
           input.cetzInvalid = false;
-          input.value = '(' + x.value + ', ' + y.value + ')'; propertyDraftChanged(event);
+          input.value = '(' + axes.map(function (control) { return control.value; }).join(', ') + ')'; propertyDraftChanged(event);
         }
-        x.addEventListener('input', coordinateChange); y.addEventListener('input', coordinateChange);
-        x.addEventListener('change', coordinateChange); y.addEventListener('change', coordinateChange);
+        axes.forEach(function (control) {
+          control.addEventListener('input', coordinateChange); control.addEventListener('change', coordinateChange);
+        });
       } else if (field.choices && (!field.value || field.choices.indexOf(field.value) >= 0)) {
         input = document.createElement('select'); input.setAttribute('aria-label', field.label);
         [''].concat(field.choices).forEach(function (choice) {
@@ -1110,8 +1596,8 @@ Draw.loadPlugin(function (ui) {
       var value = Object.prototype.hasOwnProperty.call(state.values, field.key) ? state.values[field.key] : field.value;
       var copy = Object.assign({}, field, { value: value });
       if (copy.point) {
-        var point = /^\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*\)$/.exec(value.trim());
-        if (point) copy.point = [Number(point[1]), Number(point[2])];
+        var point = /^\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)))?\s*,?\s*\)$/.exec(value.trim());
+        if (point) copy.point = point.slice(1).filter(function (part) { return part !== undefined; }).map(Number);
         else delete copy.point;
       }
       addField(copy);
@@ -1147,8 +1633,9 @@ Draw.loadPlugin(function (ui) {
   }
 
   function sendSourceAction(name, value, overrideIndices) {
+    if (is3D() && ['properties','focus','select','export','create-view','workspace-mode','plane-create','plane-settings','camera-position'].indexOf(name) < 0) return;
     var cells = selectedEditableCells();
-    if (name !== 'export' && (!isEditablePreview() || name !== 'paste' && !cells.length && !overrideIndices)) return;
+    if (name !== 'export' && ['create-view','workspace-mode','plane-create','plane-settings','camera-position'].indexOf(name)<0 && (!isEditablePreview() || name !== 'paste' && !cells.length && !overrideIndices)) return;
     var indices = overrideIndices || cells.map(function (cell) { return Number(cell.id.slice('cetz-edit-'.length)); });
     var token = Date.now().toString(36) + Math.random().toString(36).slice(2);
     graph.insertVertex(graph.getDefaultParent(), null, '', -1000, -1000, 1, 1,
@@ -1158,6 +1645,7 @@ Draw.loadPlugin(function (ui) {
       'cetzActionToken=' + token + ';');
   }
   function arrangeSelected(axis, mode) {
+    if (is3D()) return;
     var cells = selectedEditableCells();
     if (!isEditablePreview() || cells.length < (mode === 'distribute' ? 3 : 2)) return;
     var model = graph.getModel();
@@ -1194,9 +1682,25 @@ Draw.loadPlugin(function (ui) {
       });
     } finally { model.endUpdate(); }
   }
+  function add3DMenu(menu, parent) {
+    [['xy','XY平面'],['xz','XZ平面'],['zy','ZY平面']].forEach(function(entry){
+      menu.addItem(entry[1],null,function(){queueWorkspaceAction('plane-create',{viewKey:threeView()&&threeView().key,kind:entry[0],position:[0,0,0],angles:[0,0,0]});},parent);
+    });
+    menu.addItem('この面を2D描画',null,function(){requestDimension('2d',currentPlane()&&currentPlane().key);},parent);
+    menu.addSeparator(parent);
+    menu.addItem('Delete selected', null, function () { graph.removeCells(graph.getSelectionCells()); }, parent);
+    menu.addItem('Go to Typst call', null, function () { sendSourceAction('focus'); }, parent);
+    menu.addItem('Export PDF, SVG or PNG', null, function () { sendSourceAction('export'); }, parent);
+    menu.addItem('Undo', null, function () { sendHistoryAction('undo'); }, parent);
+    menu.addItem('Redo', null, function () { sendHistoryAction('redo'); }, parent);
+    [['Zoom in', 'zoomIn'], ['Zoom out', 'zoomOut'], ['Fit', 'fitWindow']].forEach(function (entry) {
+      menu.addItem(entry[0], null, function () { if (typeof graph[entry[1]] === 'function') graph[entry[1]](); }, parent);
+    });
+  }
   function ensureCetzMenu() {
     if (!ui.menubar || cetzMenu && cetzMenu.parentNode) return;
     cetzMenu = ui.menubar.addMenu('CeTZ', function (menu, parent) {
+      if (is3D()) { add3DMenu(menu, parent); return; }
       ['rect', 'circle', 'content', 'line'].concat(shapeNames).forEach(function (name) {
         menu.addItem(name, null, function () {
           if (!isCetz()) return;
@@ -2227,7 +2731,7 @@ Draw.loadPlugin(function (ui) {
     // Standard menus and native format controls expose edits that cannot be written to Typst.
     if (ui.menubar && ui.menubar.container) {
       Array.prototype.forEach.call(ui.menubar.container.children, function (element) {
-        if (element !== cetzMenu && element !== ui.statusContainer) hideChrome(element, true);
+        if (element !== cetzMenu && element !== dimensionTabs && element !== ui.statusContainer) hideChrome(element, true);
       });
     }
     hideChrome(ui.toolbarContainer, true);
@@ -2304,6 +2808,10 @@ Draw.loadPlugin(function (ui) {
       !!graph.getModel().getCell('cetz-preview-background') ||
       Object.keys(cells).some(function (id) { return /^cetz-\d+-\d+$/.test(id); });
   }
+  function is3D() {
+    var background = graph.getModel().getCell('cetz-preview-background') || graph.getModel().getCell('preview-image');
+    return !!background && /(?:^|;)cetzMode=3d(?:;|$)/.test(background.style || '');
+  }
   function isPreview() { return !!graph.getModel().getCell('preview-image') ||
     !!graph.getModel().getCell('cetz-preview-background'); }
   function isEditablePreview() { return !!graph.getModel().getCell('cetz-preview-background'); }
@@ -2345,7 +2853,8 @@ Draw.loadPlugin(function (ui) {
     if (placement) { placementHint(); previewPlacement(); }
   }
   if (graph.view && graph.view.addListener) {
-    graph.view.addListener('scale', updateSnapGrid);
+    graph.view.addListener('scale', function () { updateSnapGrid(); if (is3D()) updateThreeWorkspace(); });
+    graph.view.addListener('translate', function () { if (is3D()) updateThreeWorkspace(); });
     graph.view.addListener('scaleAndTranslate', updateSnapGrid);
   }
   function clearPointGuides(handler) {
@@ -2547,9 +3056,15 @@ Draw.loadPlugin(function (ui) {
       [reconnectEnd.row, reconnectSide.row, reconnectButton].forEach(function (item) {
         item.style.display = canReconnect ? '' : 'none';
       });
+      if (is3D()) {
+        [rotation, scaling].forEach(function (input) { showField(input, false); });
+        [rotateLeft, rotateRight, sizeRow, groupButton, ungroupButton, shareButton, autoShareButton, detachButton,
+          anchorRenameRow, fromAnchor.row, toAnchor.row, connectorRoute.row, connectButton,
+          reconnectEnd.row, reconnectSide.row, reconnectButton].forEach(function (item) { item.style.display = 'none'; });
+      }
       var detailed = updateInspector(cell, style, one);
       details.style.display = detailed || selected.length > 1 ? 'none' : '';
-      if (detailed) [fill, stroke, width, dash, markStart, markEnd, textValue].forEach(function (input) { showField(input, false); });
+      if (detailed || is3D()) [fill, stroke, width, dash, markStart, markEnd, textValue].forEach(function (input) { showField(input, false); });
       return;
     }
     inspector.style.display = 'none'; inspectorSignature = '';
@@ -2838,13 +3353,13 @@ Draw.loadPlugin(function (ui) {
     var count = document.createElement('span'); count.className = 'cetzOutlineCount'; count.textContent = String(entries.length);
     count.setAttribute('aria-label', entries.length + ' objects'); headingLine.appendChild(count); heading.appendChild(headingLine);
     var hint = document.createElement('div'); hint.className = 'cetzOutlineHint';
-    hint.textContent = selection ? Object.keys(selected).length + ' selected · Drag handles to reorder' : 'Objects & groups · Drag handles to reorder';
+    hint.textContent = is3D() ? '3D objects & projections · Select to edit local coordinates' : selection ? Object.keys(selected).length + ' selected · Drag handles to reorder' : 'Objects & groups · Drag handles to reorder';
     heading.appendChild(hint); outline.appendChild(heading);
     outlineList = document.createElement('div'); outlineList.className = 'cetzOutlineList';
     outlineList.setAttribute('role', 'list'); outlineList.setAttribute('aria-label', 'Drawing objects'); outline.appendChild(outlineList);
     if (!entries.length) {
       var empty = document.createElement('div'); empty.className = 'cetzOutlineEmpty';
-      empty.textContent = 'No objects yet. Choose a shape from the right toolbar to start drawing.'; outlineList.appendChild(empty);
+      empty.textContent = is3D() ? 'No directly editable calls. Edit generated geometry in Typst.' : 'No objects yet. Choose a shape from the right toolbar to start drawing.'; outlineList.appendChild(empty);
     }
     var children = {};
     entries.forEach(function (entry) {
@@ -2866,7 +3381,8 @@ Draw.loadPlugin(function (ui) {
         row.setAttribute('data-selected', selected[entry.id] ? 'true' : 'false'); row.draggable = false;
         row.style.paddingLeft = (2 + depth * 14) + 'px';
         var grip = document.createElement('span'); grip.className = 'cetzOutlineGrip';
-        grip.textContent = '⋮⋮'; grip.draggable = true;
+        grip.textContent = '⋮⋮'; grip.draggable = !is3D();
+        if (is3D()) grip.style.display = 'none';
         grip.setAttribute('aria-label', 'Drag to reorder'); grip.title = 'Drag to reorder';
         var select = document.createElement('button'); select.className = 'cetzOutlineSelect'; select.type = 'button';
         select.title = entry.description; select.setAttribute('aria-label', entry.description);
@@ -2904,7 +3420,7 @@ Draw.loadPlugin(function (ui) {
           var button = document.createElement('button'); button.type = 'button'; button.textContent = move[0];
           button.setAttribute('aria-label', move[0] === '↑' ? 'Move layer up' : 'Move layer down');
           button.className = 'cetzOutlineMove';
-          button.style.display = move[1] ? '' : 'none';
+          button.style.display = move[1] && !is3D() ? '' : 'none';
           button.addEventListener('click', function (event) {
             event.stopPropagation();
             if (move[1]) sendSourceAction(move[2], null,
@@ -2990,6 +3506,9 @@ Draw.loadPlugin(function (ui) {
   function update() {
     suppressCachedSelectionBorders();
     var active = isCetz(), preview = active && isPreview();
+    threeHint.style.display = active && is3D() ? '' : 'none';
+    updateDimensionUI();
+    updateThreeWorkspace();
     if (placement && (!active || !isEditablePreview())) cancelPlacement();
     if (active) updateSnapGrid();
     if (active) ensureCetzMenu();
@@ -3079,7 +3598,8 @@ Draw.loadPlugin(function (ui) {
           original.constrainChild.apply(this, arguments);
       };
       graph.isCellDeletable = function (cell) {
-        return !!cell && !['0', '1', 'preview-image', 'cetz-preview-background'].includes(cell.id) &&
+        if (is3D() && cell && /^cetz-edit-/.test(cell.id || '')) return true;
+        return (!is3D() || /(?:^|;)cetz(?:Action|Template)=/.test(cell && cell.style || '')) && !!cell && !['0', '1', 'preview-image', 'cetz-preview-background'].includes(cell.id) &&
           !/^cetz-select-/.test(cell.id) &&
           !/^cetz-(?:point|guide|axis|origin|render)-/.test(cell.id) && cell.id !== 'cetz-preview-image';
       };
@@ -3266,6 +3786,10 @@ Draw.loadPlugin(function (ui) {
       if (graph.popupMenuHandler) {
         graph.popupMenuHandler.isEnabled = function () { return true; };
         graph.popupMenuHandler.factoryMethod = function (menu, cell) {
+          if (is3D()) {
+            if (cell && /^cetz-edit-/.test(cell.id || '')) graph.setSelectionCell(cell);
+            add3DMenu(menu, null); return;
+          }
           if (cell && /^cetz-(?:edit|point)-\d+/.test(cell.id || '') &&
             graph.getSelectionCells().indexOf(cell) < 0) graph.setSelectionCell(cell);
           if (isEditablePreview()) menu.addItem('Paste', null, function () { sendSourceAction('paste'); });
@@ -3418,6 +3942,12 @@ Draw.loadPlugin(function (ui) {
       graph.view.validate();
     }
     updateControls();
+    if(is3D()){
+      var selected=selectedEditableCells()[0],style=selected&&graph.getCellStyle(selected),data=threeWorkspace();
+      var candidates=data&&style?(data.planes||[]).filter(function(p){var at=Number(style.cetzStart);return p.index===Number(style.cetzSourceIndex)||p.wrapperIndex===Number(style.cetzSourceIndex)||at>=p.bodyStart&&at<p.bodyEnd;}):[];
+      candidates.sort(function(a,b){return b.bodyStart-a.bodyStart;});
+      if(candidates.length&&selectedPlaneKey!==candidates[0].key){selectedPlaneKey=candidates[0].key;planeSelectionSerial++;planeUIKey=null;planeDraft=null;updateThreeWorkspace();}
+    }
     var indices = selectedEditableCells().map(function (cell) {
       return Number(cell.id.slice('cetz-edit-'.length));
     }).sort(function (a, b) { return a - b; });

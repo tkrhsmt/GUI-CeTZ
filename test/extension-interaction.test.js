@@ -356,3 +356,113 @@ test('a valid unchanged GUI save clears a resolved edit error without changing T
   assert.match(gui.text, /cetzError=;/);
   assert.equal(source.text, initial);
 });
+
+test('3D properties synchronize XYZ and projection settings through the validated source bridge and undo', async t => {
+  const initial = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\northo(x: 25deg, {\nline((0,0,0), (1,2,3))\n})\n})';
+  const { source, gui, save, action, until } = await extensionFixture(t, initial);
+  function edit(index, values) {
+    const cell = [...readAllCells(gui.text)].filter(([id]) => /^cetz-edit-/.test(id))[index][1];
+    const model = JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(cell.cell.style)[1]));
+    const value = encodeURIComponent(JSON.stringify({base:model.base,values}))
+      .replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16));
+    const marker = action('properties', String(index)).replace('cetzAction=properties;', 'cetzAction=properties;cetzValue=' + value + ';');
+    save(gui.text.replace('</root>', marker + '</root>'));
+  }
+  edit(0, {'$1':'(1.012345678, 2, -3)'});
+  await until(() => source.text.includes('(1.012345678, 2, -3)') && gui.text.includes(encodeURIComponent('(1.012345678, 2, -3)')));
+  const moved = source.text;
+  edit(1, {x:'45deg'});
+  await until(() => source.text.includes('x: 45deg') && gui.text.includes('x%3A%2045deg'));
+  save(gui.text.replace('</root>', '<mxCell id="3d-undo" style="cetzAction=undo;cetzActionToken=3d-undo;" vertex="1" parent="1"><mxGeometry x="-1000" y="-1000" width="1" height="1" as="geometry"/></mxCell></root>'));
+  await until(() => source.text === moved && gui.text.includes('x%3A%2025deg'));
+  save(gui.text.replace('</root>', '<mxCell id="3d-redo" style="cetzAction=redo;cetzActionToken=3d-redo;" vertex="1" parent="1"><mxGeometry x="-1000" y="-1000" width="1" height="1" as="geometry"/></mxCell></root>'));
+  await until(() => source.text.includes('x: 45deg') && gui.text.includes('x%3A%2045deg'));
+});
+
+test('live 3D camera updates undo as one gesture and keep the last accepted projection on redo',async t=>{
+  const initial='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,y:30deg,{line((0,0,0),(1,2,3))})\n})';
+  const {source,gui,action,save,until}=await extensionFixture(t,initial);
+  for(const x of ['25deg','50deg']){
+    const cell=[...readAllCells(gui.text).values()].find(item=>/cetzKind=ortho;/.test(item.cell.style||''));
+    const base=JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(cell.cell.style)[1])).base;
+    const value=encodeURIComponent(JSON.stringify({base,values:{x},historyGroup:'orbit-test'})).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));
+    const marker=action('properties','1').replace('cetzAction=properties;','cetzAction=properties;cetzValue='+value+';');
+    save(gui.text.replace('</root>',marker+'</root>'));
+    await until(()=>source.text.includes('x:'+x) && gui.text.includes('x%3A'+x));
+  }
+  const final=source.text;
+  function history(name){save(gui.text.replace('</root>',`<mxCell id="camera-${name}" style="cetzAction=${name};cetzActionToken=camera-${name};" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell></root>`));}
+  history('undo'); await until(()=>source.text===initial && gui.text.includes('x%3A20deg'));
+  history('redo'); await until(()=>source.text===final && gui.text.includes('x%3A50deg'));
+});
+
+test('3D plane placement and deletion synchronize through the source bridge, including an empty view',async t=>{
+  const initial='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({line((0,0,0),(1,2,3))})\n})';
+  const {source,gui,save,action,until,removeShapes}=await extensionFixture(t,initial);
+  save(removeShapes(gui.text,[0]));
+  await until(()=>!source.text.includes('line(') && gui.text.includes('cetzWorkspace='));
+  const payload={view:0,plane:'xz',offset:2,points:[[0,0],[2,1]]};
+  save(gui.text.replace('</root>',`<mxCell id="plane-shape" style="cetzTemplate=rect;cetzPlacement3D=${encodeURIComponent(JSON.stringify(payload))};" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell></root>`));
+  await until(()=>source.text.includes('on-xz(y: 2') && gui.text.includes('cetzKind=rect;'));
+  assert.match(source.text,/rect\(\(0, 0\), \(2, 1\)\)/);
+});
+
+test('raw XYZ geometry enables a 3D view through the GUI command without requiring a selection',async t=>{
+  const initial='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\nline((0,0,0),(1,2,3))\n})';
+  const {source,gui,save,action,until}=await extensionFixture(t,initial);
+  save(gui.text.replace('</root>',action('create-view')+'</root>'));
+  await until(()=>source.text.includes('cetz.draw.ortho({') && gui.text.includes('cetzKind=ortho;'));
+  assert.ok(source.text.includes('line((0,0,0),(1,2,3))'));
+});
+
+test('2D and 3D tabs edit the same arbitrary plane without changing its pose or other planes',async t=>{
+  const {planeCode}=require('../src/plane-editor');
+  const body=planeCode('', 'gui-plane-1',{kind:'xy',position:[2,3,4],angles:[25,15,-30]},'\nimport cetz.draw: *\nrect((0,0),(2,1))\n');
+  const initial='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({'+body+'\non-xz({circle((9,9),radius:1)})})\n})';
+  const {source,gui,action,save,until}=await extensionFixture(t,initial);
+  function mode(mode,key){
+    const value=encodeURIComponent(JSON.stringify({mode,planeKey:key})).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));
+    save(gui.text.replace('</root>',action('workspace-mode').replace('cetzAction=workspace-mode;','cetzAction=workspace-mode;cetzValue='+value+';')+'</root>'));
+  }
+  mode('2d','gui-plane-1');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  assert.equal(source.text,initial,'changing tabs is source-neutral');
+  const cell=[...readAllCells(gui.text).values()].find(item=>/cetzKind=rect;/.test(item.cell.style||''));
+  save(gui.text.replace('style="'+cell.cell.style+'"','style="'+cell.cell.style+'cetzMoveX=1;cetzMoveY=2;cetzMoveGrid=0;cetzSnapStep=0.25;"'));
+  await until(()=>/rect\(\(1, 2\),\s*\(3, 3\)\)/.test(source.text)&&gui.text.includes('cetzMode=plane-2d;')&&!gui.text.includes('cetzMoveX='));
+  const marker='<mxCell id="plane-circle" style="cetzTemplate=circle;cetzPoints=%5B%5B4%2C4%5D%2C%5B5%2C4%5D%5D;" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell>';
+  save(gui.text.replace('</root>',marker+'</root>'));
+  await until(()=>source.text.includes('circle((4, 4), radius: 1)')&&gui.text.includes('cetzMode=plane-2d;'));
+  mode('3d');await until(()=>gui.text.includes('cetzMode=3d;'));
+  assert.ok(source.text.includes('translate(x: 2, y: 3, z: 4)'));assert.ok(source.text.includes('rotate(x: 25deg, y: 15deg, z: -30deg)'));
+  assert.ok(source.text.includes('circle((9,9),radius:1)'));
+  const after=source.text;mode('2d','gui-plane-1');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  assert.equal(source.text,after);assert.equal([...readAllCells(gui.text).values()].filter(item=>/cetzKind=rect;|cetzKind=circle;/.test(item.cell.style||'')).length,2);
+});
+
+test('a standard 2D drawing converts to a 3D plane and returns to normal 2D editing',async t=>{
+  const initial='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\n// preserve\ncircle((1,2),radius:1)\n})';
+  const {source,gui,action,save,until}=await extensionFixture(t,initial);
+  function mode(mode,key){const value=encodeURIComponent(JSON.stringify({mode,planeKey:key})).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));save(gui.text.replace('</root>',action('workspace-mode').replace('cetzAction=workspace-mode;','cetzAction=workspace-mode;cetzValue='+value+';')+'</root>'));}
+  mode('3d');await until(()=>gui.text.includes('cetzMode=3d;')&&source.text.includes('gui-plane-1'));
+  assert.ok(source.text.includes('// preserve\ncircle((1,2),radius:1)'));
+  mode('2d','gui-plane-1');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  const cell=[...readAllCells(gui.text).values()].find(item=>/cetzKind=circle;/.test(item.cell.style||''));
+  const model=JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(cell.cell.style)[1]));
+  const value=encodeURIComponent(JSON.stringify({base:model.base,values:{radius:'2'}})).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));
+  save(gui.text.replace('</root>',action('properties','0').replace('cetzAction=properties;','cetzAction=properties;cetzValue='+value+';')+'</root>'));
+  await until(()=>source.text.includes('radius:2')&&gui.text.includes('cetzMode=plane-2d;'));
+});
+
+test('3D plane settings and camera position actions remain source-validated and keep selected plane identity',async t=>{
+  const initial='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({line((0,0,0),(2,1,1))})\n})';
+  const {source,gui,action,save,until}=await extensionFixture(t,initial);
+  function workspace(){return JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));}
+  function send(name,payload){const value=encodeURIComponent(JSON.stringify(payload)).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));save(gui.text.replace('</root>',action(name).replace('cetzAction='+name+';','cetzAction='+name+';cetzValue='+value+';')+'</root>'));}
+  send('plane-create',{view:workspace().views[0].index,kind:'xz',position:[1,2,3],angles:[10,20,30]});
+  await until(()=>source.text.includes('gui-plane-1')&&workspace().activePlaneKey==='gui-plane-1');
+  let plane=workspace().planes[0];send('plane-settings',{key:plane.key,base:plane.base,kind:'zy',position:[3,2,1],angles:[30,20,10]});
+  await until(()=>source.text.includes('on-zy')&&workspace().planes[0].kind==='zy');
+  const view=workspace().views[0];send('camera-position',{view:view.index,base:view.base,position:[4,5,6]});
+  await until(()=>source.text.includes('camera-position: [4,5,6]')&&workspace().views[0].position[0]===4);
+  assert.equal(workspace().activePlaneKey,'gui-plane-1');
+});

@@ -5,8 +5,9 @@ const { insertionFor } = require('./templates');
 const { rewriteLiteralCall, rewriteReferencedCall, locateEditableCalls } = require('./advanced');
 const { propertyPatches } = require('./properties');
 const { ACTIONS: PATH_ACTIONS, pathOperationPatches } = require('./path-operations');
+const planePathPatches=(source,rendered,action)=>require('./plane-boolean').localBooleanPatches(source,rendered,action,pathOperationPatches);
 
-const ACTIONS = new Set([...PATH_ACTIONS, 'properties', 'copy', 'paste', 'duplicate', 'forward', 'backward', 'focus', 'select', 'export',
+const ACTIONS = new Set([...PATH_ACTIONS, 'workspace-mode', 'plane-create', 'plane-settings', 'camera-position', 'create-view', 'properties', 'copy', 'paste', 'duplicate', 'forward', 'backward', 'focus', 'select', 'export',
   'connect-straight', 'connect-elbow', 'reconnect', 'group', 'ungroup',
   'share-point', 'auto-share', 'detach-point', 'rename-anchor',
   'rotate', 'scale', 'move-before', 'move-after', 'front', 'back']);
@@ -79,7 +80,7 @@ function sourceAction(cells, originalCells, handledIds = new Set()) {
     const key = token || id;
     if (handledIds.has(key)) continue;
     const targets = /(?:^|;)cetzTargets=([\d,]+)(?:;|$)/.exec(style)?.[1];
-    if (!targets && action !== 'export' && action !== 'paste') throw new Error('Select a CeTZ shape first.');
+    if (!targets && action !== 'export' && action !== 'paste' && action !== 'create-view' && action !== 'workspace-mode' && action !== 'plane-create' && action !== 'plane-settings' && action !== 'camera-position') throw new Error('Select a CeTZ shape first.');
     const indices = targets ? [...new Set(targets.split(',').map(Number))] : [];
     if (indices.some(index => !Number.isSafeInteger(index) || index < 0))
       throw new Error('Invalid CeTZ shape selection.');
@@ -316,6 +317,10 @@ function groupPatches(source, rendered, indices) {
       throw new Error('A selected shape depends on a definition between the selected shapes.');
   }
   const names = new Set(topLevelCalls(rendered).map(declaredName).filter(Boolean));
+  if(rendered.planeContext){
+    const canvas=locateCanvases(source).find(canvas=>canvas.start===rendered.canvas.start);
+    for(const call of require('./three-dimensional').locate3DCalls(source,canvas)){const existing=declaredName(call);if(existing)names.add(existing);}
+  }
   let suffix = 1, name;
   do { name = `group-${suffix++}`; } while (names.has(name));
   const childNames = calls.map(literalName).filter(Boolean);
@@ -527,7 +532,7 @@ function transformPatches(source, rendered, action) {
 }
 
 function actionWithPending(source, rendered, action, pending) {
-  const originalPatches = PATH_ACTIONS.has(action.action) ? pathOperationPatches(source, rendered, action) : propertyPatches(rendered, action);
+  const originalPatches = PATH_ACTIONS.has(action.action) ? planePathPatches(source, rendered, action) : propertyPatches(rendered, action);
   if (!pending.length) return originalPatches;
   const originals = action.indices.map(index => rendered.calls[index]);
   if (originals.some(original => pending.some(patch => patch.start <= original.start && patch.end >= original.end && !patch.text)))
@@ -538,11 +543,18 @@ function actionWithPending(source, rendered, action, pending) {
     .reduce((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), text);
   const intermediate = apply(source, pending);
   const canvas = locateCanvases(intermediate).find(canvas => canvas.start === rendered.canvas.start);
-  const calls = locateEditableCalls(intermediate, canvas);
+  let scopedCanvas=canvas;
+  if(rendered.planeContext){
+    const key=require('./plane-editor').rebasePlaneKey(rendered.planeContext.key,source,intermediate);
+    const plane=require('./plane-editor').resolvePlane(intermediate,canvas,key);
+    if(!plane)throw new Error('The drawing plane changed. Select it again.');
+    scopedCanvas={...canvas,bodyStart:plane.bodyStart,bodyEnd:plane.bodyEnd};
+  }
+  const calls = rendered.mode === '3d' ? require('./three-dimensional').locate3DCalls(intermediate, canvas) : locateEditableCalls(intermediate, scopedCanvas);
   const indices = originals.map((original, i) => calls.findIndex(call => call.start === shifted[i] && call.name === original.name));
   if (indices.some(index => index < 0)) throw new Error('A selected shape changed. Select it again.');
   let rebased;
-  if (PATH_ACTIONS.has(action.action)) rebased = pathOperationPatches(intermediate, { calls, canvas }, { ...action, indices });
+  if (PATH_ACTIONS.has(action.action)) rebased = planePathPatches(intermediate, { calls, canvas:scopedCanvas,planeContext:rendered.planeContext }, { ...action, indices });
   else {
     const draft = JSON.parse(decodeURIComponent(action.value)); draft.base = calls[indices[0]].call;
     rebased = propertyPatches({ calls }, { ...action, indices, value: encodeURIComponent(JSON.stringify(draft)) });
@@ -557,6 +569,28 @@ function actionWithPending(source, rendered, action, pending) {
 }
 
 function sourceActionPatches(source, rendered, action, pending = []) {
+  if(rendered.planeContext&&(['group','ungroup','rename-anchor'].includes(action.action)||action.action.startsWith('boolean-'))){
+    const selected=action.indices.map(index=>rendered.calls[index]).filter(Boolean);
+    const names=(action.action.startsWith('boolean-')?selected.slice(1):selected).map(declaredName).filter(Boolean);
+    if(names.length){
+      let referenced=false;const outside=source.slice(0,rendered.canvas.bodyStart)+source.slice(rendered.canvas.bodyEnd);
+      quotedReferences(outside,names,(_name,value)=>{referenced=true;return value;});
+      if(referenced)throw new Error('A name is referenced outside this drawing plane. Update that reference in Typst before changing its structure.');
+    }
+  }
+  if(rendered.mode==='3d' && ['plane-create','plane-settings','camera-position'].includes(action.action)){
+    const payload=JSON.parse(decodeURIComponent(action.value||''));
+    const editor=require('./plane-editor');
+    return action.action==='plane-create'?editor.createPlanePatches(source,rendered,payload):action.action==='camera-position'?editor.cameraPositionPatches(source,rendered,payload):editor.planeSettingsPatches(source,rendered,payload);
+  }
+  if (rendered.mode === '3d' && action.action === 'create-view') {
+    if (rendered.workspace?.views.length) throw new Error('This canvas already has a 3D view.');
+    const canvas = rendered.canvas;
+    return [{start:canvas.bodyStart,end:canvas.bodyEnd,
+      text:'\ncetz.draw.ortho({' + source.slice(canvas.bodyStart,canvas.bodyEnd) + '\n})\n'}];
+  }
+  if (rendered.mode === '3d' && !['properties', 'focus', 'select', 'export'].includes(action.action))
+    throw new Error(require('./three-dimensional').MESSAGE);
   if (!ACTIONS.has(action.action) || !action.indices.length && action.action !== 'export') throw new Error('Unknown CeTZ action.');
   if (action.action === 'focus' || action.action === 'select' || action.action === 'export') return [];
   if (PATH_ACTIONS.has(action.action) || action.action === 'properties')

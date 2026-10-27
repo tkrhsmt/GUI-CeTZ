@@ -4,7 +4,12 @@ const { skipTrivia, closing, splitArgs } = require('./scanner');
 
 // CeTZ shapes and style parameters. Values stay Typst expressions: a
 // coordinate reference, a ratio or a dictionary must survive an inspector edit.
+const CONTAINERS = new Set(['ortho', 'perspective', 'on-xy', 'on-xz', 'on-zy', 'on-yz', 'scope', 'group']);
 const SCHEMAS = {
+  ortho: { x: '35.264deg', y: '45deg', z: '0deg', sorted: 'true', 'cull-face': 'none', 'reset-transform': 'false', flatten: 'false' },
+  perspective: { x: '35.264deg', y: '45deg', z: '0deg', distance: 'auto', sorted: 'true', 'cull-face': 'none', 'reset-transform': 'false' },
+  'on-xy': { z: '0' }, 'on-xz': { y: '0' }, 'on-zy': { x: '0' }, 'on-yz': { x: '0' },
+  scope: {}, group: { name: 'none' },
   'circle-through': { anchor: 'none' },
   'arc-through': { mode: '"OPEN"', 'update-position': 'true', mark: 'none' },
   'bezier-through': { mark: 'none', shorten: '"LINEAR"' },
@@ -26,7 +31,7 @@ const SCHEMAS = {
   'compound-path': { 'fill-rule': '"non-zero"' },
   anchor: {}
 };
-const POINT = /^\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*\)$/;
+const POINT = /^\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)))?\s*,?\s*\)$/;
 function valueEnd(text, start, end) {
   let last = start;
   for (let i = start; i < end; i++) {
@@ -46,8 +51,9 @@ function valueEnd(text, start, end) {
   return last;
 }
 function argumentsOf(text) {
-  const name = /^[\w-]+/.exec(text)?.[0];
-  const open = skipTrivia(text, name?.length || 0), end = closing(text, open, '(', ')');
+  const qualified = /^(?:cetz\.draw\.)?([\w-]+)/.exec(text);
+  const name = qualified?.[1];
+  const open = skipTrivia(text, qualified?.[0].length || 0), end = closing(text, open, '(', ')');
   if (!name || end < 0) throw new Error('Cannot inspect this CeTZ call.');
   let positional = 0;
   const args = splitArgs(text, open + 1, end).map(range => {
@@ -86,16 +92,16 @@ function propertyModel(call) {
   if (!SCHEMAS[call.name]) return null;
   const parsed = argumentsOf(call.call), args = parsed.args.filter(arg => !arg.empty);
   const count = args.filter(arg => !arg.named).length;
-  const fields = args.map(arg => {
+  const fields = args.filter(arg => !CONTAINERS.has(call.name) || (arg.named && arg.key !== 'body')).map(arg => {
     const match = !arg.named && POINT.exec(arg.value);
     const referencedObject = call.name === 'rect-around' && !arg.named && !/^\s*\(/.test(arg.value);
     const text = call.name === 'content' && arg.key === '$' + (count - 1) ? plainContentText(arg.value) : null;
     return { key: arg.key, label: arg.named ? arg.key : referencedObject ? 'Object ' + (+arg.key.slice(1) + 1) : positionalLabel(call.name, +arg.key.slice(1), count),
       value: arg.value, section: arg.named ? (['fill', 'stroke', 'fill-rule', 'mark'].includes(arg.key) ? 'Appearance' : 'Shape') : 'Geometry',
       ...(text !== null ? { text } : {}),
-      ...(match ? { point: [Number(match[1]), Number(match[2])] } : {}) };
+      ...(match ? { point: match.slice(1).filter(value => value !== undefined).map(Number) } : {}) };
   });
-  const defaults = { ...SCHEMAS[call.name], ...(call.name === 'anchor' ? {} : { name: 'none', stroke: '1pt + black', fill: 'none' }) };
+  const defaults = { ...SCHEMAS[call.name], ...(call.name === 'anchor' || CONTAINERS.has(call.name) ? {} : { name: 'none', stroke: '1pt + black', fill: 'none' }) };
   for (const field of fields) if (Object.hasOwn(defaults, field.key)) field.fallback = defaults[field.key];
   for (const [key, fallback] of Object.entries(defaults)) if (!fields.some(field => field.key === key))
     fields.push({ key, label: key, value: '', fallback,
@@ -104,7 +110,7 @@ function propertyModel(call) {
     fields.find(field => field.key === 'op').choices = ['"union"', '"intersection"', '"difference"', '"xor"'];
     for (const field of fields) if (field.key[0] === '$') field.multiline = true;
   }
-  return { kind: call.name, base: call.call, fields };
+  return { kind: call.name, base: call.call, fields, ...(call.mode === '3d' ? { mode: '3d' } : {}) };
 }
 function expression(value) {
   if (typeof value !== 'string' || value.length > 100000 || !value.trim()) throw new Error('Enter a Typst expression.');
@@ -137,6 +143,9 @@ function propertyPatches(rendered, action) {
     throw new Error('The shape changed. Select it again before editing properties.');
   const parsed = argumentsOf(call.call), remaining = new Map(Object.entries(edit.values));
   if (remaining.size > 200) throw new Error('Too many properties.');
+  if (call.mode === '3d' && CONTAINERS.has(call.name) &&
+      [...remaining.keys()].some(key => key[0] === '$' || key === 'body'))
+    throw new Error('Edit nested shapes individually or edit the body in Typst.');
   const parts = [];
   for (const arg of parsed.args) {
     if (arg.empty) continue;

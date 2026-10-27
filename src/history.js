@@ -12,9 +12,11 @@ class EditHistory {
     this.redoStack.length = 0;
   }
 
-  record(before, after) {
+  record(before, after, group) {
     if (before === after) return;
-    this.undoStack.push({ before, after });
+    const last = this.undoStack.at(-1);
+    if (group && last?.group === group && last.after === before) last.after = after;
+    else this.undoStack.push({ before, after, ...(group ? {group} : {}) });
     if (this.undoStack.length > this.limit) this.undoStack.shift();
     this.redoStack.length = 0;
   }

@@ -10,6 +10,7 @@ function sceneRevision(xml) {
 function bindScene(session, source, xml, editable) {
   const layers = [...readAllCells(xml).values()].filter(item => /^cetz-render-\d+$/.test(item.cell.id));
   const signature = JSON.stringify({
+    mode:editable?.mode||'2d',plane:editable?.planeContext?.key||null,
     calls: editable?.calls.map(call => [call.name, call.points?.length || 0, !!call.geometry]) ?? null,
     parents: layers.map(item => item.cell.parent)
   });

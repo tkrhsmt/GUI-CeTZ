@@ -20,6 +20,26 @@ Properties save automatically: text and numeric input is applied after a 400 ms 
 
 The **Outline** uses the same visual style as Properties, with shape icons, object and group counts, and separate name and geometry lines. Expand or collapse groups with the chevron; selecting a hidden descendant in the canvas reveals it automatically. Selecting a control point highlights its owner in the Outline. Hover reveals reorder controls, while drag handles and modifier-click multiselection remain available. Drag the divider below Outline up or down to resize its panel; the height is remembered locally. Focus the divider and use the arrow keys for keyboard resizing, or double-click it to restore automatic sizing. Unrelated updates preserve the list and its scroll position. Light and dark themes share the same selection and focus styling.
 
+## Linked 2D and 3D drawing
+
+The top of Draw.io has **2D描画** and **3D描画** tabs. Both edit the same Typst source. Start with [examples/plane-workspace.typ](examples/plane-workspace.typ) to try multiple positioned and tilted drawing planes.
+
+In **3D描画**, the right toolbar contains XY, XZ, ZY and arbitrary-plane icons. Click one to add a plane. The left **3D workspace** panel selects the view and plane, sets the camera's XYZ position and X/Y/Z viewing angles, and sets the plane's XYZ position and rotation. A thin translucent plane and grid show the selected surface. Plane positions and angles are relative to the parent coordinate system. **Alt + drag**, or **Orbit** followed by a drag, rotates the view; **Pan** changes the screen position. Isometric/front/top/side presets and zoom/fit controls remain available.
+
+Choose a plane and click **この面を2D描画**. The **2D描画** tab opens that plane from the front, with its local X/Y axes, grid, normal shape palette and 2D properties. All 15 drawing tools, movement, resizing, point handles, grouping and supported path operations use the existing 2D editor. Edits go back into the selected plane's body. Return to **3D描画** to see them at the configured position and angle. Camera and plane settings remain in the 3D panel; the 2D panel provides local coordinate information and grid/snapping settings. Unfinished properties are retained and must be completed before changing tabs.
+
+Opening **3D描画** from an ordinary 2D canvas places its existing body on a named XY plane inside `ortho`, preserving its local coordinates. Existing `on-xy`, `on-xz`, `on-zy` and `on-yz` bodies can also be opened directly in 2D. Views and planes can be switched independently. A plane seen edge-on in 3D is still editable from the front in the 2D tab.
+
+The XYZ axes automatically extend and contract with the projected object bounds, with the same screen margin used by the 2D axes. The 3D background grid scales its range with the drawing. The active plane's blue grid and translucent surface follow its position, angle and content. Red X / green Y / blue Z axes and editor grids can be hidden independently. These guides are excluded from Typst exports.
+
+Camera updates run while Typst renders and retain the final drag position. One orbit gesture is one GUI Undo step. Camera position, view angles, plane transforms and geometry are saved in Typst and affect export. Changing between existing views/tabs is source-neutral. Plane creation and initial 2D-to-3D conversion are source edits that can be undone.
+
+CeTZ 0.5.2 calls the third plane `on-zy`; 0.4.2 calls it `on-yz`. Generated source uses the imported version's spelling. Planes use `scope`, translation, rotation and the selected plane function without adding a name namespace to their elements. Boolean operations made in a plane get a local-frame adapter because CeTZ Boolean expects planar inputs; Boolean still requires a CeTZ version that provides it.
+
+Spatial coordinates or nested projections inside a plane remain 3D-only. A local preview must resolve its lexical definitions and anchors; cross-plane references that cannot be represented safely in the local view require source editing. Structural edits that would retarget names outside the plane are rejected. The complete 3D document is compiled before any plane edit is applied.
+
+See [the 3D specification](docs/3d-support.md) (Japanese) for source preservation rules and acceptance criteria.
+
 ## Shape catalog
 
 The 19 functions listed on the [official Shapes pages](https://cetz-package.github.io/docs/api/draw-functions/shapes/) are split into 15 drawing tools and four operations on existing objects. The drawing tools are available in the right toolbar, CeTZ menu, and **CeTZ: Insert Shape** command. New tools include:
@@ -134,4 +154,8 @@ Source modules:
 - `src/extension.js`: commands, documents, source edits, and bidirectional synchronization.
 - `src/cetz-drawio-plugin.js`: CeTZ-only Draw.io palette and style controls.
 - `src/templates.js`: validated Typst templates for the advanced shape picker.
+- `src/three-dimensional.js`: exact projected scenes, hierarchy, background grid, axes and protected 3D editing.
+- `src/three-workspace.js`: CeTZ camera/plane calibration and adaptive axis ranges.
+- `src/plane-editor.js`: plane transforms, camera position, source mapping and local 2D views.
+- `src/plane-boolean.js`: local-frame Boolean operations on tilted planes.
 - `src/advanced.js`: calibrated SVG preview and source-backed per-shape move/resize handles.
