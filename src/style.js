@@ -1,6 +1,10 @@
 'use strict';
 
-const COLORS = { red: '#ff0000', blue: '#0000ff', green: '#00aa00', black: '#000000', white: '#ffffff', yellow: '#ffff00', gray: '#808080', orange: '#ffa500', purple: '#800080', none: 'none' };
+// Typst's built-in palette (verified with the installed Typst compiler).
+const COLORS = { black: '#000000', gray: '#aaaaaa', silver: '#dddddd', white: '#ffffff',
+  navy: '#001f3f', blue: '#0074d9', aqua: '#7fdbff', teal: '#39cccc', eastern: '#239dad',
+  purple: '#b10dc9', fuchsia: '#f012be', maroon: '#85144b', red: '#ff4136', orange: '#ff851b',
+  yellow: '#ffdc00', olive: '#3d9970', green: '#2ecc40', lime: '#01ff70', none: 'none' };
 const DASHES = { solid: null, dotted: '1 2', 'densely-dotted': '1 1', 'loosely-dotted': '1 4', dashed: '3 3', 'densely-dashed': '3 2', 'loosely-dashed': '3 6', 'dash-dotted': '3 2 1 2', 'densely-dash-dotted': '3 1 1 1', 'loosely-dash-dotted': '3 4 1 4' };
 const PX_PER_PT = 80 * 2.54 / 72;
 
@@ -25,6 +29,8 @@ function stroke(raw) {
     if (paint && !result.color || dash && !(result.dash in DASHES)) return null;
     return result;
   }
+  const reverse = /^(.+?)\s*\+\s*(\d+(?:\.\d+)?)pt$/.exec(value);
+  if (reverse && color(reverse[1])) return { ...result, color: color(reverse[1]), width: Number(reverse[2]) };
   const simple = /^(?:(\d+(?:\.\d+)?)pt\s*\+\s*)?(.+)$/.exec(value);
   if (simple) {
     if (simple[1]) result.width = Number(simple[1]);
@@ -36,6 +42,7 @@ function stroke(raw) {
 }
 function typstColor(value) {
   if (!value || value === 'none') return 'none';
+  if (Object.hasOwn(COLORS, value)) return value;
   if (!/^#[0-9a-fA-F]{6}$/.test(value)) throw new Error('Only solid RGB colors can be synchronized to CeTZ.');
   return `rgb("${value.toLowerCase()}")`;
 }
@@ -57,4 +64,4 @@ function fromDrawio(style) {
   if (!name) throw new Error('This Draw.io dash pattern has no matching Typst preset.');
   return name;
 }
-module.exports = { color, stroke, typstColor, typstStroke, dashStyle, fromDrawio, PX_PER_PT };
+module.exports = { COLORS, color, stroke, typstColor, typstStroke, dashStyle, fromDrawio, PX_PER_PT };

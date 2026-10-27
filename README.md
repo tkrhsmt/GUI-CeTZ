@@ -8,6 +8,16 @@ GUI CeTZ enables both GUI-based operations—which are essential for creating di
 
 https://github.com/user-attachments/assets/2c03376b-6c1c-4ebf-ae6e-29fe69fe6987
 
+## Properties inspector
+
+Select a shape or its control point to open **Geometry**, **Shape**, **Appearance**, and **Advanced** sections in the left sidebar. Coordinates have separate X/Y inputs with unrestricted numeric precision; **ƒx** switches to a coordinate expression. Shape-specific fields include line `close`, circle radius, arc angles and mode, rectangle corner radius, star radii, curve tension, and content. Existing arguments and nested path bodies remain editable, and **Advanced → Add property** accepts additional CeTZ named arguments.
+
+Fill and stroke offer Typst's named palette (`red`, `green`, `navy`, etc.) and an RGB picker. Stroke accepts both `1pt + black` and `black + 1pt`, or a dictionary such as `(paint: red, thickness: 2pt, dash: "dashed", cap: "round")`. Dedicated controls edit thickness, dash, cap, join, and line endpoint marks while preserving the other dictionary fields. Custom expressions remain available in the expression input.
+
+Properties save automatically: text and numeric input is applied after a 400 ms pause or when the field is committed; menus apply immediately. Japanese IME input waits until composition finishes. The focused field and newer edits stay intact while Typst renders, including edits queued before selecting another shape. Clearing an optional field removes its explicit argument so CeTZ can inherit its style. Typst validates the resulting drawing before the source changes. Each automatic update is one undo step, and changing appearance immediately after dragging preserves the movement. Incomplete or invalid values remain in the inspector without an error banner, while the last valid source and drawing stay visible. Rendering updates automatically once Typst accepts the input, including corrections entered during validation.
+
+The **Outline** uses the same visual style as Properties, with shape icons, object and group counts, and separate name and geometry lines. Expand or collapse groups with the chevron; selecting a hidden descendant in the canvas reveals it automatically. Selecting a control point highlights its owner in the Outline. Hover reveals reorder controls, while drag handles and modifier-click multiselection remain available. Unrelated updates preserve the list and its scroll position. Light and dark themes share the same selection and focus styling.
+
 ## Install from a VSIX
 
 1. Install **Draw.io Integration** (`hediet.vscode-drawio`) in VS Code and make the `typst` command available on your PATH.
@@ -41,7 +51,7 @@ The CeTZ shape sidebar stays open at narrow window widths. If an older installat
 
 To try advanced editing, open a `.typ` file containing CeTZ curves or other advanced shapes and use the same button or command. Typst renders its grid, curves, star, group, and boolean shape together in Draw.io. The grid, arc, bezier, and star have individual move and resize handles. Arcs show a blue start-position handle and orange handles at the center and arc end. Dragging the center keeps both endpoints fixed by constraining it to the perpendicular bisector; elliptical arcs use the corresponding distance rule at their existing aspect ratio. Dragging the end updates the stop angle and radius arguments. Bezier, Hobby, Catmull, and line calls show draggable point handles; Bezier endpoints are blue and control points are orange, with dashed guides between them. Moving one handle changes only its corresponding literal arguments in Typst. Selecting a shape or its point handle also shows the CeTZ color, stroke width, and line pattern controls in the left sidebar. Selecting a line also shows start and end mark menus with all 16 built-in CeTZ 0.5.2 symbols; changing one end preserves the other end and any additional mark options. The preview refreshes automatically.
 
-To add an advanced shape, choose it from the **CeTZ** menu in Draw.io, or put the cursor inside a `cetz.canvas` in the `.typ` editor and run **CeTZ: Insert Shape**. Both insert a working source template for `arc`, `mark`, `n-star`, `grid`, `rect-around`, `bezier`, `hobby`, `catmull`, `merge-path`, or `compound-path` (spelled `compound-path` in CeTZ). Supported top-level literal calls have Draw.io selection boxes for moving, resizing, and deleting. The extension writes supported moves and resizes into literal CeTZ coordinate and size arguments and removes a deleted shape's call from Typst. Rotation can add an editable `scope({ rotate(...) ... })` wrapper. Simple literal fill and stroke settings can be changed in the properties panel; expressions remain editable in Typst.
+To add an advanced shape, choose it from the **CeTZ** menu in Draw.io, or put the cursor inside a `cetz.canvas` in the `.typ` editor and run **CeTZ: Insert Shape**. Both insert a working source template for `arc`, `mark`, `n-star`, `grid`, `rect-around`, `bezier`, `hobby`, `catmull`, `merge-path`, or `compound-path` (spelled `compound-path` in CeTZ). Supported top-level literal calls have Draw.io selection boxes for moving, resizing, and deleting. The extension writes supported moves and resizes into literal CeTZ coordinate and size arguments and removes a deleted shape's call from Typst. Rotation can add an editable `scope({ rotate(...) ... })` wrapper. The properties inspector supports coordinates, shape parameters, Typst expressions, fill and stroke settings, and additional named arguments.
 
 The Draw.io document is kept in memory and is not saved beside the Typst file. The `.typ` file remains authoritative; save it to keep your edits. VS Code can restore an open CeTZ Draw.io tab after a restart by rebuilding its virtual document from the `.typ` file. Use **CeTZ: Sync GUI From Typst** to refresh the GUI from the source. Older `.cetz-N.drawio` sidecars are no longer used and may be deleted.
 
@@ -100,7 +110,8 @@ Source modules:
 - `src/drawio.js`: maps basic shapes to and from Draw.io XML.
 - `src/preview.js`: compiles canvases with Typst and embeds an SVG preview.
 - `src/render-diagram.js`: selects editable handles or the locked SVG preview for every canvas.
-- `src/style.js`: maps literal colors and strokes to and from Draw.io styles.
+- `src/style.js`: maps Typst named colors and strokes to and from Draw.io styles.
+- `src/properties.js`: describes shape arguments and applies source-preserving inspector edits.
 - `src/extension.js`: commands, documents, source edits, and bidirectional synchronization.
 - `src/cetz-drawio-plugin.js`: CeTZ-only Draw.io palette and style controls.
 - `src/templates.js`: validated Typst templates for the advanced shape picker.

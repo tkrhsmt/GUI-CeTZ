@@ -1,10 +1,11 @@
 'use strict';
 
-const { skipTrivia, closing, splitArgs } = require('./scanner');
+const { skipTrivia, closing, splitArgs, locateCanvases } = require('./scanner');
 const { insertionFor } = require('./templates');
-const { rewriteLiteralCall, rewriteReferencedCall } = require('./advanced');
+const { rewriteLiteralCall, rewriteReferencedCall, locateEditableCalls } = require('./advanced');
+const { propertyPatches } = require('./properties');
 
-const ACTIONS = new Set(['copy', 'paste', 'duplicate', 'forward', 'backward', 'focus', 'select', 'export',
+const ACTIONS = new Set(['properties', 'copy', 'paste', 'duplicate', 'forward', 'backward', 'focus', 'select', 'export',
   'connect-straight', 'connect-elbow', 'reconnect', 'group', 'ungroup',
   'share-point', 'auto-share', 'detach-point', 'rename-anchor',
   'rotate', 'scale', 'move-before', 'move-after', 'front', 'back']);
@@ -524,9 +525,35 @@ function transformPatches(source, rendered, action) {
   return [{ start: call.start, end: call.end, text: replacement }];
 }
 
-function sourceActionPatches(source, rendered, action) {
+function propertiesWithPending(source, rendered, action, pending) {
+  const properties = propertyPatches(rendered, action);
+  if (!pending.length) return properties;
+  const original = rendered.calls[action.indices[0]];
+  if (pending.some(patch => patch.start <= original.start && patch.end >= original.end && !patch.text))
+    throw new Error('The selected shape was deleted.');
+  const shiftedStart = original.start + pending.filter(patch => patch.end <= original.start)
+    .reduce((shift, patch) => shift + patch.text.length - (patch.end - patch.start), 0);
+  const apply = (text, patches) => [...patches].sort((a, b) => b.start - a.start)
+    .reduce((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), text);
+  const intermediate = apply(source, pending);
+  // Rebase the draft over a drag that shared the same debounced Draw.io save.
+  const calls = locateEditableCalls(intermediate, locateCanvases(intermediate).find(canvas => canvas.start === rendered.canvas.start));
+  const index = calls.findIndex(call => call.start === shiftedStart && call.name === original.name);
+  if (index < 0) throw new Error('The selected shape changed. Select it again.');
+  const draft = JSON.parse(decodeURIComponent(action.value));
+  draft.base = calls[index].call;
+  const next = apply(intermediate, propertyPatches({ calls }, { ...action, indices: [index],
+    value: encodeURIComponent(JSON.stringify(draft)) }));
+  let start = 0, beforeEnd = source.length, afterEnd = next.length;
+  while (start < beforeEnd && start < afterEnd && source[start] === next[start]) start++;
+  while (beforeEnd > start && afterEnd > start && source[beforeEnd - 1] === next[afterEnd - 1]) { beforeEnd--; afterEnd--; }
+  return start === beforeEnd && start === afterEnd ? [] : [{ start, end: beforeEnd, text: next.slice(start, afterEnd) }];
+}
+
+function sourceActionPatches(source, rendered, action, pending = []) {
   if (!ACTIONS.has(action.action) || !action.indices.length && action.action !== 'export') throw new Error('Unknown CeTZ action.');
   if (action.action === 'focus' || action.action === 'select' || action.action === 'export') return [];
+  if (action.action === 'properties') return propertiesWithPending(source, rendered, action, pending);
   if (action.action === 'front' || action.action === 'back')
     return moveToLayerEnd(source, rendered, action.indices, action.action === 'front');
   if (action.action === 'move-before' || action.action === 'move-after')

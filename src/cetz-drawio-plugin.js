@@ -118,11 +118,14 @@ Draw.loadPlugin(function (ui) {
   var previewBasicPair = sidebar.palettes['cetz-preview-primitives'];
   var advancedPair = sidebar.palettes['cetz-advanced'];
   var controls = document.createElement('div');
-  controls.style.cssText = 'box-sizing:border-box;width:100%;min-width:0;padding:10px 8px 12px;display:none;font:12px sans-serif;color:inherit;';
+  controls.className = 'cetzPropertyPanel';
+  controls.style.cssText = 'box-sizing:border-box;width:100%;min-width:0;padding:10px 12px 12px;display:none;font:12px -apple-system,BlinkMacSystemFont,sans-serif;color:inherit;';
   sidebar.wrapper.insertBefore(controls, sidebar.wrapper.firstChild);
   var outline = document.createElement('div');
-  outline.style.cssText = 'box-sizing:border-box;width:100%;max-height:220px;overflow:auto;' +
-    'padding:8px;border-bottom:1px solid #888;display:none;font:12px sans-serif;';
+  outline.className = 'cetzOutline';
+  outline.setAttribute('aria-label', 'Document outline');
+  outline.style.cssText = 'box-sizing:border-box;width:100%;padding:10px 12px 0;' +
+    'border-bottom:1px solid var(--ol-line,#dce0e5);display:none;';
   sidebar.wrapper.insertBefore(outline, controls);
   // Keep the Outline and inspector in Draw.io's left sidebar; the right
   // format column holds only the compact icon palette.
@@ -135,7 +138,11 @@ Draw.loadPlugin(function (ui) {
     'overflow-x:hidden;scrollbar-width:none;padding:1px;';
   rail.appendChild(paletteStrip);
   var railStyle = document.createElement('style');
-  railStyle.textContent = '.cetzRightRail ::-webkit-scrollbar{width:0;height:0}';
+  railStyle.textContent = '.cetzRightRail ::-webkit-scrollbar{width:0;height:0}' +
+    '.cetzOutline{--ol-line:var(--vscode-panel-border,#dce0e5);--ol-hover:var(--vscode-list-hoverBackground,#f2f3f5);--ol-selected:var(--vscode-list-inactiveSelectionBackground,#eaf0fe);--ol-accent:var(--vscode-focusBorder,#4675e7);--ol-icon:var(--vscode-input-background,#f2f3f5);color:inherit;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}' +
+    '.geDarkMode .cetzOutline{--ol-line:#45474b;--ol-hover:#303236;--ol-selected:#293a57;--ol-icon:#303236}.cetzOutline header{padding:12px 4px 13px}.cetzOutline small{font-size:10px;opacity:.6;letter-spacing:1.2px}.cetzOutlineHeading{display:flex;align-items:center;gap:8px;margin:5px 0}.cetzOutline h2{font-size:17px;font-weight:600;letter-spacing:-.3px;margin:0;flex:1}.cetzOutlineCount{font-size:10px;border:1px solid var(--ol-line);border-radius:5px;padding:2px 6px;opacity:.7;font-variant-numeric:tabular-nums}.cetzOutlineHint{font-size:10px;opacity:.55;line-height:1.5}' +
+    '.cetzOutlineList{max-height:240px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:0 0 8px}.cetzOutlineRow{display:flex;box-sizing:border-box;width:100%;align-items:center;gap:2px;min-height:48px;border-radius:6px;margin:2px 0;color:inherit;position:relative}.cetzOutlineRow:hover{background:var(--ol-hover)}.cetzOutlineRow[data-selected=true]{background:var(--ol-selected)}.cetzOutlineRow[data-selected=true]:before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:2px;border-radius:2px;background:var(--ol-accent)}' +
+    '.cetzOutline button{font:inherit;color:inherit;border:0;background:transparent;cursor:pointer;border-radius:4px}.cetzOutline button:focus-visible{outline:2px solid var(--ol-accent);outline-offset:-2px}.cetzOutlineGrip{width:12px;flex:none;cursor:grab;text-align:center;user-select:none;opacity:0;font-size:11px}.cetzOutlineRow:hover .cetzOutlineGrip,.cetzOutlineRow:focus-within .cetzOutlineGrip{opacity:.45}.cetzOutlineSelect{display:flex;align-items:center;gap:8px;flex:1;min-width:0;text-align:left;padding:6px 3px}.cetzOutlineIcon{display:flex;width:26px;height:28px;align-items:center;justify-content:center;flex:none;border-radius:5px;background:var(--ol-icon);opacity:.85}.cetzOutlineRow[data-selected=true] .cetzOutlineIcon{color:var(--ol-accent)}.cetzOutlineText{display:block;flex:1;min-width:0}.cetzOutlineName{display:flex;align-items:center;gap:6px}.cetzOutlineNameText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:550;line-height:18px}.cetzOutlineMeta{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;opacity:.55;line-height:16px;font-variant-numeric:tabular-nums}.cetzOutlineBranch{flex:none;width:16px;height:24px;padding:0;font-size:10px!important;opacity:.6}.cetzOutlineBranch svg{display:block;margin:auto}.cetzOutlineMove{padding:3px!important;width:20px;height:24px;flex:none;opacity:0;pointer-events:none}.cetzOutlineRow:hover .cetzOutlineMove,.cetzOutlineRow:focus-within .cetzOutlineMove{opacity:.65;pointer-events:auto}.cetzOutlineMove:hover{background:var(--ol-icon)}.cetzOutlineEmpty{margin:0 4px 12px;padding:16px 12px;border:1px dashed var(--ol-line);border-radius:6px;line-height:1.6;font-size:11px;opacity:.65}';
   rail.appendChild(railStyle);
   function placePalette(pair) {
     if (!pair) return;
@@ -563,6 +570,422 @@ Draw.loadPlugin(function (ui) {
     });
     return Object.keys(found).map(function (id) { return found[id]; });
   }
+  // Source-aware automatic properties. Debounce typing and serialize writes so
+  // rendering cannot discard a newer edit or interrupt the focused field.
+  var inspector = document.createElement('div');
+  inspector.className = 'cetzInspector';
+  inspector.setAttribute('aria-label', 'Shape properties');
+  controls.insertBefore(inspector, controls.firstChild);
+  var inspectorSignature = '', inspectorFields = [], inspectorCurrent = null;
+  var inspectorStatus, inspectorStates = {}, inspectorFlight = null, inspectorUpdating = false, inspectorFileKey = null;
+  function inspectorScene() { return Object.keys(graph.getModel().cells || {}).filter(function (id) { return /^cetz-scene-/.test(id); }).join(','); }
+  var paletteNames = ['black', 'gray', 'silver', 'white', 'navy', 'blue', 'aqua', 'teal',
+    'eastern', 'purple', 'fuchsia', 'maroon', 'red', 'orange', 'yellow', 'olive', 'green', 'lime', 'none'];
+  var paletteHex = ['#000000','#aaaaaa','#dddddd','#ffffff','#001f3f','#0074d9','#7fdbff','#39cccc','#239dad','#b10dc9','#f012be','#85144b','#ff4136','#ff851b','#ffdc00','#3d9970','#2ecc40','#01ff70'];
+  var inspectorCss = document.createElement('style');
+  inspectorCss.textContent = '.cetzPropertyPanel>button{min-height:28px;border:1px solid var(--vscode-panel-border,#dce0e5);border-radius:5px;background:var(--vscode-input-background,transparent);color:inherit;padding:4px 8px;margin:4px 2px;font:inherit;cursor:pointer}.cetzPropertyPanel>div:not(.cetzInspector) input,.cetzPropertyPanel>div:not(.cetzInspector) select{border-color:var(--vscode-panel-border,#dce0e5)!important;border-radius:5px!important}.cetzInspector{--cetz-bg:var(--vscode-input-background,#f2f3f5);--cetz-line:var(--vscode-panel-border,#dce0e5);--cetz-focus:var(--vscode-focusBorder,#4675e7);font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:2px 0 12px}' +
+    '.cetzInspector header{padding:12px 4px 16px}.cetzInspector h2{font-size:17px;font-weight:600;margin:5px 0;letter-spacing:-.3px}.cetzInspector small{opacity:.6;font-size:10px;letter-spacing:1.2px;text-transform:uppercase}' +
+    '.cetzInspector details{border-top:1px solid var(--cetz-line);padding:12px 2px}.cetzInspector summary{font-size:11px;font-weight:650;letter-spacing:.5px;cursor:pointer;user-select:none;margin-bottom:12px}' +
+    '.cetzInspector .cetzProperty{display:block;margin:10px 0}.cetzInspector .cetzProperty>span{display:block;font-size:11px;opacity:.75;margin-bottom:6px}.cetzInspector .cetzPair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}' +
+    '.cetzInspector input,.cetzInspector select,.cetzInspector textarea{box-sizing:border-box;width:100%;min-width:0;height:30px;padding:5px 8px;border:1px solid var(--cetz-line);border-radius:5px;background:var(--cetz-bg);color:inherit;font:inherit;outline:none}' +
+    '.cetzInspector input:focus,.cetzInspector select:focus,.cetzInspector textarea:focus{border-color:var(--cetz-focus);box-shadow:0 0 0 1px var(--cetz-focus)}' +
+    '.cetzInspector textarea{height:88px;resize:vertical;font:11px ui-monospace,monospace;line-height:1.5}.geDarkMode .cetzInspector{--cetz-bg:#303236;--cetz-line:#45474b}.cetzInspector .cetzAxis{position:relative}.cetzInspector .cetzAxis>span{position:absolute;left:9px;top:9px;font-size:10px;opacity:.55}.cetzInspector .cetzAxis>input{padding-left:26px}.cetzInspector input::placeholder{opacity:.5}.cetzInspector .cetzExpression{font-family:ui-monospace,monospace;font-size:11px}' +
+    '.cetzInspector button{height:30px;border:1px solid var(--cetz-line);border-radius:5px;padding:0 10px;background:var(--cetz-bg);color:inherit;cursor:pointer;font:inherit}.cetzInspector button:disabled{opacity:.45;cursor:default}' +
+    '.cetzInspector .cetzStatus{font-size:11px;opacity:.7;line-height:1.5;min-height:18px}.cetzInspector .cetzSwatchRow{display:flex;gap:6px;margin-top:6px;align-items:center}.cetzInspector .cetzSwatchRow input[type=color]{width:30px;padding:3px;flex-shrink:0}.cetzInspector .cetzSwatchRow select{flex:1}' +
+    '.cetzInspector .cetzHint{font-size:10px;line-height:1.5;opacity:.55;margin:8px 0}';
+  controls.appendChild(inspectorCss);
+  function encodedProperties(value) {
+    return encodeURIComponent(JSON.stringify(value)).replace(/[!'()*]/g, function (char) {
+      return '%' + char.charCodeAt(0).toString(16).toUpperCase();
+    });
+  }
+  function synchronizeInspectorDocument() {
+    var file = ui.getCurrentFile && ui.getCurrentFile();
+    var fileKey = file && (typeof file.getId === 'function' && file.getId() || file.getTitle());
+    if (fileKey === inspectorFileKey) return;
+    Object.keys(inspectorStates).forEach(function (id) { if (inspectorStates[id].timer) clearTimeout(inspectorStates[id].timer); });
+    inspectorStates = {}; inspectorFlight = null; inspectorCurrent = null; inspectorSignature = ''; inspectorFileKey = fileKey;
+    outlineSignature = ''; outlineSelection = ''; outlineCollapsed = {};
+  }
+  function inspectorData(cell) {
+    try { return JSON.parse(decodeURIComponent(graph.getCellStyle(cell).cetzProperties || 'null')); }
+    catch (error) { return null; }
+  }
+  function inspectorValue(data, key) {
+    var field = data.fields.filter(function (field) { return field.key === key; })[0];
+    return field ? field.value : '';
+  }
+  function inspectorState(cell, data) {
+    var state = inspectorStates[cell.id];
+    if (!state) state = inspectorStates[cell.id] = { id: cell.id, model: data, values: {}, valid: true, composing: false, ready: false, timer: null, error: false };
+    return state;
+  }
+  function updateInspectorStatus() {
+    if (!inspectorStatus || !inspectorCurrent) return;
+    inspectorStatus.textContent = !inspectorCurrent.valid ? 'Editing… Preview updates when coordinates are complete.' :
+      inspectorCurrent.error ? 'Editing… Preview updates when the value is valid.' :
+      inspectorFlight && inspectorFlight.id === inspectorCurrent.id ? 'Updating…' :
+      Object.keys(inspectorCurrent.values).length ? 'Waiting for input…' : 'All changes saved automatically.';
+  }
+  function flushInspectorDrafts() {
+    synchronizeInspectorDocument();
+    if (inspectorFlight || !isEditablePreview()) return;
+    var ids = Object.keys(inspectorStates);
+    for (var i = 0; i < ids.length; i++) {
+      var state = inspectorStates[ids[i]];
+      if (!state.ready || !state.valid || state.composing || state.error) continue;
+      var cell = graph.getModel().getCell(state.id), data = cell && inspectorData(cell);
+      if (!data || data.kind !== state.model.kind) { delete inspectorStates[state.id]; continue; }
+      var values = {};
+      Object.keys(state.values).forEach(function (key) {
+        if (state.values[key].trim() !== inspectorValue(data, key).trim()) values[key] = state.values[key];
+        else delete state.values[key];
+      });
+      state.model = data; state.ready = false;
+      if (!Object.keys(values).length) continue;
+      // Serialize writes until Draw.io receives the new source scene. A second
+      // edit made during rendering is rebased on that scene instead of dropped.
+      inspectorFlight = { id: state.id, base: data.base, values: values, scene: inspectorScene() };
+      sendSourceAction('properties', encodedProperties({ base: data.base, values: values }), [Number(state.id.slice(10))]);
+      break;
+    }
+    updateInspectorStatus();
+  }
+  function synchronizeInspectorDrafts() {
+    synchronizeInspectorDocument();
+    var scene = inspectorScene();
+    Object.keys(inspectorStates).forEach(function (id) {
+      var state = inspectorStates[id], cell = graph.getModel().getCell(id), data = cell && inspectorData(cell);
+      if (!data || data.kind !== state.model.kind) {
+        if (state.timer) clearTimeout(state.timer);
+        delete inspectorStates[id];
+        if (inspectorFlight && inspectorFlight.id === id) inspectorFlight = null;
+        return;
+      }
+      if (inspectorFlight && inspectorFlight.id === id &&
+          (scene !== inspectorFlight.scene || data.base !== inspectorFlight.base)) {
+        var sent = inspectorFlight.values;
+        var accepted = Object.keys(sent).every(function (key) { return sent[key].trim() === inspectorValue(data, key).trim(); });
+        if (accepted) Object.keys(sent).forEach(function (key) {
+          if (state.values[key] === sent[key]) delete state.values[key];
+        });
+        // A rejected draft may already have been corrected while Typst was
+        // checking it. Let that newer draft run without requiring another edit.
+        var newer = Object.keys(state.values).some(function (key) {
+          return !Object.prototype.hasOwnProperty.call(sent, key) || state.values[key] !== sent[key];
+        });
+        state.error = !accepted && !newer;
+        inspectorFlight = null;
+      }
+      state.model = data;
+    });
+    if (!inspectorFlight && Object.keys(inspectorStates).some(function (id) { return inspectorStates[id].ready && !inspectorStates[id].error; }))
+      setTimeout(flushInspectorDrafts, 0);
+  }
+  function propertyDraftChanged(event) {
+    if (inspectorUpdating || !inspectorCurrent) return;
+    var state = inspectorCurrent;
+    if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+    state.ready = false; state.error = false;
+    state.valid = !inspectorFields.some(function (field) { return field.input.cetzInvalid; });
+    inspectorFields.forEach(function (field) {
+      var original = inspectorValue(state.model, field.key);
+      if (field.input.value !== original || inspectorFlight && inspectorFlight.id === state.id && Object.prototype.hasOwnProperty.call(inspectorFlight.values, field.key))
+        state.values[field.key] = field.input.value;
+      else delete state.values[field.key];
+    });
+    if (state.valid && !state.composing && Object.keys(state.values).length) {
+      if (event && event.type === 'change') { state.ready = true; flushInspectorDrafts(); }
+      else state.timer = setTimeout(function () {
+        state.timer = null; state.ready = true; flushInspectorDrafts();
+      }, 400);
+    }
+    updateInspectorStatus();
+  }
+  function updateInspector(cell, style, one) {
+    var data;
+    try { data = JSON.parse(decodeURIComponent(style.cetzProperties || 'null')); } catch (error) { data = null; }
+    inspector.style.display = data && one ? '' : 'none';
+    if (!data || !one) { inspectorSignature = ''; return false; }
+    var state = inspectorState(cell, data);
+    inspectorCurrent = state;
+    var signature = cell.id + ':' + data.kind + ':' + data.fields.map(function (field) { return field.key; }).sort().join(',');
+    if (signature === inspectorSignature) {
+      inspectorUpdating = true;
+      inspectorFields.forEach(function (field) {
+        var value = Object.prototype.hasOwnProperty.call(state.values, field.key) ? state.values[field.key] : inspectorValue(state.model, field.key);
+        if (field.input.value !== value) {
+          field.input.value = value;
+          field.input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      });
+      inspectorUpdating = false;
+      updateInspectorStatus(); return true;
+    }
+    var focused = document.activeElement;
+    var restoreFocus = inspectorSignature.split(':')[0] === cell.id && inspector.contains(focused) && focused.getAttribute ?
+      { label: focused.getAttribute('aria-label'), start: focused.selectionStart, end: focused.selectionEnd } : null;
+    var openSections = {};
+    if (inspectorSignature.split(':')[0] === cell.id && inspector.querySelectorAll)
+      Array.prototype.forEach.call(inspector.querySelectorAll('details'), function (group) { openSections[group.firstChild.textContent] = group.open; });
+    inspectorSignature = signature; inspectorFields = [];
+    // replaceChildren is available in Draw.io's browser; fall back for embedders.
+    while (inspector.firstChild) inspector.removeChild(inspector.firstChild);
+    var header = document.createElement('header');
+    var eyebrow = document.createElement('small'); eyebrow.textContent = 'PROPERTIES / CeTZ';
+    var title = document.createElement('h2'); title.textContent = data.kind;
+    var sub = document.createElement('div'); sub.className = 'cetzHint';
+    sub.textContent = 'Coordinates · Shape · Appearance';
+    header.appendChild(eyebrow); header.appendChild(title); header.appendChild(sub); inspector.appendChild(header);
+    function section(name, opened) {
+      var group = document.createElement('details'); group.open = Object.prototype.hasOwnProperty.call(openSections, name) ? openSections[name] : opened;
+      var summary = document.createElement('summary'); summary.textContent = name;
+      group.appendChild(summary); inspector.appendChild(group); return group;
+    }
+    var geometrySection = section('GEOMETRY', true), shapeSection = section('SHAPE', true);
+    var appearanceSection = section('APPEARANCE', true), extraSection = section('ADVANCED', false);
+    var sections = { Geometry: geometrySection, Shape: shapeSection, Appearance: appearanceSection };
+    function inputFor(parent, label, value, fallback, multiline) {
+      var input = document.createElement(multiline ? 'textarea' : 'input');
+      if (!multiline) input.type = 'text';
+      input.className = 'cetzExpression'; input.value = value; input.placeholder = fallback || '';
+      input.setAttribute('aria-label', label); input.setAttribute('spellcheck', 'false');
+      parent.appendChild(input); return input;
+    }
+          function partsOfStroke(raw) {
+            var text = raw.trim(), parts = {};
+            if (text[0] === '(' && text[text.length - 1] === ')') {
+              var body = text.slice(1, -1), start = 0, depth = 0, quote = false, pieces = [];
+              for (var i = 0; i <= body.length; i++) {
+                if (body[i] === '\\' && quote) { i++; continue; }
+                if (body[i] === '"') quote = !quote;
+                if (!quote) {
+                  if ('([{'.indexOf(body[i]) >= 0 && body[i]) depth++;
+                  if (')]}'.indexOf(body[i]) >= 0 && body[i]) depth--;
+                  if ((body[i] === ',' && depth === 0) || i === body.length) { pieces.push(body.slice(start, i)); start = i + 1; }
+                }
+              }
+              for (var j = 0; j < pieces.length; j++) {
+                if (!pieces[j].trim()) continue;
+                var entry = /^\s*([\w-]+)\s*:\s*([\s\S]+)$/.exec(pieces[j]);
+                if (!entry) return null;
+                parts[entry[1]] = entry[2].trim();
+              }
+              return parts;
+            }
+            if (text === 'none') return { paint: 'none', thickness: '1pt' };
+            var color = '(?:' + paletteNames.join('|') + '|rgb\\("#[a-fA-F0-9]{6}"\\))';
+            var length = '[\\d.]+(?:pt|mm|cm|in|em)';
+            var simple = new RegExp('^(' + length + ')\\s*\\+\\s*(' + color + ")$").exec(text);
+            if (simple) return { thickness: simple[1], paint: simple[2] };
+            var reverse = new RegExp('^(' + color + ')\\s*\\+\\s*(' + length + ")$").exec(text);
+            if (reverse) return { paint: reverse[1], thickness: reverse[2] };
+            if (new RegExp('^' + color + "$").test(text)) return { paint: text, thickness: '1pt' };
+            if (new RegExp('^' + length + "$").test(text)) return { thickness: text };
+            return null;
+          }
+
+    function addField(field) {
+      var parent = sections[field.section] || extraSection;
+      if (field.key === 'name' || field.key === 'anchor' || field.key === 'fill-rule' || field.key === 'shorten' || field.key === 'update-position' || field.key.indexOf('ignore-') === 0) parent = extraSection;
+      var row = document.createElement('div'); row.className = 'cetzProperty';
+      var label = document.createElement('span'); label.textContent = field.label;
+      row.appendChild(label); parent.appendChild(row);
+      var input;
+      if (field.point) {
+        var pair = document.createElement('div'); pair.className = 'cetzPair';
+        row.appendChild(pair);
+        function axis(axisName, value) {
+          var wrapper = document.createElement('label'); wrapper.className = 'cetzAxis';
+          var caption = document.createElement('span'); caption.textContent = axisName;
+          wrapper.appendChild(caption); pair.appendChild(wrapper);
+          return inputFor(wrapper, field.label + ' ' + axisName, String(value), axisName);
+        }
+        var x = axis('X', field.point[0]), y = axis('Y', field.point[1]);
+        x.type = y.type = 'number'; x.step = y.step = 'any';
+        input = inputFor(row, field.label + ' expression', field.value);
+        input.style.display = 'none';
+        var expressionToggle = document.createElement('button'); expressionToggle.type = 'button';
+        expressionToggle.textContent = 'ƒx'; expressionToggle.title = 'Edit coordinate expression';
+        expressionToggle.setAttribute('aria-label', field.label + ' expression mode');
+        expressionToggle.style.cssText = 'float:right;height:18px;padding:0 5px;margin-top:-2px;font-size:10px;';
+        label.appendChild(expressionToggle);
+        expressionToggle.addEventListener('click', function () {
+          input.style.display = input.style.display === 'none' ? '' : 'none';
+          if (input.style.display !== 'none') input.focus();
+        });
+        input.addEventListener('input', function () {
+          var point = /^\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*\)$/.exec(input.value.trim());
+          x.disabled = y.disabled = !point;
+          if (point) { x.value = point[1]; y.value = point[2]; }
+          input.cetzInvalid = false;
+        });
+        function coordinateChange(event) {
+          if (x.value === '' || y.value === '' || !isFinite(Number(x.value)) || !isFinite(Number(y.value))) {
+            input.cetzInvalid = true; propertyDraftChanged(); return;
+          }
+          input.cetzInvalid = false;
+          input.value = '(' + x.value + ', ' + y.value + ')'; propertyDraftChanged(event);
+        }
+        x.addEventListener('input', coordinateChange); y.addEventListener('input', coordinateChange);
+        x.addEventListener('change', coordinateChange); y.addEventListener('change', coordinateChange);
+      } else if (/^(true|false)$/.test(field.value || field.fallback || '')) {
+        input = document.createElement('select'); input.setAttribute('aria-label', field.label);
+        [['', field.fallback === undefined ? 'Inherited' : 'Default (' + field.fallback + ')'], ['true', 'Yes'], ['false', 'No']].forEach(function (entry) {
+          var option = document.createElement('option'); option.value = entry[0]; option.textContent = entry[1]; input.appendChild(option);
+        });
+        input.value = field.value; row.appendChild(input);
+      } else input = inputFor(row, field.label, field.value, field.fallback,
+        field.value.indexOf('\n') >= 0 || field.label === 'Path contents' || field.label === 'Text / content');
+      inspectorFields.push({ key: field.key, input: input, original: field.value });
+      input.addEventListener('input', propertyDraftChanged); input.addEventListener('change', propertyDraftChanged);
+      input.addEventListener('compositionstart', function () { state.composing = true; if (state.timer) clearTimeout(state.timer); });
+      input.addEventListener('compositionend', function () { state.composing = false; propertyDraftChanged(); });
+      if (field.key === 'mark' && data.kind === 'line') {
+        var markPair = document.createElement('div'); markPair.className = 'cetzPair'; row.appendChild(markPair);
+        ['start', 'end'].forEach(function (side) {
+          var wrapper = document.createElement('label'); wrapper.className = 'cetzProperty';
+          var caption = document.createElement('span'); caption.textContent = side === 'start' ? 'Start mark' : 'End mark';
+          var menu = document.createElement('select'); menu.setAttribute('aria-label', caption.textContent);
+          markOptions.forEach(function (entry) {
+            var option = document.createElement('option'); option.value = entry[0]; option.textContent = entry[1];
+            option.disabled = entry[0] === 'custom'; menu.appendChild(option);
+          });
+          wrapper.appendChild(caption); wrapper.appendChild(menu); markPair.appendChild(wrapper);
+          function markParts() { return !input.value || input.value.trim() === 'none' ? {} : /^\s*\(/.test(input.value) ? partsOfStroke(input.value) : null; }
+          function refreshMark() {
+            var parts = markParts(); menu.disabled = !parts;
+            var raw = parts && (parts[side] || parts.symbol) || 'none';
+            var name = /^"([^"\\]+)"$/.exec(raw);
+            var shorthand = { '>': 'triangle', '<': 'triangle', '<>': 'diamond', '[]': 'rect', ']': 'bracket', '[': 'bracket', '|': 'bar', o: 'circle', '+': 'plus', x: 'x', '*': 'star', ')>': 'curved-stealth', '>>': 'stealth', ')': 'parenthesis' };
+            menu.value = raw === 'none' ? 'none' : name ? (markNames.indexOf(name[1]) >= 0 ? name[1] : shorthand[name[1]] || 'custom') : 'custom';
+          }
+          refreshMark(); input.addEventListener('input', refreshMark); input.addEventListener('change', refreshMark);
+          menu.addEventListener('change', function () {
+            var parts = markParts(); if (!parts || menu.value === 'custom') return;
+            parts[side] = menu.value === 'none' ? 'none' : '"' + menu.value + '"';
+            input.value = '(' + Object.keys(parts).map(function (key) { return key + ': ' + parts[key]; }).join(', ') + ')';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            propertyDraftChanged({ type: 'change' });
+          });
+        });
+      }
+      if (field.key === 'stroke' || field.key === 'fill') {
+        var swatches = document.createElement('div'); swatches.className = 'cetzSwatchRow';
+        var colorPicker = document.createElement('input'); colorPicker.type = 'color'; colorPicker.value = '#000000';
+        colorPicker.setAttribute('aria-label', field.key + ' RGB color');
+        var presets = document.createElement('select'); presets.setAttribute('aria-label', field.key + ' Typst color');
+        ['Typst color…'].concat(paletteNames).forEach(function (name, index) {
+          var option = document.createElement('option'); option.value = index ? name : ''; option.textContent = name; presets.appendChild(option);
+        });
+        function refreshColor() {
+          var raw = input.value || field.fallback || 'none';
+          var paint = field.key === 'stroke' ? partsOfStroke(raw) : null;
+          if (field.key === 'stroke') raw = paint && paint.paint || '';
+          var index = paletteNames.indexOf(raw);
+          presets.value = index >= 0 ? raw : '';
+          var rgb = /^rgb\("(#[a-f0-9]{6})"\)$/i.exec(raw);
+          colorPicker.value = paletteHex[index] || rgb && rgb[1] || '#000000';
+          colorPicker.title = raw || 'Custom Typst paint';
+        }
+        input.addEventListener('input', refreshColor); input.addEventListener('change', refreshColor);
+        function useColor(value) {
+          if (field.key === 'fill' || value === 'none') input.value = value;
+          else {
+            var raw = input.value || field.fallback || '1pt + black';
+            var parts = partsOfStroke(raw);
+            if (!parts) {
+              inspectorStatus.textContent = 'Edit this custom stroke expression directly, or clear it to choose a preset.'; return;
+            }
+            parts.paint = value;
+            if (Object.keys(parts).every(function (key) { return key === 'paint' || key === 'thickness'; }))
+              input.value = (parts.thickness || '1pt') + ' + ' + value;
+            else input.value = '(' + Object.keys(parts).map(function (key) { return key + ': ' + parts[key]; }).join(', ') + ')';
+          }
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        presets.addEventListener('change', function () { if (presets.value) { useColor(presets.value); propertyDraftChanged({ type: 'change' }); } });
+        colorPicker.addEventListener('input', function () { useColor('rgb("' + colorPicker.value + '")'); });
+        swatches.appendChild(colorPicker); swatches.appendChild(presets); row.appendChild(swatches);
+        if (field.key === 'stroke') {
+          var strokeControls = document.createElement('div'); strokeControls.className = 'cetzPair'; row.appendChild(strokeControls);
+          function strokeComponent(key, title, choices, fallback) {
+            var wrapper = document.createElement('label'); wrapper.className = 'cetzProperty';
+            var caption = document.createElement('span'); caption.textContent = title; wrapper.appendChild(caption);
+            var control = document.createElement(choices ? 'select' : 'input');
+            control.setAttribute('aria-label', 'Stroke ' + title.toLowerCase());
+            if (choices) choices.forEach(function (choice) {
+              var option = document.createElement('option'); option.value = choice[0]; option.textContent = choice[1]; control.appendChild(option);
+            }); else control.type = 'text';
+            wrapper.appendChild(control); strokeControls.appendChild(wrapper);
+            function refreshStrokeComponent() {
+              var parts = partsOfStroke(input.value || field.fallback || '1pt + black');
+              control.disabled = !parts || parts.paint === 'none';
+              control.value = parts && parts[key] || fallback;
+            }
+            refreshStrokeComponent();
+            input.addEventListener('input', refreshStrokeComponent); input.addEventListener('change', refreshStrokeComponent);
+            control.addEventListener('change', function () {
+              var parts = partsOfStroke(input.value || field.fallback || '1pt + black');
+              if (!parts) return;
+              if (control.value) parts[key] = control.value; else delete parts[key];
+              if (Object.keys(parts).every(function (name) { return name === 'paint' || name === 'thickness'; }))
+                input.value = (parts.thickness || '1pt') + ' + ' + (parts.paint || 'black');
+              else input.value = '(' + Object.keys(parts).map(function (name) { return name + ': ' + parts[name]; }).join(', ') + ')';
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              propertyDraftChanged({ type: 'change' });
+            });
+          }
+          strokeComponent('thickness', 'Thickness', null, '1pt');
+          strokeComponent('dash', 'Dash', [['', 'Solid'], ['"dashed"', 'Dashed'], ['"dotted"', 'Dotted'], ['"dash-dotted"', 'Dash dot'], ['"densely-dashed"', 'Dense dash'], ['"loosely-dashed"', 'Loose dash']], '');
+          strokeComponent('cap', 'Cap', [['', 'Default'], ['"butt"', 'Butt'], ['"round"', 'Round'], ['"square"', 'Square']], '');
+          strokeComponent('join', 'Join', [['', 'Default'], ['"miter"', 'Miter'], ['"round"', 'Round'], ['"bevel"', 'Bevel']], '');
+          var help = document.createElement('div'); help.className = 'cetzHint';
+          help.textContent = '1pt + black · (paint: red, thickness: 2pt, dash: "dashed", cap: "round")'; row.appendChild(help);
+        }
+      }
+      if (field.key === 'stroke' || field.key === 'fill') refreshColor();
+    }
+    data.fields.forEach(function (field) {
+      var value = Object.prototype.hasOwnProperty.call(state.values, field.key) ? state.values[field.key] : field.value;
+      var copy = Object.assign({}, field, { value: value });
+      if (copy.point) {
+        var point = /^\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*\)$/.exec(value.trim());
+        if (point) copy.point = [Number(point[1]), Number(point[2])];
+        else delete copy.point;
+      }
+      addField(copy);
+    });
+    var hint = document.createElement('div'); hint.className = 'cetzHint';
+    hint.textContent = 'Values accept Typst expressions, named anchors and dictionaries. Clear an optional value to inherit its default. Coordinates use the local CeTZ coordinate system.';
+    extraSection.appendChild(hint);
+    var customPair = document.createElement('div'); customPair.className = 'cetzPair'; extraSection.appendChild(customPair);
+    var customName = inputFor(customPair, 'Additional property name', '', 'property-name');
+    var customValue = inputFor(customPair, 'Additional property value', '', 'Typst value');
+    var add = document.createElement('button'); add.type = 'button'; add.textContent = '+ Add property';
+    extraSection.appendChild(add);
+    add.addEventListener('click', function () {
+      var name = customName.value.trim();
+      if (!/^[A-Za-z][\w-]*$/.test(name) || inspectorFields.some(function (entry) { return entry.key === name; })) {
+        inspectorStatus.textContent = 'Enter a new, valid property name.'; return;
+      }
+      addField({ key: name, label: name, value: '', section: 'Advanced' });
+      var entry = inspectorFields[inspectorFields.length - 1]; entry.input.value = customValue.value;
+      customName.value = customValue.value = ''; propertyDraftChanged();
+    });
+    inspectorStatus = document.createElement('div'); inspectorStatus.className = 'cetzStatus';
+    inspectorStatus.setAttribute('role', 'status'); inspector.appendChild(inspectorStatus);
+    if (restoreFocus && restoreFocus.label) {
+      Array.prototype.some.call(inspector.querySelectorAll('[aria-label]'), function (input) {
+        if (input.getAttribute('aria-label') !== restoreFocus.label) return false;
+        input.focus({ preventScroll: true });
+        if (restoreFocus.start !== null && input.setSelectionRange) input.setSelectionRange(restoreFocus.start, restoreFocus.end);
+        return true;
+      });
+    }
+    updateInspectorStatus(); return true;
+  }
+
   function sendSourceAction(name, value, overrideIndices) {
     var cells = selectedEditableCells();
     if (name !== 'export' && (!isEditablePreview() || name !== 'paste' && !cells.length && !overrideIndices)) return;
@@ -1743,6 +2166,7 @@ Draw.loadPlugin(function (ui) {
     };
   }
   function updateControls() {
+    synchronizeInspectorDrafts();
     if (isCetz() && ui.formatContainer && rail.parentNode !== ui.formatContainer)
       ui.formatContainer.appendChild(rail);
     function showField(input, visible) {
@@ -1820,8 +2244,12 @@ Draw.loadPlugin(function (ui) {
       [reconnectEnd.row, reconnectSide.row, reconnectButton].forEach(function (item) {
         item.style.display = canReconnect ? '' : 'none';
       });
+      var detailed = updateInspector(cell, style, one);
+      details.style.display = detailed ? 'none' : '';
+      if (detailed) [fill, stroke, width, dash, markStart, markEnd, textValue].forEach(function (input) { showField(input, false); });
       return;
     }
+    inspector.style.display = 'none'; inspectorSignature = '';
     fill.value = /^#[0-9a-f]{6}$/i.test(style.fillColor) ? style.fillColor : '#ffffff';
     details.textContent = 'CeTZ shape';
     stroke.value = /^#[0-9a-f]{6}$/i.test(style.strokeColor) ? style.strokeColor : '#000000';
@@ -1853,7 +2281,8 @@ Draw.loadPlugin(function (ui) {
   }
   var outlineHighlight = null;
   var outlineDragging = false;
-  var outlineDropRow = null;
+  var outlineDropRow = null, outlineCollapsed = {}, outlineSignature = '', outlineSelection = '';
+  var outlineList = null;
   function clearOutlineDropLine() {
     if (outlineDropRow) outlineDropRow.style.boxShadow = '';
     outlineDropRow = null;
@@ -1918,28 +2347,81 @@ Draw.loadPlugin(function (ui) {
           shape.node.setAttribute('data-cetz-outline-highlight', 'true');
           shape.node.style.opacity = '0.5';
           Array.prototype.forEach.call(shape.node.querySelectorAll('path, use'), function (path) {
-            if (path.getAttribute('fill') !== 'none') path.setAttribute('fill', '#dc2626');
-            path.setAttribute('stroke', '#dc2626');
+            if (path.getAttribute('fill') !== 'none') path.setAttribute('fill', '#4675e7');
+            path.setAttribute('stroke', '#4675e7');
             path.setAttribute('stroke-width', Math.max(1.5, Number(path.getAttribute('stroke-width')) || 0));
           });
         }
       });
     } };
   }
+  function outlineIcon(kind) {
+    var paths = {
+      rect: 'M5 5H19V19H5Z', circle: 'M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16',
+      line: 'M5 18L19 6M4 17h2v2H4ZM18 5h2v2h-2Z', content: 'M5 5H19M12 5V19M8 19H16',
+      arc: 'M5 18A10 10 0 0 1 19 6', bezier: 'M4 18C4 2 20 22 20 6M4 5V18M20 6V19',
+      hobby: 'M3 16C6 2 9 20 12 10S18 3 21 14', catmull: 'M3 16C6 2 9 20 12 10S18 3 21 14',
+      grid: 'M4 4H20V20H4ZM4 9H20M4 15H20M9 4V20M15 4V20',
+      'n-star': 'M12 3L15 9L21 10L16 15L17 21L12 18L7 21L8 15L3 10L9 9Z',
+      polygon: 'M12 3L21 10L17 21H7L3 10Z', mark: 'M4 12H20M14 6L20 12L14 18',
+      anchor: 'M12 4V20M4 12H20M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8',
+      group: 'M3 7H10L12 9H21V20H3ZM3 7V4H10L12 6H21V9',
+      'rect-around': 'M4 8V4H8M16 4H20V8M20 16V20H16M8 20H4V16M8 8H16V16H8Z',
+      'compound-path': 'M4 4H20V20H4ZM12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8',
+      'merge-path': 'M4 18V8H12V4H20V18Z'
+    };
+    return '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + (paths[kind] || paths.rect) + '"/></svg>';
+  }
   function updateOutline() {
     outline.style.display = isEditablePreview() ? '' : 'none';
     if (outlineDragging) return;
-    clearOutlineDropLine();
-    if (outlineHighlight) outlineHighlight.highlight(null);
-    if (!isEditablePreview()) return;
-    outline.textContent = '';
-    var heading = document.createElement('strong');
-    heading.textContent = 'Outline'; outline.appendChild(heading);
+    if (!isEditablePreview()) { outlineSignature = ''; return; }
     var cells = graph.getModel().cells || {};
     var frame = cetzFrame();
     var entries = Object.keys(cells).filter(function (id) { return /^cetz-edit-\d+$/.test(id); })
       .map(function (id) { return { id: id, cell: cells[id], style: graph.getCellStyle(cells[id]),
         index: Number(id.slice(10)) }; });
+    var selected = {};
+    graph.getSelectionCells().forEach(function (cell) {
+      var point = /^cetz-point-(\d+)-\d+$/.exec(cell.id || '');
+      selected[point ? 'cetz-edit-' + point[1] : cell.id] = true;
+    });
+    var selection = Object.keys(selected).filter(function (id) { return /^cetz-edit-/.test(id); }).sort().join(',');
+    if (selection !== outlineSelection) {
+      Object.keys(selected).forEach(function (id) {
+        var current = cells[id], visited = {};
+        while (current) {
+          var group = graph.getCellStyle(current).cetzGroup;
+          if (group === undefined || group === '' || visited[group]) break;
+          visited[group] = true; delete outlineCollapsed['cetz-edit-' + group]; current = cells['cetz-edit-' + group];
+        }
+      });
+      outlineSelection = selection;
+    }
+    Object.keys(outlineCollapsed).forEach(function (id) { if (!cells[id]) delete outlineCollapsed[id]; });
+    entries.forEach(function (entry) { entry.description = outlineDescription(entry, cells, frame); });
+    var signature = JSON.stringify([entries.map(function (entry) { return [entry.id, entry.description, entry.style.cetzGroup, entry.style.cetzStart]; }), selection, outlineCollapsed]);
+    if (signature === outlineSignature) return;
+    outlineSignature = signature;
+    var scroll = outlineList && outlineList.scrollTop || 0;
+    clearOutlineDropLine();
+    if (outlineHighlight) outlineHighlight.highlight(null);
+    outline.textContent = '';
+    var heading = document.createElement('header');
+    var eyebrow = document.createElement('small'); eyebrow.textContent = 'DOCUMENT / CeTZ'; heading.appendChild(eyebrow);
+    var headingLine = document.createElement('div'); headingLine.className = 'cetzOutlineHeading';
+    var title = document.createElement('h2'); title.textContent = 'Outline'; headingLine.appendChild(title);
+    var count = document.createElement('span'); count.className = 'cetzOutlineCount'; count.textContent = String(entries.length);
+    count.setAttribute('aria-label', entries.length + ' objects'); headingLine.appendChild(count); heading.appendChild(headingLine);
+    var hint = document.createElement('div'); hint.className = 'cetzOutlineHint';
+    hint.textContent = selection ? Object.keys(selected).length + ' selected · Drag handles to reorder' : 'Objects & groups · Drag handles to reorder';
+    heading.appendChild(hint); outline.appendChild(heading);
+    outlineList = document.createElement('div'); outlineList.className = 'cetzOutlineList';
+    outlineList.setAttribute('role', 'list'); outlineList.setAttribute('aria-label', 'Drawing objects'); outline.appendChild(outlineList);
+    if (!entries.length) {
+      var empty = document.createElement('div'); empty.className = 'cetzOutlineEmpty';
+      empty.textContent = 'No objects yet. Choose a shape from the right toolbar to start drawing.'; outlineList.appendChild(empty);
+    }
     var children = {};
     entries.forEach(function (entry) {
       var parent = entry.style.cetzGroup;
@@ -1955,28 +2437,49 @@ Draw.loadPlugin(function (ui) {
     function appendRows(parent, depth) {
       (children[parent] || []).forEach(function (entry, position, siblings) {
         var cell = entry.cell, style = entry.style;
-        var row = document.createElement('div');
-        row.draggable = false;
-        var grip = document.createElement('span');
-        grip.textContent = '⋮⋮';
-        grip.draggable = true;
-        grip.setAttribute('aria-label', 'Drag to reorder');
-        grip.style.cssText = 'width:18px;flex:none;cursor:grab;text-align:center;user-select:none;';
-        var select = document.createElement('button');
-        select.type = 'button';
-        select.textContent = outlineDescription(entry, cells, frame);
-        select.style.cssText = 'flex:1;min-width:0;text-align:left;border:0;background:transparent;' +
-          'color:inherit;font:inherit;cursor:pointer;overflow-wrap:anywhere;';
-        row.style.cssText = 'display:flex;box-sizing:border-box;width:100%;align-items:center;padding:4px 3px;' +
-          'border-radius:3px;background:transparent;color:inherit;font:12px sans-serif;cursor:grab;';
-        row.style.paddingLeft = (6 + depth * 14) + 'px';
-        row.appendChild(grip);
-        row.appendChild(select);
+        var row = document.createElement('div'); row.className = 'cetzOutlineRow';
+        row.setAttribute('role', 'listitem'); row.setAttribute('data-cetz-outline-id', entry.id);
+        row.setAttribute('data-selected', selected[entry.id] ? 'true' : 'false'); row.draggable = false;
+        row.style.paddingLeft = (2 + depth * 14) + 'px';
+        var grip = document.createElement('span'); grip.className = 'cetzOutlineGrip';
+        grip.textContent = '⋮⋮'; grip.draggable = true;
+        grip.setAttribute('aria-label', 'Drag to reorder'); grip.title = 'Drag to reorder';
+        var select = document.createElement('button'); select.className = 'cetzOutlineSelect'; select.type = 'button';
+        select.title = entry.description; select.setAttribute('aria-label', entry.description);
+        select.setAttribute('aria-pressed', selected[entry.id] ? 'true' : 'false');
+        var icon = document.createElement('span'); icon.className = 'cetzOutlineIcon'; icon.innerHTML = outlineIcon(style.cetzKind);
+        select.appendChild(icon);
+        var text = document.createElement('span'); text.className = 'cetzOutlineText';
+        var primary = document.createElement('span'); primary.className = 'cetzOutlineName';
+        var label = document.createElement('span'); label.className = 'cetzOutlineNameText';
+        try { label.textContent = decodeURIComponent(style.cetzLabel || style.cetzKind || 'shape'); }
+        catch (error) { label.textContent = style.cetzKind || 'shape'; }
+        primary.appendChild(label);
+        var descendants = children[String(entry.index)] || [];
+        if (descendants.length) {
+          var badge = document.createElement('span'); badge.className = 'cetzOutlineCount'; badge.textContent = String(descendants.length); primary.appendChild(badge);
+        }
+        text.appendChild(primary);
+        var secondary = document.createElement('span'); secondary.className = 'cetzOutlineMeta';
+        var at = entry.description.lastIndexOf(' pos: ');
+        secondary.textContent = (style.cetzKind || 'shape') + (at >= 0 ? ' · ' + entry.description.slice(at + 6).replace(' size: ', ' · ') : '');
+        text.appendChild(secondary); select.appendChild(text);
+        row.appendChild(grip); row.appendChild(select);
+        if (descendants.length) {
+          var branch = document.createElement('button'); branch.type = 'button'; branch.className = 'cetzOutlineBranch';
+          branch.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="transform:rotate(' + (outlineCollapsed[entry.id] ? '0' : '90') + 'deg)"><path d="M9 5L16 12L9 19"/></svg>';
+          branch.title = outlineCollapsed[entry.id] ? 'Expand group' : 'Collapse group';
+          branch.setAttribute('aria-label', branch.title); branch.setAttribute('aria-expanded', outlineCollapsed[entry.id] ? 'false' : 'true');
+          branch.addEventListener('click', function (event) {
+            event.stopPropagation(); outlineCollapsed[entry.id] = !outlineCollapsed[entry.id]; updateOutline();
+          });
+          row.appendChild(branch);
+        }
         [['↑', position > 0, 'move-before', position - 1],
           ['↓', position < siblings.length - 1, 'move-after', position + 1]].forEach(function (move) {
           var button = document.createElement('button'); button.type = 'button'; button.textContent = move[0];
           button.setAttribute('aria-label', move[0] === '↑' ? 'Move layer up' : 'Move layer down');
-          button.style.cssText = 'border:0;background:transparent;color:inherit;cursor:pointer;';
+          button.className = 'cetzOutlineMove';
           button.style.display = move[1] ? '' : 'none';
           button.addEventListener('click', function (event) {
             event.stopPropagation();
@@ -1985,10 +2488,7 @@ Draw.loadPlugin(function (ui) {
           });
           row.appendChild(button);
         });
-        if (graph.getSelectionCells().some(function (selected) { return selected.id === entry.id; }))
-          row.style.background = '#dbeafe';
         row.addEventListener('mouseenter', function () {
-          row.style.background = '#fed7aa';
           if (graph.view && graph.view.getState) {
             if (!outlineHighlight) outlineHighlight = makeOutlineHighlight();
             var current = graph.getModel().getCell(entry.id);
@@ -1999,9 +2499,6 @@ Draw.loadPlugin(function (ui) {
           }
         });
         row.addEventListener('mouseleave', function () {
-          row.style.background = graph.getSelectionCells().some(function (selected) {
-            return selected.id === entry.id;
-          }) ? '#dbeafe' : 'transparent';
           if (outlineHighlight) outlineHighlight.highlight(null);
         });
         row.addEventListener('pointerdown', function (event) { event.stopPropagation(); });
@@ -2010,7 +2507,7 @@ Draw.loadPlugin(function (ui) {
           if (event.preventDefault) event.preventDefault();
           event.stopPropagation();
           var additive = event.metaKey || event.ctrlKey || event.shiftKey;
-          row.style.background = '#dbeafe';
+          row.setAttribute('data-selected', 'true');
           // A selection change rebuilds this Outline. Let the click finish
           // before selecting, so Draw.io cannot clear it as a canvas click.
           setTimeout(function () {
@@ -2057,11 +2554,12 @@ Draw.loadPlugin(function (ui) {
           var after = outlineDropAfter(event, row);
           sendSourceAction(after ? 'move-after' : 'move-before', null, [from, entry.index]);
         });
-        outline.appendChild(row);
-        appendRows(String(entry.index), depth + 1);
+        outlineList.appendChild(row);
+        if (!outlineCollapsed[entry.id]) appendRows(String(entry.index), depth + 1);
       });
     }
     appendRows('root', 0);
+    outlineList.scrollTop = scroll;
   }
   function update() {
     suppressCachedSelectionBorders();

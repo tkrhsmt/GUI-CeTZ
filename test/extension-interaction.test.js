@@ -229,3 +229,51 @@ test('deleting a middle element never retargets late saves or following actions 
     await until(() => source.text === expected && !gui.text.includes('cetzAction=undo;'));
   }
 });
+
+test('property edits synchronize through the source bridge and undo as a single change', async t => {
+  const initial = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 1), stroke: 1pt + black)\n})';
+  const { source, gui, action, save, until } = await extensionFixture(t, initial);
+  const cell = [...readAllCells(gui.text)].find(([id]) => /^cetz-edit-/.test(id))[1];
+  const model = JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(cell.cell.style)[1]));
+  const value = encodeURIComponent(JSON.stringify({ base: model.base,
+    values: { '$0': '(0.03125, -1.125)', close: 'true', stroke: '2pt + green' } }))
+    .replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16));
+  const marker = action('properties', '0').replace('cetzAction=properties;', 'cetzAction=properties;cetzValue=' + value + ';');
+  save(gui.text.replace('</root>', marker + '</root>'));
+  await until(() => source.text.includes('stroke: 2pt + green') && gui.text.includes('cetzStrokeColor=#2ecc40'));
+  assert.match(source.text, /line\(\(0.03125, -1.125\), \(2, 1\), stroke: 2pt \+ green, close: true\)/);
+  save(gui.text.replace('</root>', '<mxCell id="property-undo" style="cetzAction=undo;cetzActionToken=property-undo;" vertex="1" parent="1"><mxGeometry x="-1000" y="-1000" width="1" height="1" as="geometry"/></mxCell></root>'));
+  await until(() => source.text === initial && gui.text.includes('cetzStrokeColor=#000000'));
+});
+
+test('incomplete automatic properties keep the last valid preview without an error until Typst accepts the draft', async t => {
+  const initial = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\ncircle((0, 0), radius: 1, stroke: black)\n})';
+  const { source, gui, action, save, until } = await extensionFixture(t, initial);
+  const originalVersion = source.version;
+  function propertyCell() { return [...readAllCells(gui.text)].find(([id]) => /^cetz-edit-/.test(id))[1]; }
+  const originalCell = propertyCell();
+  const originalProperties = /cetzProperties=([^;]+);/.exec(originalCell.cell.style)[1];
+  async function submit(values) {
+    const base = JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(propertyCell().cell.style)[1])).base;
+    const value = encodeURIComponent(JSON.stringify({ base, values }))
+      .replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16));
+    const marker = action('properties', '0').replace('cetzAction=properties;', 'cetzAction=properties;cetzValue=' + value + ';');
+    const submitted = gui.text.replace('</root>', marker + '</root>');
+    save(submitted);
+    await until(() => gui.text !== submitted && !gui.text.includes('cetzAction=properties;'));
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  for (const values of [{ radius: '(' }, { stroke: 'red +' }, { stroke: 'not-yet-defined-color' }, { radius: '"not a radius"' }]) {
+    await submit(values);
+    assert.equal(source.text, initial);
+    assert.equal(source.version, originalVersion);
+    assert.equal(/cetzProperties=([^;]+);/.exec(propertyCell().cell.style)[1], originalProperties);
+    assert.deepEqual(propertyCell().geometry, originalCell.geometry);
+    assert.doesNotMatch(gui.text, /cetzStatus=/, 'draft validation does not show an error banner');
+  }
+  await submit({ radius: '2', stroke: '2pt + red' });
+  assert.match(source.text, /radius: 2, stroke: 2pt \+ red/);
+  assert.ok(source.version > originalVersion);
+  assert.match(propertyCell().cell.style, /cetzStrokeColor=#ff4136/);
+  assert.doesNotMatch(gui.text, /cetzStatus=/);
+});

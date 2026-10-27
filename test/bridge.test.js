@@ -217,7 +217,7 @@ test('converts a new Draw.io rectangle into a CeTZ call', () => {
 test('changes a literal fill color while preserving other arguments', () => {
   const text = '#cetz.canvas({ rect((0, 0), (2, 1), fill: red, name: "node") })';
   const model = parseCanvas(text), xml = xmlForDiagram(text, model);
-  const changed = xml.replace('fillColor=#ff0000', 'fillColor=#00ff00');
+  const changed = xml.replace('fillColor=#ff4136', 'fillColor=#00ff00');
   const next = apply(text, patchesFromXml(text, model, changed));
   assert.match(next, /fill: rgb\("#00ff00"\), name: "node"/);
 });
@@ -315,9 +315,9 @@ test('rejects Draw.io styling that would not be written to Typst', () => {
 test('round trips literal stroke thickness and dash', () => {
   const text = '#cetz.canvas({ line((0, 0), (2, 0), stroke: (paint: red, thickness: 2pt, dash: "dashed")) })';
   const model = parseCanvas(text), xml = xmlForDiagram(text, model);
-  assert.match(xml, /strokeColor=#ff0000;strokeWidth=5\.6444;dashed=1;dashPattern=3 3;/);
+  assert.match(xml, /strokeColor=#ff4136;strokeWidth=5\.6444;dashed=1;dashPattern=3 3;/);
   const changed = xml.replace('strokeWidth=5.6444', 'strokeWidth=11.2889').replace('dashPattern=3 3', 'dashPattern=1 2');
-  assert.match(apply(text, patchesFromXml(text, model, changed)), /stroke: \(paint: rgb\("#ff0000"\), thickness: 4pt, dash: "dotted"\)/);
+  assert.match(apply(text, patchesFromXml(text, model, changed)), /stroke: \(paint: rgb\("#ff4136"\), thickness: 4pt, dash: "dotted"\)/);
 });
 test('renders complex CeTZ operations using Typst as a locked image', async () => {
   const text = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n  set-style(stroke: (paint: blue, thickness: 2pt, dash: "dashed"))\n  group({ rect((0, 0), (2, 1)); arc((1, 1), start: 0deg, stop: 180deg) })\n})';
@@ -920,7 +920,7 @@ test('advanced shape palette settings update CeTZ stroke and fill arguments', as
   assert.match(stroked, /arc\([^\n]+stroke: \(paint: rgb\("#ff0000"\), thickness: 2pt, dash: "dashed"\)\)/);
   assert.doesNotMatch(stroked, /scope\(\{|translate\(|scale\(/);
   const rerendered = await renderEditable(stroked, parseCanvas(stroked).canvas, file);
-  const filled = rerendered.xml.replace('cetzFillColor=#ffff00;', 'cetzFillColor=#00aa00;');
+  const filled = rerendered.xml.replace('cetzFillColor=#ffdc00;', 'cetzFillColor=#00aa00;');
   const updated = apply(stroked, patchesFromEditable(stroked, rerendered, filled, readAllCells));
   assert.match(updated, /circle\(\(3, 0\), radius: 1, fill: rgb\("#00aa00"\)\)/);
   await renderEditable(updated, parseCanvas(updated).canvas, file);

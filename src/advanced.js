@@ -7,6 +7,7 @@ const { color: parseColor, stroke: parseStroke, typstColor, typstStroke } = requ
 const { sideValues, sideEdits } = require('./marks');
 const { layerInstrumentation, splitSvgLayers } = require('./svg-layers');
 const { coordinate, readSnapStep, snapCoordinate, normalizeCoordinate } = require('./snapping');
+const { propertyModel } = require('./properties');
 
 const EDITABLE = new Set(['arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier', 'hobby',
   'catmull', 'merge-path', 'compound-path', 'rect', 'circle', 'content', 'line', 'polygon', 'anchor']);
@@ -76,7 +77,7 @@ function editableStyle(call) {
       return value.slice(1, -1).split(',').filter(part => part.trim()).map(Number);
     return fallback;
   }
-  return { cetzKind: call.name,
+  return { cetzKind: call.name, cetzProperties: encodeURIComponent(JSON.stringify(propertyModel(call))),
     ...(['bezier', 'catmull', 'hobby'].includes(call.name) ? {
       cetzCurveClose: namedArgument(call.call, 'close')?.value === 'true' ? '1' : '0',
       cetzCurveTension: curveParameter('tension', 0.5),
@@ -733,7 +734,7 @@ async function renderEditable(source, canvas, filePath) {
       cetzSnapOffsetX: pixel((call.transform.tx + call.transform.sx * +firstPoint[1] - b.x) * result.unitX * 2.5),
       cetzSnapOffsetY: pixel((b.y + b.height - call.transform.ty - call.transform.sy * +firstPoint[2]) * result.unitY * 2.5)
     } : {};
-    const label = /\bname\s*:\s*"([^"\\]+)"/.exec(call.call)?.[1] ||
+    const label = /^"([^"\\]+)"$/.exec(namedArgument(call.call, 'name')?.value || '')?.[1] ||
       (call.name === 'anchor' ? /anchor\(\s*"([^"\\]+)"/.exec(call.call)?.[1] : '') ||
       call.name;
     const settings = Object.entries({ ...editableStyle(call), ...snap,

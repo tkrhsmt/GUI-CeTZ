@@ -68,7 +68,7 @@ function sourceWithPatches(text, patches) {
   return [...patches].sort((a, b) => b.start - a.start)
     .reduce((value, patch) => value.slice(0, patch.start) + patch.text + value.slice(patch.end), text);
 }
-async function applySourcePatches(session, source, patches) {
+async function applySourcePatches(session, source, patches, deferInvalid = false) {
   if (!patches.length) return;
   const sourceVersion = source.version;
   const before = source.getText();
@@ -77,10 +77,18 @@ async function applySourcePatches(session, source, patches) {
   const expected = sourceWithPatches(before, patches);
   // A GUI edit must preserve an editable preview. Otherwise renderDiagram's
   // fallback would replace all handles with a locked image after the write.
-  const prepared = session.editable
-    ? await renderEditable(expected, usableDiagram(expected, session.index).canvas,
-      session.sourceUri.fsPath)
-    : null;
+  let prepared;
+  try {
+    prepared = session.editable
+      ? await renderEditable(expected, usableDiagram(expected, session.index).canvas,
+        session.sourceUri.fsPath)
+      : null;
+  } catch (error) {
+    // Automatic inspector input is a draft until Typst accepts it. Keep the
+    // last valid source and artwork while an expression is still incomplete.
+    if (deferInvalid) return false;
+    throw error;
+  }
   if ((await documentForSession(session)).version !== sourceVersion)
     throw new Error('Typst changed while the GUI was being edited.');
   session.expectedSourceText = expected;
@@ -248,8 +256,16 @@ async function syncToSource(session) {
         editor.revealRange(new vscode.Range(editor.selection.start, editor.selection.end));
         return;
       }
-      await applySourcePatches(session, source,
-        sourceActionPatches(source.getText(), session.editable, sourceCommand));
+      const pending = sourceCommand.action === 'properties'
+        ? patchesFromEditable(source.getText(), session.editable, xml, readAllCells) : [];
+      let patches;
+      try { patches = sourceActionPatches(source.getText(), session.editable, sourceCommand, pending); }
+      catch (error) {
+        if (sourceCommand.action !== 'properties') throw error;
+        await syncFromSource(session); await refreshGuiView(session);
+        return;
+      }
+      await applySourcePatches(session, source, patches, sourceCommand.action === 'properties');
       await syncFromSource(session);
       await refreshGuiView(session);
     } catch (error) { await syncFromSource(session); await refreshGuiView(session); throw error; }

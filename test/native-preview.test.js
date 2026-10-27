@@ -903,7 +903,7 @@ test('editor hit areas and selection previews have no rectangular borders', { sk
   const moveBorder = f.graph.graphHandler.createPreviewShape(new f.w.mxRectangle(0, 0, 100, 100));
   assert.equal(moveBorder.opacity, 0);
   moveBorder.destroy();
-  const button = Array.from(f.ui.sidebar.wrapper.querySelectorAll('button')).find(button => button.textContent.startsWith('line pos:'));
+  const button = f.ui.sidebar.wrapper.querySelector('[data-cetz-outline-id="cetz-edit-2"] .cetzOutlineSelect');
   button.parentNode.dispatchEvent(new f.w.MouseEvent('mouseenter'));
   const highlights = f.graph.view.getOverlayPane().querySelectorAll('[data-cetz-outline-highlight]');
   assert.ok(highlights.length > 0);
@@ -1032,4 +1032,243 @@ test('an arc center moved onto its start stays finite without a corrupt SVG', { 
   assert.doesNotMatch(shape.node.outerHTML, /NaN|Infinity/);
   const viewBox = shape.node.getAttribute('viewBox').split(/\s+/).map(Number);
   assert.ok(viewBox.every(Number.isFinite) && viewBox[2] > 0 && viewBox[3] > 0);
+});
+
+
+function inspectorCommands(f) {
+  return Object.values(f.graph.model.cells).filter(cell => /(?:^|;)cetzAction=properties;/.test(cell.style || ''));
+}
+async function waitForInspector(predicate) {
+  const deadline = Date.now() + 3000;
+  while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(predicate(), 'automatic property synchronization completes');
+}
+async function acceptInspectorCommand(f, source) {
+  const { sourceAction, sourceActionPatches } = require('../src/source-actions');
+  const cells = readAllCells(f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)));
+  const action = sourceAction(cells, readAllCells(f.rendered.xml));
+  assert.equal(action.action, 'properties');
+  const next = sourceActionPatches(source, f.rendered, action).sort((a, b) => b.start - a.start)
+    .reduce((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+  const rendered = await renderEditable(next, parseCanvas(next).canvas, path.resolve('examples/native.typ'));
+  f.graph.model.beginUpdate();
+  try {
+    f.graph.removeCells([f.graph.model.getCell(action.id)]);
+    for (const [id, entry] of readAllCells(rendered.xml)) if (/^cetz-edit-/.test(id))
+      f.graph.model.setStyle(f.graph.model.getCell(id), entry.cell.style);
+  } finally { f.graph.model.endUpdate(); }
+  f.rendered = rendered;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  return next;
+}
+
+test('inspector automatically saves debounced coordinates and preserves newer input and focus during rendering', { skip }, async t => {
+  let source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 1), stroke: 1pt + black)\n})';
+  const f = await fixture(t, source); f.select('cetz-edit-0');
+  f.w.document.body.appendChild(f.ui.sidebar.wrapper);
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  const input = label => panel.querySelector('[aria-label="' + label + '"]');
+  assert.equal(panel.querySelector('.cetzApply'), null);
+  const x = input('Start X'); x.focus();
+  for (const value of ['0.0', '0.03', '0.03125']) {
+    x.value = value; x.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  }
+  input('Start Y').value = '-1.125'; input('Start Y').dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  assert.equal(inspectorCommands(f).length, 0, 'typing is coalesced');
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  x.value = '0.0625'; x.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 450));
+  assert.equal(inspectorCommands(f).length, 1, 'only one write can be in flight');
+  source = await acceptInspectorCommand(f, source);
+  assert.match(source, /line\(\(0.03125, -1.125\)/);
+  assert.equal(input('Start X'), x);
+  assert.equal(x.value, '0.0625');
+  assert.equal(f.w.document.activeElement, x);
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  source = await acceptInspectorCommand(f, source);
+  assert.match(source, /line\(\(0.0625, -1.125\)/);
+  assert.match(panel.querySelector('.cetzStatus').textContent, /saved automatically/);
+  assert.equal(f.w.document.activeElement, x);
+});
+
+test('stroke inspector automatically saves menus and retains advanced dictionary fields', { skip }, async t => {
+  let source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 1), stroke: (paint: red, thickness: 2pt, cap: "round", join: "bevel", miter-limit: 4))\n})';
+  const f = await fixture(t, source); f.select('cetz-edit-0');
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  const input = label => panel.querySelector('[aria-label="' + label + '"]');
+  assert.equal(input('Stroke cap').value, '"round"');
+  for (const [label, value] of [['stroke Typst color', 'green'], ['Stroke thickness', '3pt'], ['Stroke dash', '"dotted"'], ['close', 'true']]) {
+    input(label).value = value;
+    input(label).dispatchEvent(new f.w.Event('change', { bubbles: true }));
+    assert.equal(inspectorCommands(f).length, 1, label + ' applies without waiting for a button');
+    source = await acceptInspectorCommand(f, source);
+  }
+  assert.match(source, /stroke: \(paint: green, thickness: 3pt, cap: "round", join: "bevel", miter-limit: 4, dash: "dotted"\)/);
+  assert.match(source, /close: true/);
+});
+
+test('inspector keeps invalid coordinates unsaved and automatically applies corrected expressions and marks', { skip }, async t => {
+  let source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 1), mark: (end: ">", scale: 2, fill: red))\n})';
+  const f = await fixture(t, source); f.select('cetz-edit-0');
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  const input = label => panel.querySelector('[aria-label="' + label + '"]');
+  assert.equal(input('End mark').value, 'triangle');
+  input('Start X').value = '';
+  input('Start X').dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  input('close').value = 'true'; input('close').dispatchEvent(new f.w.Event('change', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 450));
+  assert.equal(inspectorCommands(f).length, 0);
+  input('Start expression mode').click();
+  input('Start expression').value = '(1, 2)';
+  input('Start expression').dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  source = await acceptInspectorCommand(f, source);
+  assert.equal(input('Start X').value, '1');
+  assert.equal(input('Start Y').value, '2');
+  assert.match(source, /line\(\(1, 2\)/);
+  input('Start mark').value = 'bar'; input('Start mark').dispatchEvent(new f.w.Event('change', { bubbles: true }));
+  assert.equal(inspectorCommands(f).length, 1);
+  source = await acceptInspectorCommand(f, source);
+  assert.match(source, /mark: \(end: ">", scale: 2, fill: red, start: "bar"\)/);
+});
+
+test('automatic inspector queues edits across selection changes without writing to the new selection', { skip }, async t => {
+  let source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 1))\ncircle((4, 0), radius: 1)\n})';
+  const f = await fixture(t, source); f.select('cetz-edit-0');
+  let panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  const x = panel.querySelector('[aria-label="Start X"]');
+  x.value = '1'; x.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  f.select('cetz-edit-1');
+  panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  const radius = panel.querySelector('[aria-label="radius"]');
+  radius.value = '2'; radius.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  source = await acceptInspectorCommand(f, source);
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  source = await acceptInspectorCommand(f, source);
+  assert.match(source, /line\(\(1, 0\), \(2, 1\)\)/);
+  assert.match(source, /circle\(\(4, 0\), radius: 2\)/);
+});
+
+test('automatic inspector waits for IME composition and preserves rejected values for correction', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\ncontent((0, 0), [Hello])\n})';
+  const f = await fixture(t, source); f.select('cetz-edit-0');
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  const text = panel.querySelector('[aria-label="Text / content"]');
+  text.dispatchEvent(new f.w.CompositionEvent('compositionstart', { bubbles: true }));
+  text.value = '[日本語]'; text.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 450));
+  assert.equal(inspectorCommands(f).length, 0);
+  text.dispatchEvent(new f.w.CompositionEvent('compositionend', { bubbles: true }));
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  // A failed Typst render returns the original properties with a newer scene.
+  f.graph.model.beginUpdate();
+  try {
+    f.graph.removeCells(inspectorCommands(f));
+    f.graph.insertVertex(f.graph.getDefaultParent(), 'cetz-scene-999', '', -1000, -1000, 1, 1, 'opacity=0;');
+  } finally { f.graph.model.endUpdate(); }
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(text.value, '[日本語]');
+  assert.match(panel.querySelector('.cetzStatus').textContent, /Preview updates when the value is valid/);
+  await new Promise(resolve => setTimeout(resolve, 450));
+  assert.equal(inspectorCommands(f).length, 0, 'failed drafts are not retried in a loop');
+  text.value = '[Corrected]'; text.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  const next = await acceptInspectorCommand(f, source);
+  assert.match(next, /\[Corrected\]/);
+});
+
+test('automatic inspector cancels pending writes when another document reuses the same shape IDs', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 1))\n})';
+  const f = await fixture(t, source);
+  let title = 'first.cetz-1.drawio';
+  f.ui.getCurrentFile = () => ({ getId() { return null; }, getTitle() { return title; }, getData() { return ''; } });
+  f.ui.fileLoaded(); f.select('cetz-edit-0');
+  const input = f.ui.sidebar.wrapper.querySelector('[aria-label="Start X"]');
+  input.value = '9'; input.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  title = 'second.cetz-1.drawio'; f.ui.fileLoaded();
+  await new Promise(resolve => setTimeout(resolve, 450));
+  assert.equal(inspectorCommands(f).length, 0);
+  assert.equal(f.ui.sidebar.wrapper.querySelector('[aria-label="Start X"]').value, '0');
+});
+
+test('inspector automatically retries a correction entered while an incomplete draft is being validated', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 1), stroke: black)\n})';
+  const f = await fixture(t, source); f.select('cetz-edit-0');
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  const stroke = panel.querySelector('[aria-label="stroke"]');
+  stroke.value = 'red +'; stroke.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  stroke.value = '2pt + red'; stroke.dispatchEvent(new f.w.Event('input', { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 450));
+  f.graph.model.beginUpdate();
+  try {
+    f.graph.removeCells(inspectorCommands(f));
+    f.graph.insertVertex(f.graph.getDefaultParent(), 'cetz-scene-999', '', -1000, -1000, 1, 1, 'opacity=0;');
+  } finally { f.graph.model.endUpdate(); }
+  await waitForInspector(() => inspectorCommands(f).length === 1);
+  assert.equal(stroke.value, '2pt + red');
+  const next = await acceptInspectorCommand(f, source);
+  assert.match(next, /stroke: 2pt \+ red/);
+  assert.match(panel.querySelector('.cetzStatus').textContent, /saved automatically/);
+});
+
+test('Outline separates names and geometry, preserves scroll, and highlights the owner of a selected point', { skip }, async t => {
+  const f = await fixture(t);
+  const outline = f.ui.sidebar.wrapper.querySelector('.cetzOutline');
+  assert.equal(outline.querySelector('h2').textContent, 'Outline');
+  assert.equal(Number(outline.querySelector('.cetzOutlineCount').textContent), f.rendered.calls.length);
+  let list = outline.querySelector('.cetzOutlineList');
+  const row = list.querySelector('[data-cetz-outline-id="cetz-edit-2"]');
+  assert.equal(row.querySelector('.cetzOutlineNameText').textContent, 'line');
+  assert.match(row.querySelector('.cetzOutlineMeta').textContent, /^line ·/);
+  assert.ok(row.querySelector('.cetzOutlineIcon svg path'));
+  list.scrollTop = 70;
+  f.graph.setCellStyles('cetzDash', 'solid', [f.graph.model.getCell('cetz-edit-2')]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(outline.querySelector('.cetzOutlineList'), list, 'unrelated redraws preserve DOM and scroll');
+  f.select('cetz-point-2-0');
+  list = outline.querySelector('.cetzOutlineList');
+  assert.equal(list.scrollTop, 70);
+  assert.equal(list.querySelector('[data-cetz-outline-id="cetz-edit-2"]').getAttribute('data-selected'), 'true');
+  assert.equal(list.querySelector('[aria-pressed="true"]').closest('[data-cetz-outline-id]').getAttribute('data-cetz-outline-id'), 'cetz-edit-2');
+});
+
+test('Outline collapses groups, reveals selected descendants, and retains layer selection and reorder actions', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
+    'group({ rect((0, 0), (2, 1), name: "Panel"); circle((3, 0), radius: 0.6, name: "Status") }, name: "Layout")\n' +
+    'line((0, -1), (3, -1), name: "Connection")\ncontent((0, -2), [Overview], name: "Caption")\n})';
+  const f = await fixture(t, source);
+  const outline = f.ui.sidebar.wrapper.querySelector('.cetzOutline');
+  const groupId = 'cetz-edit-' + f.rendered.calls.findIndex(call => call.name === 'group');
+  const rectId = 'cetz-edit-' + f.rendered.calls.findIndex(call => call.name === 'rect');
+  const lineId = 'cetz-edit-' + f.rendered.calls.findIndex(call => call.name === 'line');
+  const rows = () => outline.querySelectorAll('.cetzOutlineRow');
+  const row = id => outline.querySelector('[data-cetz-outline-id="' + id + '"]');
+  const total = rows().length;
+  assert.equal(row(groupId).querySelector('.cetzOutlineNameText').textContent, 'Layout');
+  assert.equal(row(groupId).querySelector('.cetzOutlineCount').textContent, '2');
+  row(groupId).querySelector('.cetzOutlineBranch').click();
+  assert.equal(rows().length, total - 2);
+  assert.equal(row(groupId).querySelector('.cetzOutlineBranch').getAttribute('aria-expanded'), 'false');
+  f.select(lineId);
+  assert.equal(rows().length, total - 2, 'selecting another top-level item preserves collapse');
+  f.select(rectId);
+  assert.equal(rows().length, total, 'canvas selection reveals the selected child');
+  assert.equal(row(rectId).getAttribute('data-selected'), 'true');
+  row(lineId).querySelector('.cetzOutlineSelect').click();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(f.graph.getSelectionCell().id, lineId);
+  row(rectId).querySelector('.cetzOutlineSelect').dispatchEvent(new f.w.MouseEvent('click', { bubbles: true, ctrlKey: true }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(f.graph.getSelectionCells().length, 2);
+  row(lineId).querySelector('[aria-label="Move layer down"]').click();
+  assert.ok(Object.values(f.graph.model.cells).some(cell => /cetzAction=move-after;/.test(cell.style || '')));
+});
+
+test('Outline explains how to start an empty drawing', { skip }, async t => {
+  const f = await fixture(t, '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n})');
+  const outline = f.ui.sidebar.wrapper.querySelector('.cetzOutline');
+  assert.equal(outline.querySelector('.cetzOutlineCount').textContent, '0');
+  assert.match(outline.querySelector('.cetzOutlineEmpty').textContent, /No objects yet/);
 });
