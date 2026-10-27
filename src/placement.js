@@ -2,7 +2,8 @@
 const { coordinate } = require('./snapping');
 
 const SPECS = {
-  content: { count: 1 },
+  content: { count: 1 }, polygon: { count: 2 },
+  'circle-through': { count: 3 }, 'arc-through': { count: 3 }, 'bezier-through': { count: 3 }, boolean: { count: 4 },
   line: { count: 2 }, mark: { count: 2 }, rect: { count: 2 },
   circle: { count: 2 }, 'n-star': { count: 2 }, grid: { count: 2 }, 'rect-around': { count: 2 },
   arc: { count: 3 }, bezier: { count: 4 }, 'compound-path': { count: 4 },
@@ -25,6 +26,19 @@ function callFromPoints(name, points) {
     if (value <= 0) throw new Error('Choose a radius greater than zero.');
     return value;
   };
+  if (['circle-through', 'arc-through'].includes(name)) {
+    const area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    const extent = Math.max(distance(a, b), distance(b, c), distance(a, c));
+    if (Math.abs(area) <= 1e-10 * extent * extent || extent === 0)
+      throw new Error('Choose three non-collinear points.');
+  }
+  if (name.endsWith('-through')) return `${name}(${points.map(point).join(', ')})`;
+  if (name === 'polygon') return `polygon(${point(a)}, 6, radius: ${radius()}, angle: ${format(Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI)}deg)`;
+  if (name === 'boolean') {
+    if (a[0] === b[0] || a[1] === b[1] || c[0] === d[0] || c[1] === d[1])
+      throw new Error('Choose two rectangles with nonzero width and height.');
+    return `boolean({ rect(${pair()}) }, { rect(${point(c)}, ${point(d)}) }, op: "difference", fill: blue)`;
+  }
   if (name === 'content') return `content(${point(a)}, [Text])`;
   if ((name === 'line' || name === 'mark') && distance(a, b) < 0.00001)
     throw new Error('Choose distinct start and end points.');

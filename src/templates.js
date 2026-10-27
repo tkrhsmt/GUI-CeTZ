@@ -4,6 +4,11 @@ const { callFromPoints } = require('./placement');
 // These are source templates, not approximations of CeTZ geometry. Typst renders
 // the resulting canvas so marks, curves, paths, anchors and styles stay exact.
 const SHAPES = [
+  { label: 'polygon', call: 'polygon((0, 0), 6, radius: 1)' },
+  { label: 'circle-through', call: 'circle-through((0, 0), (1, 1), (2, 0))' },
+  { label: 'arc-through', call: 'arc-through((0, 0), (1, 1), (2, 0))' },
+  { label: 'bezier-through', call: 'bezier-through((0, 0), (1, 1), (2, 0))' },
+  { label: 'boolean', call: 'boolean({ rect((0, 0), (2, 2)) }, { rect((1, 1), (3, 3)) }, op: "difference", fill: blue)' },
   { label: 'arc', call: 'arc((0, 0), start: 30deg, stop: 150deg, radius: 1)' },
   { label: 'mark', call: 'mark((0, 0), (1, 0), symbol: ">", scale: 3)' },
   { label: 'n-star', call: 'n-star((0, 0), 5, radius: 1, fill: yellow)' },
@@ -21,6 +26,8 @@ const PREVIEW_PRIMITIVES = [
   { label: 'content', call: 'content((0, 0), [Text])' },
   { label: 'line', call: 'line((0, 0), (2, 0))' }
 ];
+
+const ALL_SHAPES = PREVIEW_PRIMITIVES.concat(SHAPES);
 
 function insertionFor(source, canvas, call) {
   const body = source.slice(canvas.bodyStart, canvas.bodyEnd);
@@ -61,7 +68,7 @@ function templateInsertions(source, canvas, cells, originalCells = new Map(), ca
     if (originalCells.has(id) || item.cell.parent !== '1') continue;
     const name = /(?:^|;)cetzTemplate=([\w-]+)(?:;|$)/.exec(item.cell.style || '')?.[1];
     if (!name) continue;
-    const shape = SHAPES.concat(PREVIEW_PRIMITIVES).find(entry => entry.label === name);
+    const shape = ALL_SHAPES.find(entry => entry.label === name);
     if (!shape) throw new Error(`Unknown CeTZ shape template: ${name}`);
     const encoded = /(?:^|;)cetzPoints=([^;]+)(?:;|$)/.exec(item.cell.style || '')?.[1];
     if (encoded) {
@@ -76,4 +83,4 @@ function templateInsertions(source, canvas, cells, originalCells = new Map(), ca
   return [{ start: insertion.offset, end: insertion.offset, text: insertion.text }];
 }
 
-module.exports = { SHAPES, insertionFor, templateInsertions };
+module.exports = { SHAPES, ALL_SHAPES, insertionFor, templateInsertions };

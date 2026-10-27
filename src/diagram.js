@@ -124,7 +124,7 @@ function parseCanvas(text, canvasIndex = 0) {
   if (!canvas) return null;
   const elements = [], unsupported = canvas.advancedOptions ? ['canvas options at ' + canvas.start] : [];
   const kinds = new Set(['rect', 'circle', 'line', 'content', 'polygon']);
-  const otherDrawingNames = new Set(['arc', 'arc-through', 'grid', 'bezier', 'bezier-through', 'n-star', 'rect-around',
+  const otherDrawingNames = new Set(['circle-through', 'arc', 'arc-through', 'grid', 'bezier', 'bezier-through', 'n-star', 'rect-around',
     'hobby', 'catmull', 'mark', 'merge-path', 'compound-path', 'boolean', 'hide', 'intersections',
     'group', 'anchor', 'scope', 'copy-anchors', 'set-ctx', 'get-ctx', 'for-each-anchor', 'on-layer',
     'floating', 'set-style', 'stroke', 'fill', 'register-mark', 'set-to', 'on-xy', 'on-xz', 'on-zy',

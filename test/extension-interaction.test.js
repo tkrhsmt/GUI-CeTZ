@@ -277,3 +277,33 @@ test('incomplete automatic properties keep the last valid preview without an err
   assert.match(propertyCell().cell.style, /cetzStrokeColor=#ff4136/);
   assert.doesNotMatch(gui.text, /cetzStatus=/);
 });
+
+test('Boolean native saves remain operable through property changes, movement, deletion and undo', async t => {
+  const initial = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\nboolean({ rect((3, 2.5), (4.5, 4)) }, { rect((3.5, 4.5), (6, 3)) }, op: "difference", fill: blue)\ncircle((8, 0), radius: 1)\n})';
+  const { source, gui, save, action, until, ownerIds, removeShapes } = await extensionFixture(t, initial);
+  // mxCodec drops default-valued rectangle coordinates during every save.
+  const nativeSave = xml => xml.replace(/(<mxCell\b[^>]*\bid="cetz-render-\d+"[\s\S]*?<mxGeometry)([^>]+)/g,
+    (_, prefix, attributes) => prefix + attributes.replace(/\s[xy]="0"/g, ''));
+  const owner = readAllCells(gui.text).get(ownerIds()[0]);
+  const base = JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(owner.cell.style)[1])).base;
+  const value = encodeURIComponent(JSON.stringify({ base, values: { op: '"union"', fill: 'green' } }))
+    .replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16));
+  const marker = action('properties', '0').replace('cetzAction=properties;', 'cetzAction=properties;cetzValue=' + value + ';');
+  save(nativeSave(gui.text).replace('</root>', marker + '</root>'));
+  await until(() => source.text.includes('op: "union"') && !gui.text.includes('cetzAction=properties;'));
+  assert.doesNotMatch(gui.text, /cetzStatus=/);
+  const afterProperties = source.text;
+  const id = ownerIds()[0];
+  const movedXml = nativeSave(gui.text).replace(new RegExp('(<mxCell id="' + id + '"[\\s\\S]*?<mxGeometry x=")([\\d.]+)'),
+    (_, prefix, x) => prefix + (+x + 40));
+  save(movedXml);
+  await until(() => source.text !== afterProperties && gui.text !== movedXml);
+  assert.doesNotMatch(gui.text, /cetzStatus=/);
+  save(nativeSave(gui.text).replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === afterProperties && !gui.text.includes('cetzAction=undo;'));
+  save(removeShapes(nativeSave(gui.text), [0]));
+  await until(() => !source.text.includes('boolean('));
+  save(nativeSave(gui.text).replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === afterProperties && !gui.text.includes('cetzAction=undo;'));
+  assert.doesNotMatch(gui.text, /cetzStatus=/);
+});

@@ -8,9 +8,14 @@ Draw.loadPlugin(function (ui) {
   if (ui.guiCetzPluginLoaded) return;
   ui.guiCetzPluginLoaded = true;
 
-  var shapeNames = ['arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier',
+  var shapeNames = ['polygon', 'circle-through', 'arc-through', 'bezier-through', 'boolean', 'arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier',
     'hobby', 'catmull', 'merge-path', 'compound-path'];
   var shapeGlyphs = {
+    polygon: '<path d="M19 7H45L58 24L45 41H19L6 24Z"/>',
+    'circle-through': '<circle cx="32" cy="24" r="17"/><path d="M15 24h1M32 7v1M49 24h1" stroke="#e28b23" stroke-width="6"/>',
+    'arc-through': '<path d="M10 36A24 24 0 0 1 54 36"/><circle cx="10" cy="36" r="2"/><circle cx="32" cy="21" r="2"/><circle cx="54" cy="36" r="2"/>',
+    'bezier-through': '<path d="M8 36C9 3 45 1 56 30"/><circle cx="8" cy="36" r="2"/><circle cx="30" cy="10" r="2"/><circle cx="56" cy="30" r="2"/>',
+    boolean: '<path d="M9 8H39V19H24V39H9Z"/><path d="M24 19H53V43H24Z" stroke-dasharray="3 3" opacity=".4"/>',
     rect: '<rect x="10" y="10" width="44" height="28" rx="2"/>',
     circle: '<circle cx="32" cy="24" r="17"/>',
     content: '<rect x="8" y="10" width="48" height="28" rx="3" stroke="#93c5fd"/><path d="M18 18 H46 M18 25 H41 M18 32 H35"/>',
@@ -406,6 +411,11 @@ Draw.loadPlugin(function (ui) {
   }
   var placement = null;
   var placementSteps = {
+    polygon: ['Center', 'Vertex (sets radius and angle; sides in Properties)'],
+    'circle-through': ['Point A', 'Point B', 'Point C (not on the A–B line)'],
+    'arc-through': ['Start point', 'Point on arc', 'End point (not on the same line)'],
+    'bezier-through': ['Start point', 'Point on curve', 'End point'],
+    boolean: ['First corner of operand A (CeTZ 0.5.2)', 'Opposite corner of A', 'First corner of operand B', 'Opposite corner of B (operation in Properties)'],
     content: ['Text position'], line: ['Start point', 'End point'], mark: ['Start point', 'End point'],
     rect: ['First corner', 'Opposite corner'], grid: ['First corner', 'Opposite corner'],
     'rect-around': ['First corner', 'Opposite corner'],
@@ -471,8 +481,21 @@ Draw.loadPlugin(function (ui) {
       '" width="' + Math.abs(p[0] - q[0]) + '" height="' + Math.abs(p[1] - q[1]) + '"/>'; }
     function circle(p, q) { return '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="' + Math.hypot(p[0] - q[0], p[1] - q[1]) + '"/>'; }
     if (a && b && /^(rect|grid|rect-around|compound-path)$/.test(name)) shapes = rectangle(a, b);
-    else if (a && b && /^(circle|n-star|arc)$/.test(name)) shapes = circle(a, b);
+    else if (a && b && /^(circle|polygon|n-star|arc)$/.test(name)) shapes = circle(a, b);
     else if (a && b) shapes = '<polyline points="' + points.map(function (p) { return p.join(','); }).join(' ') + '"/>';
+    if (name === 'polygon' && b) {
+      var start = Math.atan2(b[1] - a[1], b[0] - a[0]), radius = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      shapes = '<polygon points="' + Array.from({ length: 6 }, function (_, i) {
+        var angle = start + i * Math.PI / 3; return [a[0] + radius * Math.cos(angle), a[1] + radius * Math.sin(angle)].join(',');
+      }).join(' ') + '"/>';
+    }
+    if (name === 'boolean' && b) shapes = rectangle(a, b) + (d ? rectangle(c, d) : '');
+    if (/-through$/.test(name) && c) {
+      var curves = curveSegments(name, points.map(function (point) { return { x: point[0], y: point[1] }; }), {});
+      if (curves.length) shapes = '<path d="M ' + curves[0][0].x + ' ' + curves[0][0].y + ' ' + curves.map(function (curve) {
+        return 'C ' + [curve[2].x, curve[2].y, curve[3].x, curve[3].y, curve[1].x, curve[1].y].join(' ');
+      }).join(' ') + '"/>';
+    }
     if (name === 'arc' && c) {
       var radius = Math.hypot(b[0] - a[0], b[1] - a[1]);
       var start = Math.atan2(b[1] - a[1], b[0] - a[0]);
@@ -492,7 +515,7 @@ Draw.loadPlugin(function (ui) {
     var name = placement.name, points = placement.points;
     if (variablePlacement(name) && points.length < 2) { placementHint('Add at least two points'); return; }
     var pair = name === 'compound-path' ? points.slice(2) : points;
-    var zeroRadius = /^(circle|n-star|arc|compound-path)$/.test(name) &&
+    var zeroRadius = /^(circle|polygon|n-star|arc|compound-path)$/.test(name) &&
       Math.hypot(pair[0][0] - pair[1][0], pair[0][1] - pair[1][1]) < 0.00001;
     var flatRectangle = /^(rect|grid|rect-around|compound-path)$/.test(name) &&
       (points[0][0] === points[1][0] || points[0][1] === points[1][1]);
@@ -525,13 +548,16 @@ Draw.loadPlugin(function (ui) {
       var p = placementPoint(event), previous = placement.points[placement.points.length - 1];
       if (variablePlacement(placement.name) && previous && p[0] === previous[0] && p[1] === previous[1]) return;
       var name = placement.name, points = placement.points, count = points.length;
-      var flatCorner = count === 1 && /^(rect|grid|rect-around|compound-path)$/.test(name) &&
-        (p[0] === points[0][0] || p[1] === points[0][1]);
+      var cornerIndex = name === 'boolean' && count === 3 ? 2 : 0;
+      var flatCorner = (count === 1 && /^(rect|grid|rect-around|compound-path|boolean)$/.test(name) || count === 3 && name === 'boolean') &&
+        (p[0] === points[cornerIndex][0] || p[1] === points[cornerIndex][1]);
       var samePoint = previous && p[0] === previous[0] && p[1] === previous[1];
-      var zeroRadius = samePoint && (count === 1 && /^(circle|n-star|arc|line|mark)$/.test(name) ||
+      var zeroRadius = samePoint && (count === 1 && /^(circle|polygon|n-star|arc|line|mark)$/.test(name) ||
         count === 3 && name === 'compound-path');
       var invalidArcEnd = name === 'arc' && count === 2 && p[0] === points[0][0] && p[1] === points[0][1];
-      if (flatCorner || zeroRadius || invalidArcEnd) { placementHint('Choose a different point'); return; }
+      var collinear = count === 2 && /^(circle-through|arc-through)$/.test(name) &&
+        !circleThroughPoints(points.concat([p]).map(function (point) { return { x: point[0], y: point[1] }; }));
+      if (flatCorner || zeroRadius || invalidArcEnd || collinear) { placementHint('Choose a different point'); return; }
       placement.points.push(p); previewPlacement(); placementHint();
       if (!variablePlacement(placement.name) && placement.points.length === placementSteps[placement.name].length) finishPlacement();
     }, true);
@@ -829,6 +855,13 @@ Draw.loadPlugin(function (ui) {
         }
         x.addEventListener('input', coordinateChange); y.addEventListener('input', coordinateChange);
         x.addEventListener('change', coordinateChange); y.addEventListener('change', coordinateChange);
+      } else if (field.choices && (!field.value || field.choices.indexOf(field.value) >= 0)) {
+        input = document.createElement('select'); input.setAttribute('aria-label', field.label);
+        [''].concat(field.choices).forEach(function (choice) {
+          var option = document.createElement('option'); option.value = choice;
+          option.textContent = choice ? choice.replace(/"/g, '') : 'Default (' + field.fallback + ')'; input.appendChild(option);
+        });
+        input.value = field.value; row.appendChild(input);
       } else if (/^(true|false)$/.test(field.value || field.fallback || '')) {
         input = document.createElement('select'); input.setAttribute('aria-label', field.label);
         [['', field.fallback === undefined ? 'Inherited' : 'Default (' + field.fallback + ')'], ['true', 'Yes'], ['false', 'No']].forEach(function (entry) {
@@ -836,7 +869,7 @@ Draw.loadPlugin(function (ui) {
         });
         input.value = field.value; row.appendChild(input);
       } else input = inputFor(row, field.label, field.value, field.fallback,
-        field.value.indexOf('\n') >= 0 || field.label === 'Path contents' || field.label === 'Text / content');
+        field.multiline || field.value.indexOf('\n') >= 0 || field.label === 'Path contents' || field.label === 'Text / content');
       inspectorFields.push({ key: field.key, input: input, original: field.value });
       input.addEventListener('input', propertyDraftChanged); input.addEventListener('change', propertyDraftChanged);
       input.addEventListener('compositionstart', function () { state.composing = true; if (state.timer) clearTimeout(state.timer); });
@@ -1029,6 +1062,7 @@ Draw.loadPlugin(function (ui) {
         if (Math.abs(entry.target - entry.start) < 0.001) return;
         var geometry = entry.geometry.clone();
         geometry[axis] = entry.target;
+        ['cetzMoveX', 'cetzMoveY', 'cetzMoveGrid'].forEach(function (key) { graph.setCellStyles(key, null, [entry.cell]); });
         model.setGeometry(entry.cell, geometry);
       });
     } finally { model.endUpdate(); }
@@ -1036,7 +1070,7 @@ Draw.loadPlugin(function (ui) {
   function ensureCetzMenu() {
     if (!ui.menubar || cetzMenu && cetzMenu.parentNode) return;
     cetzMenu = ui.menubar.addMenu('CeTZ', function (menu, parent) {
-      shapeNames.forEach(function (name) {
+      ['rect', 'circle', 'content', 'line'].concat(shapeNames).forEach(function (name) {
         menu.addItem(name, null, function () {
           if (!isCetz()) return;
           beginPlacement(name);
@@ -1133,6 +1167,7 @@ Draw.loadPlugin(function (ui) {
     constrainChild: graph.isConstrainChild,
     updateHint: graph.graphHandler && graph.graphHandler.updateHint,
     useGuidesForEvent: graph.graphHandler && graph.graphHandler.useGuidesForEvent,
+    getGuideStates: graph.graphHandler && graph.graphHandler.getGuideStates,
     maxLivePreview: graph.graphHandler && graph.graphHandler.maxLivePreview,
     allowLivePreview: graph.graphHandler && graph.graphHandler.allowLivePreview,
     updatePreview: graph.graphHandler && graph.graphHandler.updatePreview,
@@ -1305,11 +1340,65 @@ Draw.loadPlugin(function (ui) {
   }
   // Recompute spline control vertices from knots, rather than warping the
   // old vertices with distance weights (which breaks down on large edits).
+  function circleThroughPoints(points) {
+    if (points.length < 3) return null;
+    var a = points[0], bx = points[1].x - a.x, by = points[1].y - a.y;
+    var cx = points[2].x - a.x, cy = points[2].y - a.y;
+    var cross = bx * cy - by * cx, extent = Math.max(bx * bx + by * by, cx * cx + cy * cy, (bx - cx) * (bx - cx) + (by - cy) * (by - cy));
+    if (!extent || Math.abs(cross) <= 1e-10 * extent) return null;
+    var u = bx * bx + by * by, v = cx * cx + cy * cy;
+    var x = a.x + (u * cy - v * by) / (2 * cross), y = a.y + (bx * v - cx * u) / (2 * cross);
+    return { x: x, y: y, radius: Math.hypot(a.x - x, a.y - y) };
+  }
+  function throughSegments(kind, p, style) {
+    if (p.length < 3) return [];
+    var a = p[0], b = p[1], c = p[2], center = circleThroughPoints(p);
+    if (kind === 'bezier-through') {
+      var d1 = Math.hypot(a.x - b.x, a.y - b.y), d2 = Math.hypot(c.x - b.x, c.y - b.y);
+      if (!d1 || !d2) return [[a, c, a, c]];
+      if (!center) {
+        var se = Math.hypot(c.x - a.x, c.y - a.y);
+        return d1 >= se && d1 >= d2 ? [[a, b, a, b]] : d2 >= se && d2 >= d1 ? [[c, b, c, b]] : [[a, c, a, c]];
+      }
+      // CeTZ's cubic-through-3points construction (distance parameterization,
+      // ABC projection, and the tangent of the three-point circle).
+      var t = d1 / (d1 + d2), den = Math.pow(t, 3) + Math.pow(1 - t, 3);
+      var u = Math.pow(1 - t, 3) / den, ratio = Math.abs((den - 1) / den);
+      var ax = b.x + (b.x - a.x * u - c.x * (1 - u)) / ratio;
+      var ay = b.y + (b.y - a.y * u - c.y * (1 - u)) / ratio;
+      var side = (c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x);
+      var bc = (side > 0 ? -1 : 1) * Math.hypot(c.x - a.x, c.y - a.y) / 3;
+      var dx = (b.y - center.y) / center.radius, dy = (center.x - b.x) / center.radius;
+      var v1 = { x: ax + (b.x + t * bc * dx - ax) / (1 - t), y: ay + (b.y + t * bc * dy - ay) / (1 - t) };
+      var v2 = { x: ax + (b.x - (1 - t) * bc * dx - ax) / t, y: ay + (b.y - (1 - t) * bc * dy - ay) / t };
+      return [[a, c, { x: a.x + (v1.x - a.x) / t, y: a.y + (v1.y - a.y) / t },
+        { x: c.x + (v2.x - c.x) / (1 - t), y: c.y + (v2.y - c.y) / (1 - t) }]];
+    }
+    if (!center) return [];
+    var start = Math.atan2(a.y - center.y, a.x - center.x), tau = 2 * Math.PI;
+    var sweep = -tau;
+    if (kind === 'circle-through') start = -Math.PI / 2;
+    if (kind === 'arc-through') {
+      var stop = (Math.atan2(c.y - center.y, c.x - center.x) - start + tau) % tau;
+      var middle = (Math.atan2(b.y - center.y, b.x - center.x) - start + tau) % tau;
+      sweep = middle <= stop ? stop : stop - tau;
+    }
+    var count = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2))), step = sweep / count;
+    function at(angle) { return { x: center.x + center.radius * Math.cos(angle), y: center.y + center.radius * Math.sin(angle) }; }
+    var curves = Array.from({ length: count }, function (_, i) {
+      var angle = start + step * i, next = angle + step, k = kind === 'circle-through' ? -0.551784 : 4 / 3 * Math.tan(step / 4), from = at(angle), to = at(next);
+      return [from, to, { x: from.x - center.radius * k * Math.sin(angle), y: from.y + center.radius * k * Math.cos(angle) },
+        { x: to.x + center.radius * k * Math.sin(next), y: to.y - center.radius * k * Math.cos(next) }];
+    });
+    if (kind === 'arc-through' && style.cetzThroughMode === 'PIE') curves.push([c, center, c, center]);
+    return curves;
+  }
   function curveSegments(kind, points, style) {
     function linear() { return points.slice(1).map(function (point, i) { return [points[i], point, points[i], point]; }); }
     function lerp(a, b, t) { return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; }
     var closed = String(style.cetzCurveClose) === '1', p = points.slice(), count = p.length;
     if (count < 2) return [];
+    if (/-through$/.test(kind)) return throughSegments(kind, p, style);
     if (kind === 'bezier') {
       if (count === 3) return [[p[0], p[1], lerp(p[0], p[2], 2 / 3), lerp(p[1], p[2], 2 / 3)]];
       return count >= 4 ? [[p[0], p[1], p[2], p[3]]] : linear();
@@ -1441,7 +1530,7 @@ Draw.loadPlugin(function (ui) {
     }) === cell.id;
     var nextPoints = allPoints.map(function (p) { return resize ? resize.move(p.x, p.y) :
       { x: p.x + (p.selected ? dx : 0), y: p.y + (p.selected ? dy : 0) }; });
-    var curved = ['bezier', 'catmull', 'hobby'].indexOf(kind) >= 0;
+    var curved = ['bezier', 'catmull', 'hobby', 'bezier-through', 'circle-through', 'arc-through'].indexOf(kind) >= 0;
     var newCurves = curved ? curveSegments(kind, nextPoints, style) : null;
     var curves = mainLayer ? newCurves : null;
     var rigid = null, lineEnds = null;
@@ -1733,7 +1822,7 @@ Draw.loadPlugin(function (ui) {
     if (!isCetzSelectionHandler(handler)) return false;
     var cell = handler.state.cell;
     return /^cetz-point-/.test(cell.id) ||
-      ['line', 'bezier', 'hobby', 'catmull', 'arc', 'content', 'anchor', 'group', 'mark']
+      ['line', 'bezier', 'hobby', 'catmull', 'arc', 'content', 'anchor', 'group', 'mark', 'circle-through', 'arc-through', 'bezier-through']
         .includes(graph.getCellStyle(cell).cetzKind);
   }
   function suppressHandlerBorders(handler) {
@@ -2050,6 +2139,7 @@ Draw.loadPlugin(function (ui) {
   }
   function clearPointGuides(handler) {
     handler.cetzGuideSnap = null;
+    handler.cetzGridEnabled = null;
     handler.cetzPointGuideActive = false;
   }
   function preparePointGuide(handler, cell) {
@@ -2142,6 +2232,7 @@ Draw.loadPlugin(function (ui) {
         graph.setCellStyles('cetzSnapStep', String(snapStep()), [cell]);
         graph.setCellStyles('cetzGuideX', null, [cell]);
         graph.setCellStyles('cetzGuideY', null, [cell]);
+        ['cetzMoveX', 'cetzMoveY', 'cetzMoveGrid'].forEach(function (key) { graph.setCellStyles(key, null, [cell]); });
         return originalResizeCell.apply(this, arguments);
       } finally { model.endUpdate(); }
     };
@@ -2370,6 +2461,7 @@ Draw.loadPlugin(function (ui) {
       'compound-path': 'M4 4H20V20H4ZM12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8',
       'merge-path': 'M4 18V8H12V4H20V18Z'
     };
+    paths['circle-through'] = paths.circle; paths['arc-through'] = paths.arc; paths['bezier-through'] = paths.bezier; paths.boolean = paths['compound-path'];
     return '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + (paths[kind] || paths.rect) + '"/></svg>';
   }
   function updateOutline() {
@@ -2622,6 +2714,28 @@ Draw.loadPlugin(function (ui) {
             // Keep the grid/guide result through mxGraph's integer drop rounding.
             if (Number.isFinite(this.currentDx)) args[1] = this.currentDx / graph.view.scale;
             if (Number.isFinite(this.currentDy)) args[2] = this.currentDy / graph.view.scale;
+            if (cells.every(function (cell) { return /^cetz-edit-\d+$/.test(cell.id || ''); })) {
+              var frame = cetzFrame(), geometry = model.getGeometry(cells[0]), anchor = cetzAnchor(cells[0]);
+              var grid = this.cetzGridEnabled == null ? graph.gridEnabled : this.cetzGridEnabled;
+              if (frame && geometry && anchor) {
+                var firstX = (geometry.x + anchor.x - frame.originX) / frame.unitX;
+                var firstY = (frame.originY - geometry.y - anchor.y) / frame.unitY;
+                if (grid && !snap.x && Math.abs(args[1]) > 1e-10)
+                  args[1] = (snapValue(firstX + args[1] / frame.unitX) - firstX) * frame.unitX;
+                if (grid && !snap.y && Math.abs(args[2]) > 1e-10)
+                  args[2] = (firstY - snapValue(firstY - args[2] / frame.unitY)) * frame.unitY;
+                cells.forEach(function (cell, index) {
+                  var g = model.getGeometry(cell), point = cetzAnchor(cell);
+                  var x = (g.x + point.x + args[1] - frame.originX) / frame.unitX;
+                  var y = (frame.originY - g.y - point.y - args[2]) / frame.unitY;
+                  graph.setCellStyles('cetzMoveX', String(Number(x.toFixed(8))), [cell]);
+                  graph.setCellStyles('cetzMoveY', String(Number(y.toFixed(8))), [cell]);
+                  // A multiselection shares one translation; independently
+                  // snapping every member would change their relative layout.
+                  graph.setCellStyles('cetzMoveGrid', grid && index === 0 ? '1' : '0', [cell]);
+                });
+              }
+            }
             return original.moveCells.apply(this, args);
           } finally { model.endUpdate(); }
         };
@@ -2659,6 +2773,35 @@ Draw.loadPlugin(function (ui) {
           original.visible.apply(this, arguments);
       };
       graph.isCellConnectable = function () { return false; };
+      if (original.getGuideStates) graph.graphHandler.getGuideStates = function () {
+        var states = original.getGuideStates.apply(this, arguments);
+        if (!isEditablePreview()) return states;
+        var model = graph.getModel(), moving = {};
+        (this.cells || graph.getSelectionCells()).forEach(function (cell) {
+          var point = /^cetz-point-(\d+)-\d+$/.exec(cell.id || '');
+          moving[point ? 'cetz-edit-' + point[1] : cell.id] = true;
+        });
+        return states.filter(function (state) {
+          var id = state.cell && state.cell.id || '';
+          if (!/^cetz-(?:edit-\d+|point-\d+-\d+)$/.test(id)) return false;
+          var point = /^cetz-point-(\d+)-\d+$/.exec(id);
+          var owner = point ? model.getCell('cetz-edit-' + point[1]) : state.cell, visited = {};
+          // Preview images, axes and labels are implementation details. The
+          // moving shape's own handles must not attract it back off-grid.
+          while (owner) {
+            if (moving[owner.id] || visited[owner.id]) return false;
+            visited[owner.id] = true;
+            var group = graph.getCellStyle(owner).cetzGroup;
+            owner = group === undefined || group === '' ? null : model.getCell('cetz-edit-' + group);
+          }
+          return true;
+        }).map(function (state) {
+          if (!/^cetz-point-/.test(state.cell.id) && graph.getCellStyle(state.cell).cetzKind !== 'anchor') return state;
+          var point = new mxRectangle(state.getCenterX(), state.getCenterY(), 0, 0);
+          point.cell = state.cell;
+          return point;
+        });
+      };
       if (original.useGuidesForEvent) graph.graphHandler.useGuidesForEvent = function () {
         var cells = graph.getSelectionCells();
         if (isEditablePreview() && cells.length === 1 &&
@@ -2668,7 +2811,10 @@ Draw.loadPlugin(function (ui) {
       if (original.snapDelta) graph.snapDelta = function (delta, bounds, ignoreGrid, ignoreX, ignoreY) {
         var cells = graph.getSelectionCells();
         var cell = isEditablePreview() && cells.length === 1 ? cells[0] : null;
-        if (isEditablePreview() && graph.graphHandler) graph.graphHandler.cetzGuideSnap = { x: !!ignoreX, y: !!ignoreY };
+        if (isEditablePreview() && graph.graphHandler) {
+          graph.graphHandler.cetzGuideSnap = { x: !!ignoreX, y: !!ignoreY };
+          graph.graphHandler.cetzGridEnabled = !ignoreGrid && graph.gridEnabled;
+        }
         if (cell && /^cetz-point-\d+-\d+$/.test(cell.id || '')) {
           var handler = graph.graphHandler;
           handler.cetzGuideSnap = { x: !!ignoreX, y: !!ignoreY };
@@ -2746,8 +2892,8 @@ Draw.loadPlugin(function (ui) {
           if (geometry && origin && frame) {
             var scale = graph.view.scale || 1;
             var baseX = geometry.x + origin.x, baseY = geometry.y + origin.y;
-            if (!ignoreX && !ignoreGrid) delta.x = (frame.originX + snapValue((baseX + delta.x / scale - frame.originX) / frame.unitX) * frame.unitX - baseX) * scale;
-            if (!ignoreY && !ignoreGrid) delta.y = (frame.originY - snapValue((frame.originY - baseY - delta.y / scale) / frame.unitY) * frame.unitY - baseY) * scale;
+            if (!ignoreX && !ignoreGrid && graph.gridEnabled) delta.x = (frame.originX + snapValue((baseX + delta.x / scale - frame.originX) / frame.unitX) * frame.unitX - baseX) * scale;
+            if (!ignoreY && !ignoreGrid && graph.gridEnabled) delta.y = (frame.originY - snapValue((frame.originY - baseY - delta.y / scale) / frame.unitY) * frame.unitY - baseY) * scale;
             return delta;
           }
         }
@@ -2838,6 +2984,7 @@ Draw.loadPlugin(function (ui) {
       graph.gridSize = original.gridSize;
       if (graph.graphHandler) graph.graphHandler.updateHint = original.updateHint;
       if (graph.graphHandler) graph.graphHandler.useGuidesForEvent = original.useGuidesForEvent;
+      if (graph.graphHandler && original.getGuideStates) graph.graphHandler.getGuideStates = original.getGuideStates;
       if (graph.graphHandler) graph.graphHandler.maxLivePreview = original.maxLivePreview;
       if (graph.graphHandler) {
         clearDragImages(graph.graphHandler);

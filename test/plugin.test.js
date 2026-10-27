@@ -226,8 +226,8 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.match(formatContainer.children[0].children[0].style.cssText, /scrollbar-width:none/);
 
   const icons = vertexTemplates.filter(entry => entry.style.startsWith('shape=image;'));
-  assert.equal(icons.length, 10);
-  assert.equal(new Set(icons.map(entry => entry.style)).size, 10);
+  assert.equal(icons.length, 15);
+  assert.equal(new Set(icons.map(entry => entry.style)).size, 15);
   for (const icon of icons) {
     assert.match(icon.style, new RegExp(`cetzTemplate=${icon.title};`));
     const image = /image=(data:image\/svg\+xml,[^;]+);/.exec(icon.style)?.[1];

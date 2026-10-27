@@ -38,3 +38,24 @@ test('placement validates incomplete and malformed points rather than inserting 
   const cells = new Map([['bad', { cell: { parent: '1', style: 'cetzTemplate=line;cetzPoints=%invalid;' } }]]);
   assert.throws(() => templateInsertions(source, locateCanvases(source)[0], cells), /Invalid CeTZ placement/);
 });
+
+test('the full documented Shapes catalog includes regular polygons, through variants, and Boolean operations', () => {
+  // Audited against https://cetz-package.github.io/docs/api/draw-functions/shapes/
+  // and its circle, arc, bezier, and Boolean subpages.
+  const documented = ['circle', 'circle-through', 'arc', 'arc-through', 'mark', 'line', 'polygon', 'n-star',
+    'grid', 'content', 'rect', 'rect-around', 'bezier', 'bezier-through', 'hobby', 'catmull', 'merge-path', 'compound-path', 'boolean'];
+  const { ALL_SHAPES } = require('../src/templates');
+  assert.equal(ALL_SHAPES.length, documented.length);
+  assert.deepEqual(new Set(ALL_SHAPES.map(shape => shape.label)), new Set(documented));
+});
+
+test('new placement tools validate their geometric constraints', () => {
+  for (const name of ['circle-through', 'arc-through']) {
+    assert.throws(() => callFromPoints(name, [[0, 0], [1, 1], [2, 2]]), /non-collinear/);
+    assert.throws(() => callFromPoints(name, [[0, 0], [1, 1], [0, 0]]), /non-collinear/);
+  }
+  assert.throws(() => callFromPoints('polygon', [[1, 1], [1, 1]]), /radius/);
+  assert.throws(() => callFromPoints('boolean', [[0, 0], [2, 2], [1, 1], [1, 3]]), /rectangles/);
+  assert.match(callFromPoints('polygon', [[0, 0], [0, 2]]), /6, radius: 2, angle: 90deg/);
+  assert.equal(callFromPoints('bezier-through', [[0, 0], [1, 0], [2, 0]]), 'bezier-through((0, 0), (1, 0), (2, 0))');
+});

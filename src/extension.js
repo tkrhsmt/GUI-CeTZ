@@ -5,7 +5,7 @@ const { parseCanvas } = require('./diagram');
 const { readAllCells } = require('./drawio');
 const { patchesFromEditable, renderEditable } = require('./advanced');
 const { renderDiagram } = require('./render-diagram');
-const { SHAPES, insertionFor, templateInsertions } = require('./templates');
+const { ALL_SHAPES, insertionFor, templateInsertions } = require('./templates');
 const { EditHistory, historyAction } = require('./history');
 const { sourceAction, sourceActionPatches } = require('./source-actions');
 const { exportTypst } = require('./export');
@@ -324,11 +324,11 @@ async function insertShape() {
   const canvas = session ? canvases[session.index] :
     canvases.find(item => offset >= item.start && offset <= item.end);
   if (!canvas) throw new Error('Place the cursor in a CeTZ canvas before inserting a shape.');
-  const selected = await vscode.window.showQuickPick(SHAPES.map(shape => shape.label), {
+  const selected = await vscode.window.showQuickPick(ALL_SHAPES.map(shape => shape.label), {
     title: 'CeTZ: Insert Shape', placeHolder: 'Choose a CeTZ draw function'
   });
   if (!selected) return;
-  const shape = SHAPES.find(item => item.label === selected);
+  const shape = ALL_SHAPES.find(item => item.label === selected);
   const insertion = insertionFor(source, canvas, shape.call);
   const edit = new vscode.WorkspaceEdit();
   edit.insert(document.uri, document.positionAt(insertion.offset), insertion.text);

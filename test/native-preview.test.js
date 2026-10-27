@@ -1272,3 +1272,196 @@ test('Outline explains how to start an empty drawing', { skip }, async t => {
   assert.equal(outline.querySelector('.cetzOutlineCount').textContent, '0');
   assert.match(outline.querySelector('.cetzOutlineEmpty').textContent, /No objects yet/);
 });
+
+test('three-point circle, arc and Bezier previews match Typst while their points move', { skip }, async t => {
+  for (const name of ['circle-through', 'arc-through', 'bezier-through']) {
+    const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' + name + '((0, 0), (1, 1), (2, 0))\n})';
+    const f = await fixture(t, source, { loadedLayers: true });
+    assert.equal(Object.keys(f.graph.model.cells).filter(id => /^cetz-point-0-/.test(id)).length, 3, name);
+    const unit = f.rendered.calibration.unitX * 2.5;
+    const drag = f.drag('cetz-point-0-1', unit * 0.25, -unit * 0.5);
+    await compareWithTypst(f, drag, 'cetz-point-0-1');
+    f.send(drag.target, 'up', drag.x + unit * 0.25, drag.y - unit * 0.5);
+  }
+});
+
+test('Boolean properties offer all four operations and save them automatically', { skip }, async t => {
+  let source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\nboolean({ rect((0, 0), (2, 2)) }, { rect((1, 1), (3, 3)) }, op: "difference", fill: blue)\n})';
+  const f = await fixture(t, source); f.select('cetz-edit-0');
+  const panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
+  const menu = panel.querySelector('[aria-label="op"]');
+  assert.equal(menu.tagName, 'SELECT');
+  assert.deepEqual([...menu.options].map(option => option.value).filter(Boolean), ['"union"', '"intersection"', '"difference"', '"xor"']);
+  for (const op of ['union', 'intersection', 'xor', 'difference']) {
+    menu.value = JSON.stringify(op); menu.dispatchEvent(new f.w.Event('change', { bubbles: true }));
+    assert.equal(inspectorCommands(f).length, 1);
+    source = await acceptInspectorCommand(f, source);
+    assert.ok(source.includes('op: ' + JSON.stringify(op)));
+  }
+});
+
+test('Boolean artwork survives native Draw.io serialization, selection, movement and resizing', { skip }, async t => {
+  for (const version of ['0.5.2', '0.5.3']) {
+    const source = '#import "@preview/cetz:' + version + '"\n#cetz.canvas({ import cetz.draw: *\nboolean({ rect((3, 2.5), (4.5, 4)) }, { rect((3.5, 4.5), (6, 3)) }, op: "difference", fill: blue)\n})';
+    const f = await fixture(t, source, { loadedLayers: true });
+    const xml = () => f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+    assert.deepEqual(patchesFromEditable(source, f.rendered, xml(), readAllCells), [], 'an unchanged native save is not an artwork edit');
+    f.select('cetz-edit-0');
+    assert.deepEqual(patchesFromEditable(source, f.rendered, xml(), readAllCells), [], 'selection remains source-neutral');
+    const unit = f.rendered.calibration.unitX * 2.5;
+    const drag = f.drag('cetz-edit-0', unit * 0.5, unit * 0.25);
+    f.send(drag.target, 'up', drag.x + unit * 0.5, drag.y + unit * 0.25);
+    const patches = patchesFromEditable(source, f.rendered, xml(), readAllCells);
+    assert.equal(patches.length, 1, 'moving the owner is an editable source operation');
+    const moved = patches.reduceRight((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+    const rendered = await renderEditable(moved, parseCanvas(moved).canvas, path.resolve('examples/basic.typ'));
+    assert.ok(rendered.calls[0].geometry);
+    const selected = f.select('cetz-edit-0');
+    const handler = f.graph.selectionCellsHandler.getHandler(selected.cell), target = handler.sizers[7].node;
+    const x = selected.state.x + selected.state.width, y = selected.state.y + selected.state.height;
+    f.send(target, 'down', x, y); f.send(target, 'move', x + unit * 0.5, y + unit * 0.25);
+    f.send(target, 'up', x + unit * 0.5, y + unit * 0.25);
+    const resizedPatches = patchesFromEditable(source, f.rendered, xml(), readAllCells);
+    assert.equal(resizedPatches.length, 1);
+    const resized = resizedPatches.reduceRight((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+    const resizedRender = await renderEditable(resized, parseCanvas(resized).canvas, path.resolve('examples/basic.typ'));
+    assert.ok(resizedRender.calls[0].geometry);
+    assert.equal(f.graph.isEnabled(), true);
+  }
+});
+
+test('all palette shapes survive untouched native serialization while actual artwork edits are still rejected', { skip }, async t => {
+  const { ALL_SHAPES } = require('../src/templates');
+  for (const shape of ALL_SHAPES) {
+    const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' + shape.call + '\n})';
+    const f = await fixture(t, source);
+    const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+    assert.deepEqual(patchesFromEditable(source, f.rendered, xml, readAllCells), [], shape.label);
+    const layer = Object.values(f.graph.model.cells).find(cell => /^cetz-render-/.test(cell.id));
+    const geometry = layer.geometry.clone(); geometry.x += 1;
+    f.graph.model.setGeometry(layer, geometry);
+    const damaged = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+    assert.throws(() => patchesFromEditable(source, f.rendered, damaged, readAllCells), /rendered shape/, shape.label);
+  }
+});
+
+test('new shapes move on the CeTZ grid with native Draw.io guides enabled', { skip }, async t => {
+  const calls = [
+    'polygon((3, 3.5), 6, radius: 0.70710678, angle: -45deg)',
+    'polygon((3.09557432, 3.5), 6, radius: 0.70710678, angle: -45deg)',
+    'circle-through((0, 0), (1, 1), (2, 0))',
+    'arc-through((0, 0), (1, 1), (2, 0))',
+    'bezier-through((0, 0), (1, 1), (2, 0))',
+    'boolean({ rect((3, 2.5), (4.5, 4)) }, { rect((3.5, 4.5), (6, 3)) }, op: "difference", fill: blue)'
+  ];
+  const { propertyModel } = require('../src/properties');
+  const { snapStep, snapCoordinate } = require('../src/snapping');
+  const cases = [[1, 0.01, 0.1], ...[1, 4, 16].map(scale => {
+    const step = snapStep(scale); return [scale, step * 1.48, step * 2.44];
+  })];
+  function firstPoint(call) {
+    const field = propertyModel(call).fields.find(field => field.key === '$0');
+    if (field.point) return field.point;
+    const rect = /rect\(\(\s*([+\d.-]+),\s*([+\d.-]+)\)/.exec(field.value);
+    return [Number(rect[1]), Number(rect[2])];
+  }
+  for (const call of calls) for (const [scale, dx, dy] of cases) {
+    const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\n' + call + '\n})';
+    const f = await fixture(t, source, { loadedLayers: true });
+    f.graph.view.scaleAndTranslate(scale, 3, -2);
+    f.graph.graphHandler.guidesEnabled = true;
+    const unit = f.rendered.calibration.unitX * 2.5 * scale;
+    const drag = f.drag('cetz-edit-0', unit * dx, -unit * dy);
+    const guided = { ...drag.handler.cetzGuideSnap };
+    f.send(drag.target, 'up', drag.x + unit * dx, drag.y - unit * dy);
+    const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+    const patches = patchesFromEditable(source, f.rendered, xml, readAllCells);
+    const changed = patches.reduceRight((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+    const rendered = await renderEditable(changed, parseCanvas(changed).canvas, path.resolve('examples/basic.typ'));
+    const before = firstPoint(f.rendered.calls[0]), after = firstPoint(rendered.calls[0]);
+    assert.deepEqual(guided, { x: false, y: false }, call + ' has no other shape to guide to');
+    assert.deepEqual(after, [snapCoordinate(before[0] + dx, snapStep(scale)), snapCoordinate(before[1] + dy, snapStep(scale))], scale + '×: ' + changed);
+    if (call.startsWith('polygon')) assert.ok(changed.includes('radius: 0.70710678'), 'moving preserves radius and shape');
+  }
+});
+
+test('polygon movement retains intentional off-grid alignment to a real shape', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\npolygon((0, 0), 6, radius: 0.70710678, angle: -45deg)\nrect((3.13, 4), (4.13, 5))\n})';
+  const f = await fixture(t, source, { loadedLayers: true });
+  f.graph.graphHandler.guidesEnabled = true;
+  const unit = f.rendered.calibration.unitX * 2.5;
+  const drag = f.drag('cetz-edit-0', unit * 2.43, -unit * 0.74);
+  assert.equal(drag.handler.cetzGuideSnap.x, true);
+  assert.equal(drag.handler.cetzGuideSnap.y, false);
+  assert.ok(drag.handler.guide.states.every(state => /^cetz-(edit|point)-/.test(state.cell.id)));
+  const target = f.graph.view.getState(f.graph.model.getCell('cetz-edit-1'));
+  assert.ok(Math.abs(drag.state.x + drag.state.width + drag.handler.currentDx - target.x) < 0.001);
+  f.send(drag.target, 'up', drag.x + unit * 2.43, drag.y - unit * 0.74);
+  const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  const patches = patchesFromEditable(source, f.rendered, xml, readAllCells);
+  const changed = patches.reduceRight((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+  const point = require('../src/properties').propertyModel(require('../src/advanced').locateEditableCalls(changed, parseCanvas(changed).canvas)[0]).fields[0].point;
+  assert.ok(Math.abs(point[0] - (3.13 - 0.70710678)) < 0.00001, changed);
+  assert.equal(point[1], 0.75);
+});
+
+test('body drag coordinates remain authoritative after pixel-bound rounding and repeated renders', { skip }, async t => {
+  const { snapStep, snapCoordinate } = require('../src/snapping');
+  const { propertyModel } = require('../src/properties');
+  let source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\nrect((0, 0), (3, 2))\ncircle((1.5, 1), radius: 0.2)\ncontent((0.60002, 0.25), [aaaa])\nboolean({ rect((4.59998797, 1.93531558), (6.65824109, 4.12313302)) }, { rect((5.28607205, 4.85240551), (8.7164946, 2.66458805)) }, op: "xor", fill: blue)\npolygon((2.50587685, 3.67620927), 3, radius: 0.70710678, angle: 0deg)\n})';
+  for (const [scale, dx, dy] of [[1, 0.37, 0.61], [2, -0.31, 0.43], [4, 0.17, -0.29], [8, -0.07, 0.13]]) {
+    const f = await fixture(t, source, { loadedLayers: true });
+    f.graph.graphHandler.guidesEnabled = false;
+    f.graph.view.scaleAndTranslate(scale, 3, -2);
+    const index = f.rendered.calls.findIndex(call => call.name === 'polygon');
+    const before = propertyModel(f.rendered.calls[index]).fields[0].point;
+    const unit = f.rendered.calibration.unitX * 2.5 * scale;
+    const drag = f.drag('cetz-edit-' + index, unit * dx, -unit * dy);
+    f.send(drag.target, 'up', drag.x + unit * dx, drag.y - unit * dy);
+    const style = f.graph.getCellStyle(drag.cell), step = snapStep(scale);
+    assert.equal(Number(style.cetzMoveX), snapCoordinate(before[0] + dx, step));
+    assert.equal(Number(style.cetzMoveY), snapCoordinate(before[1] + dy, step));
+    // Simulate native layout/save rounding after the drag was snapped. That
+    // rounding must not turn a translation into a scale or alter its target.
+    const g = drag.cell.geometry.clone();
+    g.x = Math.round(g.x) + 0.17; g.y = Math.round(g.y) - 0.23;
+    g.width = Math.round(g.width * 100) / 100; g.height = Math.round(g.height * 100) / 100;
+    f.graph.model.setGeometry(drag.cell, g);
+    const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+    const patches = patchesFromEditable(source, f.rendered, xml, readAllCells);
+    source = patches.sort((a, b) => b.start - a.start).reduce((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+    const next = await renderEditable(source, parseCanvas(source).canvas, path.resolve('examples/basic.typ'));
+    const polygon = next.calls.find(call => call.name === 'polygon');
+    assert.deepEqual(propertyModel(polygon).fields[0].point, [snapCoordinate(before[0] + dx, step), snapCoordinate(before[1] + dy, step)], source);
+    assert.match(polygon.call, /, 3, radius: 0.70710678, angle: 0deg/);
+  }
+});
+
+test('body drag protocol preserves free movement when the grid is disabled', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\npolygon((0, 0), 6, radius: 0.70710678)\n})';
+  const f = await fixture(t, source, { loadedLayers: true });
+  f.graph.gridEnabled = false; f.graph.graphHandler.guidesEnabled = false;
+  const unit = f.rendered.calibration.unitX * 2.5, drag = f.drag('cetz-edit-0', unit * 0.37, -unit * 0.61);
+  f.send(drag.target, 'up', drag.x + unit * 0.37, drag.y - unit * 0.61);
+  assert.equal(String(f.graph.getCellStyle(drag.cell).cetzMoveGrid), '0');
+  const patches = patchesFromEditable(source, f.rendered, f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)), readAllCells);
+  assert.match(patches[0].text, /polygon\(\(0.37, 0.61\), 6, radius: 0.70710678\)/);
+});
+
+test('moving a selection shares one translation and preserves relative positions', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\npolygon((0.1, 0.2), 6, radius: 0.70710678)\ncircle((3.13, 4.17), radius: 0.3)\n})';
+  const f = await fixture(t, source, { loadedLayers: true });
+  f.graph.graphHandler.guidesEnabled = false;
+  f.graph.setSelectionCells([f.graph.model.getCell('cetz-edit-0'), f.graph.model.getCell('cetz-edit-1')]);
+  f.graph.view.validate();
+  const state = f.graph.view.getState(f.graph.model.getCell('cetz-edit-0'));
+  const x = state.getCenterX(), y = state.getCenterY(), target = state.shape.node.firstChild;
+  const unit = f.rendered.calibration.unitX * 2.5;
+  f.send(target, 'down', x, y); f.send(target, 'move', x + unit * 0.37, y - unit * 0.61);
+  f.send(target, 'up', x + unit * 0.37, y - unit * 0.61);
+  const patches = patchesFromEditable(source, f.rendered, f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)), readAllCells);
+  assert.equal(patches.length, 2);
+  const next = patches.sort((a, b) => b.start - a.start).reduce((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+  assert.match(next, /polygon\(\(0.5, 0.75\), 6, radius: 0.70710678\)/);
+  assert.match(next, /circle\(\(3.53, 4.72\), radius: 0.3\)/);
+});

@@ -126,3 +126,26 @@ test('appearance applied with a pending drag retains the moved coordinates', asy
   assert.ok(next.includes('circle((4, 0))'));
   await render(next);
 });
+
+test('new shape properties expose through points, polygon sides, and all Boolean operations', async () => {
+  let source = document('polygon((0, 0), 6, radius: 1)');
+  source = edit(source, 0, { '$1': '7', angle: '30deg', radius: '1.5' });
+  assert.match(source, /polygon\(\(0, 0\), 7, radius: 1.5, angle: 30deg\)/);
+  await render(source);
+  for (const name of ['circle-through', 'arc-through', 'bezier-through']) {
+    const original = document(`${name}((0, 0), (1, 1), (2, 0))`);
+    const model = propertyModel(setup(original).calls[0]);
+    assert.equal(model.fields.filter(field => field.point).length, 3);
+    await render(edit(original, 0, { '$1': '(1.25, 1.5)', stroke: '2pt + navy' }));
+  }
+  for (const op of ['union', 'intersection', 'difference', 'xor']) {
+    const original = document('boolean({ rect((0, 0), (2, 2)) }, { rect((1, 1), (3, 3)) }, op: "difference")');
+    const model = propertyModel(setup(original).calls[0]);
+    assert.deepEqual(model.fields.find(field => field.key === 'op').choices, ['"union"', '"intersection"', '"difference"', '"xor"']);
+    const changed = edit(original, 0, { op: JSON.stringify(op), fill: 'aqua' });
+    const rendered = await render(changed);
+    assert.ok(rendered.calls[0].geometry, op);
+  }
+  const empty = await render(document('boolean({ rect((0, 0), (1, 1)) }, { rect((2, 2), (3, 3)) }, op: "intersection")'));
+  assert.ok(empty.calls[0].geometry, 'an empty Boolean result can still be selected and edited in Outline');
+});

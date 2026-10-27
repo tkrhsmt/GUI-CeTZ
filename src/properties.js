@@ -5,6 +5,10 @@ const { skipTrivia, closing, splitArgs } = require('./scanner');
 // CeTZ shapes and style parameters. Values stay Typst expressions: a
 // coordinate reference, a ratio or a dictionary must survive an inspector edit.
 const SCHEMAS = {
+  'circle-through': { anchor: 'none' },
+  'arc-through': { mode: '"OPEN"', 'update-position': 'true', mark: 'none' },
+  'bezier-through': { mark: 'none', shorten: '"LINEAR"' },
+  boolean: { op: '"difference"', 'fill-rule-a': 'auto', 'fill-rule-b': 'auto', eps: 'auto', 'ignore-marks': 'true', 'ignore-hidden': 'true' },
   line: { close: 'false', mark: 'none' },
   rect: { radius: '0', anchor: 'none' },
   circle: { radius: '1', anchor: 'none' },
@@ -60,6 +64,9 @@ function argumentsOf(text) {
   return { name, open, end, args };
 }
 function positionalLabel(name, index, count) {
+  if (name === 'boolean') return index === 0 ? 'Operand A' : 'Operand B';
+  if (name === 'circle-through') return ['Point A', 'Point B', 'Point C'][index];
+  if (name === 'arc-through' || name === 'bezier-through') return ['Start', 'Through', 'End'][index];
   if (name === 'anchor') return index === 0 ? 'Name' : 'Position';
   if (['merge-path', 'compound-path'].includes(name)) return 'Path contents';
   if (name === 'content' && index === count - 1) return 'Text / content';
@@ -85,6 +92,10 @@ function propertyModel(call) {
   for (const [key, fallback] of Object.entries(defaults)) if (!fields.some(field => field.key === key))
     fields.push({ key, label: key, value: '', fallback,
       section: ['stroke', 'fill', 'fill-rule', 'mark'].includes(key) ? 'Appearance' : 'Shape' });
+  if (call.name === 'boolean') {
+    fields.find(field => field.key === 'op').choices = ['"union"', '"intersection"', '"difference"', '"xor"'];
+    for (const field of fields) if (field.key[0] === '$') field.multiline = true;
+  }
   return { kind: call.name, base: call.call, fields };
 }
 function expression(value) {

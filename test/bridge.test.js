@@ -351,14 +351,15 @@ test('inserts and renders every advanced shape template', async () => {
     const source = original.slice(0, insertion.offset) + insertion.text + original.slice(insertion.offset);
     assert.match(source, /import cetz\.draw: \*/, shape.label);
     const diagram = parseCanvas(source);
-    assert.ok(diagram.unsupported.length, `${shape.label} must use an exact Typst preview`);
-    const xml = imageDiagram(await renderCanvas(source, diagram.canvas, file));
-    assert.match(xml, /id="preview-image"/, shape.label);
+    const rendered = await renderDiagram(source, diagram.canvas, file);
+    assert.ok(rendered.editable, `${shape.label} remains editable with exact Typst artwork`);
+    assert.ok(rendered.editable.calls[0].geometry, shape.label);
+    assert.match(rendered.xml, /id="cetz-preview-image"/, shape.label);
   }
 });
 test('inserts into an imported canvas without duplicating the draw import', () => {
   const source = '#cetz.canvas({\n  import cetz.draw: *\n  rect((0, 0), (1, 1))\n})';
-  const insertion = insertionFor(source, parseCanvas(source).canvas, SHAPES[0].call);
+  const insertion = insertionFor(source, parseCanvas(source).canvas, SHAPES.find(shape => shape.label === 'arc').call);
   const updated = source.slice(0, insertion.offset) + insertion.text + source.slice(insertion.offset);
   assert.equal((updated.match(/import cetz\.draw: \*/g) || []).length, 1);
   assert.match(updated, /rect\(\(0, 0\), \(1, 1\)\)[\s\S]*arc\(\(0, 0\)/);

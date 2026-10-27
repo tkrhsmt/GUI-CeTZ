@@ -1,5 +1,10 @@
 'use strict';
 module.exports = {
+  polygon: [[1, 1], [3, 1]],
+  'circle-through': [[0, 0], [1, 1], [2, 0]],
+  'arc-through': [[0, 0], [1, 1], [2, 0]],
+  'bezier-through': [[0, 0], [1, 1], [2, 0]],
+  boolean: [[0, 0], [2, 2], [1, 1], [3, 3]],
   content: [[2, -1]],
   line: [[2, -1], [-1, 3]],
   mark: [[-1, 1], [2, 1]],

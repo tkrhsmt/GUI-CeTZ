@@ -29,11 +29,17 @@ function offsetShapes(source, dx, dy) {
     const tx = (worldX * Math.cos(radians) - worldY * Math.sin(radians)) / call.transform.sx;
     const ty = (worldX * Math.sin(radians) + worldY * Math.cos(radians)) / call.transform.sy;
     const ranges = coordinateRanges(call);
-    if (call.name === 'merge-path' || call.name === 'compound-path') {
-      const brace = skipTrivia(call.call, ranges[0].start);
-      const bodyEnd = closing(call.call, brace, '{', '}');
-      for (const child of locateEditableCalls(call.call, { bodyStart: brace + 1, bodyEnd }))
-        visit(child, offset + child.start, names, tx, ty);
+    if (['merge-path', 'compound-path', 'boolean'].includes(call.name)) {
+      for (const range of ranges) {
+        const brace = skipTrivia(call.call, range.start);
+        if (call.call[brace] !== '{') {
+          if (call.name === 'boolean') continue;
+          throw new Error('Copy path bodies using literal shapes.');
+        }
+        const bodyEnd = closing(call.call, brace, '{', '}');
+        for (const child of locateEditableCalls(call.call, { bodyStart: brace + 1, bodyEnd }))
+          visit(child, offset + child.start, names, tx, ty);
+      }
       return;
     }
     for (const [index, range] of ranges.entries()) {
