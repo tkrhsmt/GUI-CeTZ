@@ -10,6 +10,7 @@ const { EditHistory, historyAction } = require('./history');
 const { sourceAction, sourceActionPatches } = require('./source-actions');
 const { exportTypst } = require('./export');
 const { withSelectionMarker, withSelectionMarkers, selectSourceCalls } = require('./selection');
+const { bindScene, sceneRevision, sourceIndices } = require('./scene');
 const { copyShapes, pasteShapes } = require('./clipboard');
 const { withDiagramStatus } = require('./diagram-status');
 const { launchCodeLenses } = require('./launch-code-lenses');
@@ -69,7 +70,10 @@ function sourceWithPatches(text, patches) {
 }
 async function applySourcePatches(session, source, patches) {
   if (!patches.length) return;
+  const sourceVersion = source.version;
   const before = source.getText();
+  if (session.sceneSource !== undefined && before !== session.sceneSource)
+    throw new Error('Typst changed while the GUI was being edited.');
   const expected = sourceWithPatches(before, patches);
   // A GUI edit must preserve an editable preview. Otherwise renderDiagram's
   // fallback would replace all handles with a locked image after the write.
@@ -77,7 +81,7 @@ async function applySourcePatches(session, source, patches) {
     ? await renderEditable(expected, usableDiagram(expected, session.index).canvas,
       session.sourceUri.fsPath)
     : null;
-  if ((await documentForSession(session)).version !== source.version)
+  if ((await documentForSession(session)).version !== sourceVersion)
     throw new Error('Typst changed while the GUI was being edited.');
   session.expectedSourceText = expected;
   const edit = new vscode.WorkspaceEdit();
@@ -122,16 +126,21 @@ async function applyHistoryAction(session, action) {
 async function syncFromSource(session) {
   const generation = session.syncGeneration = (session.syncGeneration || 0) + 1;
   const doc = await documentForSession(session);
+  const sourceVersion = doc.version;
   const text = doc.getText();
   const diagram = usableDiagram(text, session.index);
   const prepared = session.preparedRender;
   session.preparedRender = null;
-  const { xml, editable } = prepared && prepared.text === text
+  const { xml: renderedXml, editable } = prepared && prepared.text === text
     ? { xml: prepared.editable.xml, editable: prepared.editable }
     : await renderDiagram(text, diagram.canvas, session.sourceUri.fsPath);
-  if (generation !== session.syncGeneration || (await documentForSession(session)).version !== doc.version) return;
+  if (generation !== session.syncGeneration || (await documentForSession(session)).version !== sourceVersion) return;
+  const scene = Object.fromEntries(['sceneBase', 'sceneSpan', 'sceneSignature', 'sceneRevision', 'sceneSource']
+    .map(name => [name, session[name]]));
+  const xml = bindScene(scene, text, renderedXml, editable);
   await updateDiagramDocument(session, xml, session.diagramFiles);
-  session.sourceVersion = doc.version;
+  Object.assign(session, scene);
+  session.sourceVersion = sourceVersion;
   session.diagram = diagram;
   session.editable = editable;
 }
@@ -140,16 +149,34 @@ async function syncToSource(session) {
   const gui = await vscode.workspace.openTextDocument(session.diagramUri);
   const xml = gui.getText();
   if (xml === session.lastXml) return;
+  const stale = session.sceneRevision !== undefined && sceneRevision(xml) !== session.sceneRevision;
   const command = historyAction(readAllCells(xml), readAllCells(session.lastXml), session.handledHistoryActions);
-  if (command) session.handledHistoryActions.add(command.key);
-  if (command && session.history.canStep(command.action)) {
-    try { await applyHistoryAction(session, command.action); }
+  if (stale && !command) {
+    await updateDiagramDocument(session, session.lastXml, session.diagramFiles);
+    return;
+  }
+  if (command) {
+    session.handledHistoryActions.add(command.key);
+    try {
+      // Draw.io debounces saves. A deletion and Cmd+Z can share a snapshot,
+      // so record the pending GUI edit before undoing the most recent edit.
+      const source = await documentForSession(session);
+      const pending = !stale && session.editable && source.version === session.sourceVersion
+        ? patchesFromEditable(source.getText(), session.editable, xml, readAllCells) : [];
+      await applySourcePatches(session, source, pending);
+      if (session.history.canStep(command.action)) await applyHistoryAction(session, command.action);
+      else if (pending.length) {
+        await syncFromSource(session);
+        await refreshGuiView(session);
+      } else session.lastXml = xml;
+    }
     catch (error) { await syncFromSource(session); await refreshGuiView(session); throw error; }
     return;
   }
   const sourceCommand = sourceAction(readAllCells(xml), readAllCells(session.lastXml), session.handledHistoryActions);
   if (sourceCommand) {
     session.handledHistoryActions.add(sourceCommand.key);
+    sourceCommand.indices = sourceIndices(session.editable, sourceCommand.indices);
     const source = await documentForSession(session);
     if (source.version !== session.sourceVersion) {
       await syncFromSource(session);
@@ -190,7 +217,8 @@ async function syncToSource(session) {
         await syncFromSource(session);
         const insertion = patches[0];
         const indices = session.editable.calls.flatMap((call, index) =>
-          !call.group && call.start >= insertion.start && call.start < insertion.start + insertion.text.length ? [index] : []);
+          !call.group && call.start >= insertion.start && call.start < insertion.start + insertion.text.length
+            ? [session.editable.cellIds?.[index] ?? index] : []);
         if (indices.length) {
           session.selectionSerial = (session.selectionSerial || 0) + 1;
           await updateDiagramDocument(session, withSelectionMarkers(session.lastXml, indices,
@@ -301,16 +329,21 @@ function activate(context) {
   const diagramFiles = new DiagramFiles(vscode, async uri => {
     const source = sourceForDiagramUri(vscode, uri);
     if (!source) throw vscode.FileSystemError.FileNotFound(uri);
-    const doc = await vscode.workspace.openTextDocument(source.sourceUri);
-    const diagram = usableDiagram(doc.getText(), source.index);
-    await ensureDrawioPlugin(vscode, context.extensionPath, doc.uri);
-    const { xml, editable } = await renderDiagram(doc.getText(), diagram.canvas, doc.uri.fsPath);
-    const session = sessionFor(doc.uri, uri, source.index, diagramFiles);
-    session.lastXml = xml;
-    session.sourceVersion = doc.version;
-    session.diagram = diagram;
-    session.editable = editable;
-    return Buffer.from(xml, 'utf8');
+    await ensureDrawioPlugin(vscode, context.extensionPath, source.sourceUri);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const doc = await vscode.workspace.openTextDocument(source.sourceUri);
+      const version = doc.version, text = doc.getText();
+      const diagram = usableDiagram(text, source.index);
+      const { xml, editable } = await renderDiagram(text, diagram.canvas, doc.uri.fsPath);
+      if ((await vscode.workspace.openTextDocument(source.sourceUri)).version !== version) continue;
+      const session = sessionFor(doc.uri, uri, source.index, diagramFiles);
+      session.lastXml = bindScene(session, text, xml, editable);
+      session.sourceVersion = version;
+      session.diagram = diagram;
+      session.editable = editable;
+      return Buffer.from(session.lastXml, 'utf8');
+    }
+    throw new Error('Typst changed while the GUI was opening. Open the GUI again after editing.');
   });
   context.subscriptions.push(vscode.workspace.registerFileSystemProvider(SCHEME, diagramFiles), diagramFiles);
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.open', (uri, index) =>
@@ -374,7 +407,7 @@ function activate(context) {
     if (!session) throw new Error('Place the cursor inside a CeTZ shape open in the GUI.');
     session.selectionSerial = (session.selectionSerial || 0) + 1;
     await updateDiagramDocument(session,
-      withSelectionMarker(session.lastXml, index, `${Date.now()}-${session.selectionSerial}`),
+      withSelectionMarker(session.lastXml, session.editable.cellIds?.[index] ?? index, `${Date.now()}-${session.selectionSerial}`),
       session.diagramFiles);
   }));
   context.subscriptions.push({ dispose: () => { for (const s of sessions.values()) {

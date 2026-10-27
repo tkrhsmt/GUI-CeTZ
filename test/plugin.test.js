@@ -479,8 +479,8 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   graph.view.translate = { x: 3, y: -2 };
   const zoomedPointSnap = graph.snapDelta({ x: 32, y: -14 },
     { x: 1072, y: 902, width: 28, height: 28 });
-  assert.equal(zoomedPointSnap.x, 40);
-  assert.equal(zoomedPointSnap.y, -20);
+  assert.equal(zoomedPointSnap.x, 30);
+  assert.equal(zoomedPointSnap.y, -10);
   graph.graphHandler.bounds = { x: 1072, y: 902 };
   graph.graphHandler.currentDx = 20;
   graph.graphHandler.updateHint();
@@ -603,6 +603,15 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.ok(viewValidations > validationsBeforeLoad, 'switching representations rebuilds the graph view');
   assert.equal(artwork.style, unchangedStyle, 'view switching does not edit the document');
   assert.equal(artwork.visible, false);
+  const restoredArtwork = { ...artwork, geometry: { ...artwork.geometry } };
+  const validationsBeforeRestore = viewValidations;
+  graphModel.cells[artwork.id] = restoredArtwork;
+  cellStates.delete(artwork.id);
+  modelChanged();
+  assert.ok(viewValidations > validationsBeforeRestore,
+    'undo must rebuild restored fragment cells even when their SVG image is unchanged');
+  graphModel.cells[artwork.id] = artwork;
+  modelChanged();
   assert.equal(fitCalls, fitsBeforeLoad + 1, 'image load and model edits preserve the current view');
   artwork.style += 'strokeColor=none;';
   // Change the image itself to exercise failure during a subsequent source render.

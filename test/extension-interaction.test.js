@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 const path = require('node:path');
+const { readAllCells } = require('../src/drawio');
 
 test('typing in Typst does not register cursor-driven virtual document edits', () => {
   const commands = new Map();
@@ -33,7 +34,7 @@ test('typing in Typst does not register cursor-driven virtual document edits', (
   assert.ok(commands.has('cetzEditor.selectInGui'));
 });
 
-test('clipboard bridge handles rapid copy-paste, deletion and paste after the originals are gone', async t => {
+async function extensionFixture(t, initialText) {
   const docs = new Map(), errors = [], subscriptions = [];
   const disposable = { dispose() {} };
   const extensionPath = path.resolve(__dirname, '..');
@@ -96,13 +97,27 @@ test('clipboard bridge handles rapid copy-paste, deletion and paste after the or
   } finally { Module._load = originalLoad; }
   extension.activate({ subscriptions, extensionPath });
   t.after(() => subscriptions.forEach(item => item.dispose()));
-  const source = document(uri({ scheme: 'file', path: path.resolve('examples/clipboard-test.typ') }),
+  const source = document(uri({ scheme: 'file', path: path.resolve('examples/clipboard-test.typ') }), initialText ||
     '#import "@preview/cetz:0.5.2"\n#cetz.canvas({\n  import cetz.draw: *\n' +
     '  rect((0, 0), (2, 1), name: "a")\n  content("a.center", [Text])\n})');
   const gui = await vscode.workspace.openTextDocument(extension.diagramUri(source.uri, 0));
   let serial = 0;
+  function ownerIds(xml = gui.text) {
+    return [...readAllCells(xml).keys()].filter(id => /^cetz-edit-\d+$/.test(id));
+  }
+  function selectedIndices() {
+    const selected = /cetzSelect=([\d,]+);/.exec(gui.text)?.[1];
+    const ids = ownerIds();
+    return selected ? selected.split(',').map(id => ids.indexOf('cetz-edit-' + id)).join(',') : '';
+  }
+  function removeShapes(xml, indices) {
+    const ids = ownerIds(xml);
+    return indices.reduce((text, index) => text.replace(new RegExp('<mxCell id="' + ids[index] + '"[\\s\\S]*?</mxCell>'), ''), xml);
+  }
   function action(name, targets = '') {
-    return `<mxCell id="clipboard-${++serial}" style="cetzAction=${name};${targets ? `cetzTargets=${targets};` : ''}cetzActionToken=clipboard-${serial};" vertex="1" parent="1"><mxGeometry x="-1000" y="-1000" width="1" height="1" as="geometry"/></mxCell>`;
+    const ids = ownerIds();
+    const actualTargets = targets ? targets.split(',').map(index => ids[+index].slice('cetz-edit-'.length)).join(',') : '';
+    return `<mxCell id="clipboard-${++serial}" style="cetzAction=${name};${actualTargets ? `cetzTargets=${actualTargets};` : ''}cetzActionToken=clipboard-${serial};" vertex="1" parent="1"><mxGeometry x="-1000" y="-1000" width="1" height="1" as="geometry"/></mxCell>`;
   }
   function save(xml) { gui.text = xml; gui.version++; changed({ document: gui }); }
   async function until(predicate) {
@@ -110,20 +125,25 @@ test('clipboard bridge handles rapid copy-paste, deletion and paste after the or
     while (!predicate() && !errors.length && Date.now() < deadline)
       await new Promise(resolve => setTimeout(resolve, 20));
     assert.deepEqual(errors, []);
-    assert.ok(predicate(), 'clipboard synchronization completes');
+    assert.ok(predicate(), 'GUI synchronization completes');
   }
+  return { source, gui, save, action, until, ownerIds, selectedIndices, removeShapes, getClipboard: () => clipboard };
+}
+
+test('clipboard bridge handles rapid copy-paste, deletion and paste after the originals are gone', async t => {
+  const { source, gui, save, action, until, selectedIndices, removeShapes, getClipboard } = await extensionFixture(t);
   save(gui.text.replace('</root>', action('copy', '0,1') + action('paste') + '</root>'));
-  await until(() => /cetzSelect=2,3;/.test(gui.text));
-  assert.match(clipboard, /rect\(\(0, 0\), \(2, 1\), name: "a"\)/);
+  await until(() => selectedIndices() === '2,3');
+  assert.match(getClipboard(), /rect\(\(0, 0\), \(2, 1\), name: "a"\)/);
   assert.match(source.text, /content\("a-2.center", \[Text\]\)/);
   assert.match(source.text, /rect\(\(0\.5, -0\.5\), \(2\.5, 0\.5\), name: "a-2"\)/);
-  save(gui.text.replace(/<mxCell id="cetz-edit-[01]"[\s\S]*?<\/mxCell>/g, ''));
-  await until(() => !source.text.includes('name: "a"') && !gui.text.includes('cetzSelect=2,3;'));
+  save(removeShapes(gui.text, [0, 1]));
+  await until(() => !source.text.includes('name: "a"') && selectedIndices() === '');
   assert.doesNotMatch(source.text, /\n[ \t]*\n/);
   assert.match(source.text, /name: "a-2"/);
   const beforePaste = source.text;
   save(gui.text.replace('</root>', action('paste') + '</root>'));
-  await until(() => /cetzSelect=2,3;/.test(gui.text));
+  await until(() => selectedIndices() === '2,3');
   assert.match(source.text, /name: "a"/);
   assert.match(source.text, /content\("a.center", \[Text\]\)/);
   const afterPaste = source.text;
@@ -132,9 +152,80 @@ test('clipboard bridge handles rapid copy-paste, deletion and paste after the or
   save(gui.text.replace('</root>', action('redo') + '</root>'));
   await until(() => source.text === afterPaste && !gui.text.includes('cetzAction=redo;'));
   save(gui.text.replace('</root>', action('paste') + action('paste') + '</root>'));
-  await until(() => /cetzSelect=4,5,6,7;/.test(gui.text));
+  await until(() => selectedIndices() === '4,5,6,7');
   assert.match(source.text, /name: "a-3"/);
   assert.match(source.text, /name: "a-4"/);
   assert.match(source.text, /rect\(\(1\.5, -1\.5\), \(3\.5, -0\.5\), name: "a-3"\)/);
   assert.match(source.text, /rect\(\(2, -2\), \(4, -1\), name: "a-4"\)/);
+});
+
+test('move-delete-undo restores the moved shape, including undo before the deletion autosaves', async t => {
+  const initial = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({\n  import cetz.draw: *\n  circle((0, 0), radius: 1)\n})';
+  for (const rapid of [false, true]) {
+    const { source, gui, save, action, until, ownerIds } = await extensionFixture(t, initial);
+    const unit = Number(/cetzUnitX=([^;]+)/.exec(gui.text)[1]);
+    const movedXml = gui.text.replace(/(<mxCell id="cetz-edit-0"[\s\S]*?<mxGeometry x=")([\d.-]+)/,
+      (_, prefix, x) => prefix + (+x + unit));
+    save(movedXml);
+    await until(() => source.text.includes('circle((1, 0), radius: 1)') && gui.text !== movedXml);
+    const moved = source.text;
+    const deletedXml = gui.text.replace(/<mxCell id="cetz-edit-0"[\s\S]*?<\/mxCell>/, '');
+    if (!rapid) {
+      save(deletedXml);
+      await until(() => !source.text.includes('circle(') && gui.text !== deletedXml);
+      save(gui.text.replace('</root>', action('undo') + '</root>'));
+    } else save(deletedXml.replace('</root>', action('undo') + '</root>'));
+    await until(() => !gui.text.includes('cetzAction=undo;'));
+    assert.equal(source.text, moved, 'undo deletion keeps the preceding movement');
+    assert.ok([...readAllCells(gui.text).values()].some(item =>
+      /^cetz-render-\d+$/.test(item.cell.id) && item.cell.parent === ownerIds()[0]));
+    save(gui.text.replace('</root>', action('redo') + '</root>'));
+    await until(() => !gui.text.includes('cetzAction=redo;'));
+    assert.doesNotMatch(source.text, /circle\(/);
+    save(gui.text.replace('</root>', action('undo') + '</root>'));
+    await until(() => source.text === moved && !gui.text.includes('cetzAction=undo;'));
+    save(gui.text.replace('</root>', action('undo') + '</root>'));
+    await until(() => source.text === initial && !gui.text.includes('cetzAction=undo;'));
+  }
+});
+
+test('deleting a middle element never retargets late saves or following actions to another survivor', async t => {
+  const initial = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({\n  import cetz.draw: *\n' +
+    '  circle((0, 0), radius: 1, name: "a")\n' +
+    '  circle((3, 0), radius: 0.5, name: "b")\n' +
+    '  circle((6, 0), radius: 1, name: "c")\n})';
+  const { source, gui, save, action, until, ownerIds, removeShapes } = await extensionFixture(t, initial);
+  const oldXml = gui.text, oldIds = ownerIds();
+  const deletedXml = removeShapes(oldXml, [1]);
+  save(deletedXml);
+  await until(() => !source.text.includes('name: "b"') && gui.text !== deletedXml);
+  const afterDelete = source.text;
+  assert.ok(ownerIds().every(id => !oldIds.includes(id)), 'the new scene cannot merge a survivor with the deleted shape');
+  save(deletedXml.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === initial && !gui.text.includes('cetzAction=undo;'));
+  save(gui.text.replace('</root>', action('redo') + '</root>'));
+  await until(() => source.text === afterDelete && !gui.text.includes('cetzAction=redo;'));
+  const currentXml = gui.text;
+  const unit = Number(/cetzUnitX=([^;]+)/.exec(gui.text)[1]);
+  const moveCell = (xml, id) => xml.replace(new RegExp('(<mxCell id="' + id + '"[\\s\\S]*?<mxGeometry x=")([\\d.-]+)'),
+    (_, prefix, x) => prefix + (+x + unit));
+  // Simulate delayed webview autosaves after the extension already published
+  // the post-deletion diagram, including a save missing an unrelated survivor.
+  for (const stale of [moveCell(deletedXml, oldIds[2]), removeShapes(oldXml, [0, 1])]) {
+    save(stale);
+    await until(() => gui.text === currentXml);
+    assert.equal(source.text, afterDelete, 'stale state must not move or delete remaining source calls');
+  }
+  const movedXml = moveCell(gui.text, ownerIds()[1]);
+  save(movedXml);
+  await until(() => source.text.includes('circle((7, 0), radius: 1, name: "c")') && gui.text !== movedXml);
+  assert.match(source.text, /circle\(\(0, 0\), radius: 1, name: "a"\)/);
+  const afterMove = source.text;
+  save(gui.text.replace('</root>', action('duplicate', '1') + '</root>'));
+  await until(() => source.text.includes('name: "c-2"') && !gui.text.includes('cetzAction=duplicate;'));
+  assert.match(source.text, /circle\(\(7\.5, -0\.5\), radius: 1, name: "c-2"\)/);
+  for (const expected of [afterMove, afterDelete, initial]) {
+    save(gui.text.replace('</root>', action('undo') + '</root>'));
+    await until(() => source.text === expected && !gui.text.includes('cetzAction=undo;'));
+  }
 });

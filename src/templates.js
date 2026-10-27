@@ -1,4 +1,5 @@
 'use strict';
+const { callFromPoints } = require('./placement');
 
 // These are source templates, not approximations of CeTZ geometry. Typst renders
 // the resulting canvas so marks, curves, paths, anchors and styles stay exact.
@@ -62,7 +63,13 @@ function templateInsertions(source, canvas, cells, originalCells = new Map(), ca
     if (!name) continue;
     const shape = SHAPES.concat(PREVIEW_PRIMITIVES).find(entry => entry.label === name);
     if (!shape) throw new Error(`Unknown CeTZ shape template: ${name}`);
-    calls.push(callFromGeometry(name, item, calibration) || shape.call);
+    const encoded = /(?:^|;)cetzPoints=([^;]+)(?:;|$)/.exec(item.cell.style || '')?.[1];
+    if (encoded) {
+      let points;
+      try { points = JSON.parse(decodeURIComponent(encoded)); }
+      catch { throw new Error('Invalid CeTZ placement points.'); }
+      calls.push(callFromPoints(name, points));
+    } else calls.push(callFromGeometry(name, item, calibration) || shape.call);
   }
   if (!calls.length) return [];
   const insertion = insertionFor(source, canvas, calls.join('\n'));

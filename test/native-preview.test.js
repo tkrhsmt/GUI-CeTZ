@@ -27,12 +27,24 @@ async function fixture(t, sourceOverride, options = {}) {
   w.mxLoadResources = false; w.mxLoadStylesheets = false;
   w.eval(fs.readFileSync(mxClient, 'utf8'));
   const graph = new w.mxGraph(w.document.getElementById('graph'));
+  graph.getStylesheet().putCellStyle('ellipse', { shape: w.mxConstants.SHAPE_ELLIPSE });
+  if (options.modelCoordinates) graph.view.modelCoordinates = true;
   graph.getCompositeParent = cell => cell;
   const element = () => w.document.createElement('div');
-  const palettes = {};
+  const palettes = {}, paletteEntries = {};
+  let nativePaletteClicks = 0;
+  function nativePaletteEntry() {
+    const entry = element();
+    entry.addEventListener('mousedown', () => { nativePaletteClicks++; });
+    return entry;
+  }
   const sidebar = { wrapper: element(), container: element(), palettes, sidebarTitles: true,
-    addPaletteFunctions(id) { palettes[id] = [element(), element()]; },
-    createVertexTemplateEntry() { return element; }, createEdgeTemplateEntry() { return element; } };
+    addPaletteFunctions(id, title, expanded, factories) {
+      palettes[id] = [element(), element()];
+      paletteEntries[id] = factories.map(factory => factory());
+      paletteEntries[id].forEach(entry => palettes[id][1].appendChild(entry));
+    },
+    createVertexTemplateEntry() { return nativePaletteEntry; }, createEdgeTemplateEntry() { return nativePaletteEntry; } };
   sidebar.container.appendChild(sidebar.wrapper);
   const actions = { undo: { funct() {}, isEnabled() { return true; } },
     redo: { funct() {}, isEnabled() { return true; } },
@@ -107,7 +119,8 @@ async function fixture(t, sourceOverride, options = {}) {
     assert.equal(shape.node.getAttribute('data-cetz-live-preview'), 'true');
     return shape.node;
   }
-  return { w, graph, ui, source, rendered, send, select, drag, imageDocument, initialHandler };
+  return { w, graph, ui, source, rendered, send, select, drag, imageDocument, initialHandler,
+    paletteEntries, nativePaletteClicks: () => nativePaletteClicks };
 }
 
 function cubicVertices(data) {
@@ -208,6 +221,312 @@ test('shape bodies can translate repeatedly after selection and control point ed
   }
 });
 
+test('Delete followed by a source merge preserves survivors and their control point ownership', { skip }, async t => {
+  const { bindScene } = require('../src/scene');
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *;\n' +
+    'line((0, 0), (2, 0))\ncircle((4, 0), radius: 1)\nbezier((6, 0), (9, 0), (7, 2), (8, 2))\n})';
+  const f = await fixture(t, source, { loadedLayers: true });
+  const session = {}, tick = () => new Promise(resolve => setTimeout(resolve, 0));
+  function merge(xml) {
+    const document = f.w.mxUtils.parseXml(xml), incoming = new f.w.mxGraphModel();
+    new f.w.mxCodec(document).decode(document.getElementsByTagName('mxGraphModel')[0], incoming);
+    f.graph.model.beginUpdate();
+    try {
+      for (const cell of Object.values(f.graph.model.cells)) {
+        if (cell.id !== '0' && cell.id !== '1' && !incoming.getCell(cell.id) && f.graph.model.getCell(cell.id))
+          f.graph.model.remove(cell);
+      }
+      for (const wanted of Object.values(incoming.cells)) {
+        if (wanted.id === '0' || wanted.id === '1') continue;
+        let cell = f.graph.model.getCell(wanted.id);
+        const parent = f.graph.model.getCell(wanted.parent.id);
+        if (!cell) f.graph.model.add(parent, wanted);
+        else {
+          f.graph.model.setGeometry(cell, wanted.geometry && wanted.geometry.clone());
+          f.graph.model.setStyle(cell, wanted.style);
+          f.graph.model.setValue(cell, wanted.value);
+          f.graph.model.setVisible(cell, wanted.visible);
+          if (cell.parent !== parent) f.graph.model.add(parent, cell);
+        }
+      }
+    } finally { f.graph.model.endUpdate(); }
+  }
+  merge(bindScene(session, source, f.rendered.xml, f.rendered)); await tick();
+  const oldIds = f.rendered.cellIds.slice();
+  f.select('cetz-edit-' + oldIds[1]);
+  f.graph.removeCells(f.graph.getSelectionCells());
+  const deletedXml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  const patches = patchesFromEditable(source, f.rendered, deletedXml, readAllCells);
+  const remaining = patches.reduceRight((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+  assert.match(remaining, /line\(\(0, 0\), \(2, 0\)\)/);
+  assert.doesNotMatch(remaining, /circle\(/);
+  const next = await renderEditable(remaining, parseCanvas(remaining).canvas, path.resolve('examples/basic.typ'));
+  merge(bindScene(session, remaining, next.xml, next)); await tick();
+  oldIds.forEach(id => assert.equal(f.graph.model.getCell('cetz-edit-' + id), undefined));
+  for (const [index, id] of next.cellIds.entries()) {
+    const cell = f.graph.model.getCell('cetz-edit-' + id);
+    assert.ok(Math.abs(cell.geometry.x - next.calls[index].geometry.x) < 0.00001);
+    assert.ok(Math.abs(cell.geometry.y - next.calls[index].geometry.y) < 0.00001);
+    assert.ok(cell.children.every(child => child.parent === cell));
+  }
+  const id = next.cellIds[1], unit = next.calibration.unitX * 2.5;
+  const drag = f.drag(`cetz-point-${id}-2`, unit * 0.25, 0);
+  f.send(f.graph.container, 'up', drag.x + unit * 0.25, drag.y);
+  const edited = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  const [patch] = patchesFromEditable(remaining, next, edited, readAllCells);
+  assert.match(patch.text, /bezier\(\(6, 0\), \(9, 0\), \(7\.25, 2\), \(8, 2\)\)/);
+});
+
+test('moved artwork is visible after deletion and restoration with the same SVG and cell IDs', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *;\n' +
+    'circle((0, 0), radius: 1, fill: red)\ncircle((3, 0), radius: 1, fill: blue)\n})';
+  const f = await fixture(t, source, { loadedLayers: true });
+  const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+  await tick();
+  f.graph.view.scaleAndTranslate(4, 3, -2);
+  const delta = f.rendered.calibration.unitX * 2.5 * 4 * 0.5;
+  const drag = f.drag('cetz-edit-0', delta, 0);
+  f.send(f.graph.container, 'up', drag.x + delta, drag.y);
+  const changed = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  const patches = patchesFromEditable(source, f.rendered, changed, readAllCells);
+  const moved = patches.reduceRight((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+  const rendered = await renderEditable(moved, parseCanvas(moved).canvas, path.resolve('examples/basic.typ'));
+  function restoreOwner() {
+    const xml = f.w.mxUtils.parseXml(rendered.xml);
+    const incoming = new f.w.mxGraphModel();
+    new f.w.mxCodec(xml).decode(xml.getElementsByTagName('mxGraphModel')[0], incoming);
+    f.graph.model.beginUpdate();
+    try {
+      const old = f.graph.model.getCell('cetz-edit-0');
+      if (old) f.graph.model.remove(old);
+      f.graph.model.add(f.graph.model.getCell('1'), incoming.getCell('cetz-edit-0'));
+    } finally { f.graph.model.endUpdate(); }
+  }
+  restoreOwner(); await tick();
+  const camera = [f.graph.view.scale, f.graph.view.translate.x, f.graph.view.translate.y];
+  for (let repeat = 0; repeat < 3; repeat++) {
+    const oldLayer = f.graph.model.getCell('cetz-render-0');
+    f.graph.removeCells([f.graph.model.getCell('cetz-edit-0')]);
+    if (repeat === 0) await tick();
+    assert.equal(f.graph.model.getCell('cetz-render-0'), undefined);
+    restoreOwner(); await tick();
+    const layer = f.graph.model.getCell('cetz-render-0'), state = f.graph.view.getState(layer);
+    assert.notEqual(layer, oldLayer, 'the restored fragment is a new cell with the same ID');
+    assert.equal(layer.style, oldLayer.style, 'the restored SVG content is identical');
+    assert.ok(state && state.shape && state.shape.node.isConnected, 'restored artwork has a live SVG node');
+    assert.notEqual(state.shape.node.style.visibility, 'hidden');
+    assert.equal(f.graph.isCellVisible(layer), true);
+    assert.deepEqual([f.graph.view.scale, f.graph.view.translate.x, f.graph.view.translate.y], camera);
+    assert.equal(f.w.document.querySelector('[data-cetz-live-preview]'), null, 'no stale drag overlay hides the restoration');
+  }
+});
+
+test('control points keep a constant screen size, stroke and hit area through both zoom rendering paths', { skip }, async t => {
+  for (const modelCoordinates of [false, true]) {
+    const f = await fixture(t, undefined, { modelCoordinates });
+    f.select('cetz-edit-1');
+    const cell = f.graph.model.getCell('cetz-point-1-2');
+    const before = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+    for (const scale of [0.5, 1, 2, 4, 8, 16, 4, 1]) {
+      f.graph.view.scaleAndTranslate(scale, 3, -2);
+      const state = f.graph.view.getState(cell), shape = state.shape;
+      assert.equal(shape.bounds.width, 14);
+      assert.equal(shape.bounds.height, 14);
+      assert.equal(shape.strokewidth * scale, 2);
+      assert.equal(shape.bounds.getCenterX(), state.getCenterX());
+      assert.equal(shape.bounds.getCenterY(), state.getCenterY());
+      const ellipse = shape.node.querySelector('ellipse');
+      assert.ok(ellipse, 'the point remains a native SVG circle');
+      let svgScale = 1;
+      for (let node = ellipse; node; node = node.parentNode) {
+        if (!node.getAttribute) continue;
+        for (const match of (node.getAttribute('transform') || '').matchAll(/scale\(([^)]+)\)/g))
+          svgScale *= Number(match[1].split(/[ ,]+/)[0]);
+      }
+      assert.ok(Math.abs(Number(ellipse.getAttribute('rx')) * 2 * svgScale - 14) < 0.01,
+        'the rendered diameter stays 14px even when the SVG pane is scaled');
+      assert.ok(Math.abs(Number(ellipse.getAttribute('stroke-width') || 1) * svgScale - 2) < 0.01,
+        JSON.stringify({ modelCoordinates, scale, svgScale, svg: ellipse.outerHTML }));
+      const x = state.getCenterX(), y = state.getCenterY();
+      assert.equal(f.graph.intersects(state, x + 8, y), true);
+      assert.equal(f.graph.intersects(state, x + 10, y), false, 'the hit area does not grow with zoom');
+      const ignoreOthers = candidate => candidate.cell !== cell;
+      assert.equal(f.graph.getCellAt(x, y, null, true, false, ignoreOthers), cell);
+      assert.equal(f.graph.getCellAt(x + 20, y, null, true, false, ignoreOthers), null);
+      assert.equal(f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)), before,
+        'zooming changes only rendering, leaving all source-mapped cells intact');
+    }
+    f.graph.view.setScale(8);
+    const delta = f.rendered.calibration.unitX * 2.5 * 8 * 0.03125;
+    const drag = f.drag(cell.id, delta, delta);
+    assert.equal(drag.state.shape.bounds.width, 14, 'the moving point also stays screen-sized');
+    f.send(f.graph.container, 'up', drag.x + delta, drag.y + delta);
+    const changed = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+    const [patch] = patchesFromEditable(f.source, f.rendered, changed, readAllCells);
+    assert.match(patch.text, /\(1\.03125, 3\.96875\)/, 'fixed-size markers preserve fine coordinate dragging');
+  }
+});
+
+test('zoomed placement, point drags, body drags and resizing retain sub-quarter coordinates in Typst', { skip }, async t => {
+  const { snapStep } = require('../src/snapping');
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *;\n' +
+    'line((0, 0), (2, 0))\ncircle((4, 0), radius: 1)\nrect((6, 0), (8, 1))\n})';
+  for (const scale of [2, 4, 8, 16]) {
+    const f = await fixture(t, source), step = snapStep(scale);
+    f.graph.view.scaleAndTranslate(scale, 3, -2);
+    const unit = f.rendered.calibration.unitX * 2.5, delta = step * unit * scale;
+    assert.ok(Math.abs(f.graph.gridSize - unit * step) < 0.00001, 'zoom updates the native resize/grid spacing');
+    for (const id of ['cetz-point-0-0', 'cetz-edit-1']) {
+      const drag = f.drag(id, delta, delta);
+      f.send(f.graph.container, 'up', drag.x + delta, drag.y + delta);
+      assert.equal(Number(f.graph.getCellStyle(drag.cell).cetzSnapStep), step);
+    }
+    const selected = f.select('cetz-edit-2');
+    const handler = f.graph.selectionCellsHandler.getHandler(selected.cell), target = handler.sizers[7].node;
+    const x = selected.state.x + selected.state.width, y = selected.state.y + selected.state.height;
+    f.send(target, 'down', x, y); f.send(target, 'move', x + delta, y + delta);
+    f.send(f.graph.container, 'up', x + delta, y + delta);
+    assert.equal(Number(f.graph.getCellStyle(selected.cell).cetzSnapStep), step);
+    const icon = f.paletteEntries['cetz-preview-primitives'].find(entry => entry.getAttribute('aria-label') === 'line');
+    icon.dispatchEvent(new f.w.MouseEvent('click', { bubbles: true, cancelable: true }));
+    for (const p of [[step, step], [1 + step, 2 + step]]) {
+      f.graph.container.dispatchEvent(new f.w.MouseEvent('click', { bubbles: true, cancelable: true, detail: 1,
+        clientX: (f.rendered.calibration.originX + p[0] * unit + f.graph.view.translate.x) * scale - f.graph.container.scrollLeft,
+        clientY: (f.rendered.calibration.originY - p[1] * unit + f.graph.view.translate.y) * scale - f.graph.container.scrollTop }));
+    }
+    const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+    const patches = patchesFromEditable(source, f.rendered, xml, readAllCells);
+    const updated = [...patches].sort((a, b) => b.start - a.start).reduce((text, patch) =>
+      text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+    assert.ok(updated.includes(`line((${step}, ${-step}), (2, 0))`), updated);
+    assert.ok(updated.includes(`circle((${4 + step}, ${-step}), radius: 1)`), updated);
+    assert.ok(updated.replace(/\),\s*\(/g, '),(').includes(`rect((6, ${-step}),(${8 + step}, 1))`), updated);
+    assert.ok(updated.includes(`line((${step}, ${step}), (${1 + step}, ${2 + step}))`), updated);
+    const next = await renderEditable(updated, parseCanvas(updated).canvas, path.resolve('examples/basic.typ'));
+    assert.equal(next.calls.length, 4, 'fine edits survive recompilation');
+    f.graph.view.setScale(1);
+    assert.ok(Math.abs(f.graph.gridSize - unit * 0.25) < 0.00001, 'zooming out restores the regular grid');
+  }
+});
+
+test('zoom refines arc endpoint angles and retains them after source synchronization', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *;\n' +
+    'arc((0, 0), start: 0deg, stop: 90deg, radius: 2, anchor: "origin")\n})';
+  const f = await fixture(t, source), scale = 4;
+  f.graph.view.setScale(scale);
+  const unit = f.rendered.calibration.unitX * 2.5 * scale, radians = 23.32 * Math.PI / 180;
+  const dx = 2 * Math.cos(radians) * unit, dy = (2 - 2 * Math.sin(radians)) * unit;
+  const drag = f.drag('cetz-point-0-2', dx, dy);
+  f.send(f.graph.container, 'up', drag.x + dx, drag.y + dy);
+  const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  const [patch] = patchesFromEditable(source, f.rendered, xml, readAllCells);
+  assert.match(patch.text, /stop: 23\.25deg/);
+});
+
+test('fine dragging keeps named coordinate references and their rendered positions', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *;\n' +
+    'anchor("a", (3, 0))\ncontent("a", [Text])\ncircle("a", radius: 0.5)\n})';
+  const f = await fixture(t, source), scale = 4, step = 0.0625;
+  f.graph.view.setScale(scale);
+  const delta = f.rendered.calibration.unitX * 2.5 * scale * step;
+  for (const id of ['cetz-point-1-0', 'cetz-edit-2']) {
+    const drag = f.drag(id, delta, delta);
+    f.send(f.graph.container, 'up', drag.x + delta, drag.y + delta);
+  }
+  const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  const patches = patchesFromEditable(source, f.rendered, xml, readAllCells);
+  const updated = [...patches].sort((a, b) => b.start - a.start).reduce((text, patch) =>
+    text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+  // The measured anchor starts at y=0.01, so reaching the fine grid at
+  // y=-0.0625 requires a relative offset of -0.0725.
+  assert.match(updated, /circle\(\(rel: \(0\.0625, -0\.0725\), to: "a"\), radius: 0\.5\)/);
+  assert.match(updated, /content\(\(rel: \([^)]*\), to: "a"\), \[Text\]\)/);
+  const next = await renderEditable(updated, parseCanvas(updated).canvas, path.resolve('examples/basic.typ'));
+  const point = readAllCells(next.xml).get('cetz-point-1-0').geometry;
+  assert.ok(Math.abs((+point.x + 7 - next.calibration.originX) / (next.calibration.unitX * 2.5) - 3 - step) < 0.00001);
+  assert.ok(Math.abs((next.calibration.originY - +point.y - 7) / (next.calibration.unitY * 2.5) + step) < 0.00001);
+  const circle = next.calls[2].geometry;
+  assert.ok(Math.abs((circle.x + circle.width / 2 - next.calibration.originX) / (next.calibration.unitX * 2.5) - 3 - step) < 0.00001);
+  assert.ok(Math.abs((next.calibration.originY - circle.y - circle.height / 2) / (next.calibration.unitY * 2.5) + step) < 0.00001);
+});
+
+test('every right palette icon places shapes at clicked points without native default insertion', { skip }, async t => {
+  const cases = require('./placement-fixtures');
+  const { SPECS } = require('../src/placement');
+  const f = await fixture(t);
+  const icons = f.paletteEntries['cetz-preview-primitives'].concat(f.paletteEntries['cetz-advanced']);
+  assert.equal(icons.length, Object.keys(cases).length);
+  const templates = () => Object.values(f.graph.model.cells).filter(cell => /cetzPoints=/.test(cell.style || ''));
+  let expectedCount = 0;
+  for (const [name, points] of Object.entries(cases)) {
+    f.graph.view.scaleAndTranslate(expectedCount % 2 ? 2 : 1, 3, -2);
+    f.graph.container.scrollLeft = 17; f.graph.container.scrollTop = 23;
+    const icon = icons.find(entry => entry.getAttribute('aria-label') === name);
+    icon.dispatchEvent(new f.w.MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+    icon.dispatchEvent(new f.w.MouseEvent('click', { bubbles: true, cancelable: true }));
+    assert.equal(templates().length, expectedCount, 'arming ' + name + ' does not insert a default shape');
+    assert.equal(icon.getAttribute('aria-pressed'), 'true');
+    assert.match(f.graph.container.querySelector('.cetzPlacementHint').textContent, /Esc/);
+    for (const [i, p] of points.entries()) {
+      const view = f.graph.view, frame = f.rendered.calibration;
+      const x = (frame.originX + p[0] * frame.unitX * 2.5 + view.translate.x) * view.scale - f.graph.container.scrollLeft;
+      const y = (frame.originY - p[1] * frame.unitY * 2.5 + view.translate.y) * view.scale - f.graph.container.scrollTop;
+      f.send(f.graph.container, 'move', x, y);
+      assert.ok(f.graph.view.getOverlayPane().querySelector('[data-cetz-placement]'));
+      f.send(f.graph.container, 'down', x, y); f.send(f.graph.container, 'up', x, y);
+      f.graph.container.dispatchEvent(new f.w.MouseEvent('click', { clientX: x, clientY: y, button: 0,
+        bubbles: true, cancelable: true, detail: 1 }));
+      if (i < points.length - 1 || SPECS[name].min)
+        assert.equal(templates().length, expectedCount, name + ' waits for complete placement');
+    }
+    if (SPECS[name].min) f.graph.container.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    assert.equal(templates().length, ++expectedCount);
+    const marker = templates().at(-1);
+    const encoded = /cetzPoints=([^;]+)/.exec(marker.style)[1];
+    assert.deepEqual(JSON.parse(decodeURIComponent(encoded)), points, name + ' keeps clicked world coordinates');
+    assert.equal(icon.getAttribute('aria-pressed'), 'false');
+    assert.equal(f.graph.container.querySelector('.cetzPlacementHint'), null);
+    assert.equal(f.graph.view.getOverlayPane().querySelector('[data-cetz-placement]'), null);
+  }
+  assert.equal(f.nativePaletteClicks(), 0, 'palette mouse gestures do not invoke native insertion');
+  const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  const patches = patchesFromEditable(f.source, f.rendered, xml, readAllCells);
+  assert.equal(patches.length, 1, 'only the explicitly placed shapes produce source changes');
+  assert.match(patches[0].text, /line\(\(2, -1\), \(-1, 3\)\)/);
+  const updated = f.source.slice(0, patches[0].start) + patches[0].text + f.source.slice(patches[0].end);
+  const next = await renderEditable(updated, parseCanvas(updated).canvas, path.resolve('examples/basic.typ'));
+  assert.equal(next.calls.length, f.rendered.calls.length + expectedCount);
+});
+
+test('placement supports cancellation, retrying invalid points and finishing a variable path by double-click', { skip }, async t => {
+  const f = await fixture(t);
+  const icons = f.paletteEntries['cetz-preview-primitives'].concat(f.paletteEntries['cetz-advanced']);
+  const arm = name => icons.find(entry => entry.getAttribute('aria-label') === name)
+    .dispatchEvent(new f.w.MouseEvent('click', { bubbles: true, cancelable: true }));
+  const click = (x, y, detail = 1) => f.graph.container.dispatchEvent(new f.w.MouseEvent('click', {
+    clientX: f.rendered.calibration.originX + x * f.rendered.calibration.unitX * 2.5,
+    clientY: f.rendered.calibration.originY - y * f.rendered.calibration.unitY * 2.5,
+    bubbles: true, cancelable: true, detail
+  }));
+  const count = () => Object.values(f.graph.model.cells).filter(cell => /cetzPoints=/.test(cell.style || '')).length;
+  arm('line'); click(1, 1);
+  f.graph.container.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(count(), 0);
+  assert.equal(f.graph.container.querySelector('.cetzPlacementHint'), null);
+  arm('rect'); click(1, 1); click(1, 3);
+  assert.equal(count(), 0);
+  assert.match(f.graph.container.querySelector('.cetzPlacementHint').textContent, /different point/);
+  click(3, 3);
+  assert.equal(count(), 1);
+  arm('line'); click(1, 1); arm('merge-path');
+  click(2, 2); click(3, 3); click(4, 2); click(4, 2, 2);
+  f.graph.container.dispatchEvent(new f.w.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  assert.equal(count(), 2);
+  arm('circle'); click(0, 0); f.ui.fileLoaded();
+  assert.equal(count(), 2, 'reloading a file cancels unfinished placement');
+  assert.equal(f.graph.view.getOverlayPane().querySelector('[data-cetz-placement]'), null);
+});
+
 test('native clipboard actions and shortcuts send CeTZ commands without cloning SVG cells', { skip }, async t => {
   const f = await fixture(t);
   const commands = () => Object.values(f.graph.model.cells).map(cell => cell.style || '')
@@ -271,6 +590,18 @@ test('macOS clipboard shortcuts work through Draw.io native hidden input', {
   text.dispatchEvent(textPaste);
   assert.equal(textPaste.defaultPrevented, false, 'real text editors retain native paste');
   assert.equal(commands('paste'), 3);
+  f.graph.clearSelection();
+  for (const [shiftKey, name] of [[false, 'undo'], [true, 'redo']]) {
+    const before = commands(name);
+    const event = new f.w.KeyboardEvent('keydown', { key: 'z', keyCode: 90, metaKey: true,
+      shiftKey, bubbles: true, cancelable: true });
+    f.ui.clipboardElt.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(commands(name), before + 1, 'history shortcuts work with no selection and native clipboard focus');
+  }
+  const textUndo = new f.w.KeyboardEvent('keydown', { key: 'z', metaKey: true, bubbles: true, cancelable: true });
+  text.dispatchEvent(textUndo);
+  assert.equal(textUndo.defaultPrevented, false, 'text editing retains its native undo');
   f.ui.clipboardElt.dispatchEvent(new f.w.KeyboardEvent('keyup', { key: 'Meta', keyCode: 91, bubbles: true }));
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(f.ui.clipboardElt.isConnected, false, 'releasing Meta restores graph focus');
@@ -585,7 +916,7 @@ test('editor hit areas and selection previews have no rectangular borders', { sk
 test('a cached first-selection handler loses its border as soon as the plugin loads', { skip }, async t => {
   const f = await fixture(t, undefined, { initialSelection: 'cetz-edit-2' });
   const handler = f.graph.selectionCellsHandler.getHandler(f.graph.getSelectionCell());
-  assert.equal(handler, f.initialHandler, 'the native selection handler is reused');
+  assert.ok(handler === f.initialHandler, 'the native selection handler is reused');
   assert.equal(handler.selectionBorder.opacity, 0);
   assert.equal(handler.selectionBorder.node.style.opacity, '0');
   assert.ok(!handler.sizers || handler.sizers.length === 0, 'cached rectangular resize handles are removed too');

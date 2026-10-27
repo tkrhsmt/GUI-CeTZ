@@ -3,9 +3,10 @@
 const { locateCanvases, closing, skipTrivia, splitArgs } = require('./scanner');
 const { locateEditableCalls, coordinateRanges } = require('./advanced');
 const { insertionFor } = require('./templates');
+const { coordinate } = require('./snapping');
 
 const HEADER = '// GUI-CeTZ shapes v1\n';
-const format = value => Number(value.toFixed(5));
+const format = coordinate;
 
 function offsetShapes(source, dx, dy) {
   const canvas = locateCanvases(source)[0];
