@@ -9,7 +9,8 @@ const { SHAPES, insertionFor, templateInsertions } = require('./templates');
 const { EditHistory, historyAction } = require('./history');
 const { sourceAction, sourceActionPatches } = require('./source-actions');
 const { exportTypst } = require('./export');
-const { withSelectionMarker } = require('./selection');
+const { withSelectionMarker, withSelectionMarkers, selectSourceCalls } = require('./selection');
+const { copyShapes, pasteShapes } = require('./clipboard');
 const { withDiagramStatus } = require('./diagram-status');
 const { launchCodeLenses } = require('./launch-code-lenses');
 const { ensureDrawioPlugin } = require('./plugin-settings');
@@ -161,6 +162,55 @@ async function syncToSource(session) {
     }
     if (!session.editable) throw new Error('This canvas has no editable CeTZ shapes.');
     try {
+      if (sourceCommand.action === 'copy') {
+        await vscode.env.clipboard.writeText(copyShapes(source.getText(), session.editable, sourceCommand.indices));
+        session.pasteClipboard = null;
+        session.pasteCount = 0;
+        // Copy and paste can arrive within a single debounced Draw.io save.
+        // Consume copy first so a following paste reads the captured snapshot.
+        return syncToSource(session);
+      }
+      if (sourceCommand.action === 'paste') {
+        const clipboard = await vscode.env.clipboard.readText();
+        let pasteCount = session.pasteClipboard === clipboard ? session.pasteCount || 0 : 0;
+        const patches = pasteShapes(source.getText(), session.editable, clipboard, ++pasteCount);
+        // Several paste shortcuts can be saved together by Draw.io. Keep each
+        // requested paste, allocating names against the preceding copies.
+        for (;;) {
+          const next = sourceAction(readAllCells(xml), readAllCells(session.lastXml), session.handledHistoryActions);
+          if (next?.action !== 'paste') break;
+          session.handledHistoryActions.add(next.key);
+          const pending = sourceWithPatches(source.getText(), patches);
+          const extra = pasteShapes(pending, usableDiagram(pending, session.index), clipboard, ++pasteCount);
+          patches[0].text += extra[0].text;
+        }
+        await applySourcePatches(session, source, patches);
+        session.pasteClipboard = clipboard;
+        session.pasteCount = pasteCount;
+        await syncFromSource(session);
+        const insertion = patches[0];
+        const indices = session.editable.calls.flatMap((call, index) =>
+          !call.group && call.start >= insertion.start && call.start < insertion.start + insertion.text.length ? [index] : []);
+        if (indices.length) {
+          session.selectionSerial = (session.selectionSerial || 0) + 1;
+          await updateDiagramDocument(session, withSelectionMarkers(session.lastXml, indices,
+            `${Date.now()}-${session.selectionSerial}`), session.diagramFiles);
+        }
+        await refreshGuiView(session);
+        return;
+      }
+      if (sourceCommand.action === 'select') {
+        // A selection can arrive in the same save as a drag or style edit.
+        const patches = patchesFromEditable(source.getText(), session.editable, xml, readAllCells);
+        await applySourcePatches(session, source, patches);
+        if (patches.length) {
+          await syncFromSource(session);
+          await refreshGuiView(session);
+        } else session.lastXml = xml;
+        await selectSourceCalls(vscode, await documentForSession(session),
+          session.editable.calls, sourceCommand.indices);
+        return;
+      }
       if (sourceCommand.action === 'focus') {
         const call = session.editable.calls[sourceCommand.indices[0]];
         if (!call) throw new Error('The selected CeTZ shape no longer exists.');
@@ -184,6 +234,7 @@ async function syncToSource(session) {
       throw new Error('Typst changed while the GUI was being edited. The GUI was refreshed from Typst.');
     }
     const patches = patchesFromEditable(source.getText(), session.editable, xml, readAllCells);
+    if (!patches.length) { session.lastXml = xml; return; }
     await applySourcePatches(session, source, patches);
     await syncFromSource(session);
     if (patches.length) await refreshGuiView(session);

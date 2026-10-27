@@ -317,6 +317,11 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   selectedCell = pointCell;
   fileLoaded();
   selectionChanged();
+  assert.match(insertedAction, /cetzAction=select;cetzTargets=0;/,
+    'selecting a point selects its owning source call');
+  insertedAction = null;
+  selectionChanged();
+  assert.equal(insertedAction, null, 'repeated selection does not notify again');
   const controls = wrapper.children[0];
   const rail = formatContainer.children[0];
   assert.equal(rail.children[0].children.includes(palettes['cetz-preview-primitives'][1]), true);
@@ -336,6 +341,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   graphModel.cells[anchorCell.id] = anchorCell;
   selectedCell = anchorCell;
   selectionChanged();
+  assert.match(insertedAction, /cetzAction=select;cetzTargets=3;/);
   const anchorRow = controls.children.find(child => child.children.some(item => item['aria-label'] === 'Anchor name'));
   assert.equal(anchorRow.style.display, '');
   assert.match(anchorRow.children[0].style.cssText, /max-width:100%/);
@@ -424,7 +430,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.equal(changedStyle.key, 'cetzStartMark');
   assert.equal(changedStyle.value, 'curved-stealth');
   selectedCell = pointCell;
-  assert.equal(graph.graphHandler.useGuidesForEvent(), false);
+  assert.equal(graph.graphHandler.useGuidesForEvent(), true);
   const pointSnap = graph.snapDelta({ x: 16, y: -7 }, { x: 533, y: 453, width: 14, height: 14 });
   assert.equal(pointSnap.x, 20);
   assert.equal(pointSnap.y, -10);

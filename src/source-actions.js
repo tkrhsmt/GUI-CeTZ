@@ -4,7 +4,7 @@ const { skipTrivia, closing, splitArgs } = require('./scanner');
 const { insertionFor } = require('./templates');
 const { rewriteLiteralCall, rewriteReferencedCall } = require('./advanced');
 
-const ACTIONS = new Set(['duplicate', 'forward', 'backward', 'focus', 'export',
+const ACTIONS = new Set(['copy', 'paste', 'duplicate', 'forward', 'backward', 'focus', 'select', 'export',
   'connect-straight', 'connect-elbow', 'reconnect', 'group', 'ungroup',
   'share-point', 'auto-share', 'detach-point', 'rename-anchor',
   'rotate', 'scale', 'move-before', 'move-after', 'front', 'back']);
@@ -67,6 +67,7 @@ function safeStatementGaps(source, calls, start, end) {
 }
 
 function sourceAction(cells, originalCells, handledIds = new Set()) {
+  let selection = null;
   for (const [id, item] of cells) {
     if (originalCells.has(id) || item.cell.parent !== '1') continue;
     const style = item.cell.style || '';
@@ -76,14 +77,18 @@ function sourceAction(cells, originalCells, handledIds = new Set()) {
     const key = token || id;
     if (handledIds.has(key)) continue;
     const targets = /(?:^|;)cetzTargets=([\d,]+)(?:;|$)/.exec(style)?.[1];
-    if (!targets && action !== 'export') throw new Error('Select a CeTZ shape first.');
+    if (!targets && action !== 'export' && action !== 'paste') throw new Error('Select a CeTZ shape first.');
     const indices = targets ? [...new Set(targets.split(',').map(Number))] : [];
     if (indices.some(index => !Number.isSafeInteger(index) || index < 0))
       throw new Error('Invalid CeTZ shape selection.');
     const value = /(?:^|;)cetzValue=([\w.%-]+)(?:;|$)/.exec(style)?.[1];
-    return { id, action, key, indices, ...(value == null ? {} : { value }) };
+    const command = { id, action, key, indices, ...(value == null ? {} : { value }) };
+    // Selection notifications may share a save with an edit action. Process
+    // edits first, and otherwise use the most recent selection in the save.
+    if (action === 'select') selection = command;
+    else return command;
   }
-  return null;
+  return selection;
 }
 
 function duplicate(source, rendered, indices) {
@@ -521,7 +526,7 @@ function transformPatches(source, rendered, action) {
 
 function sourceActionPatches(source, rendered, action) {
   if (!ACTIONS.has(action.action) || !action.indices.length && action.action !== 'export') throw new Error('Unknown CeTZ action.');
-  if (action.action === 'focus' || action.action === 'export') return [];
+  if (action.action === 'focus' || action.action === 'select' || action.action === 'export') return [];
   if (action.action === 'front' || action.action === 'back')
     return moveToLayerEnd(source, rendered, action.indices, action.action === 'front');
   if (action.action === 'move-before' || action.action === 'move-after')

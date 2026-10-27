@@ -13,6 +13,7 @@ let JSDOM;
 try { ({ JSDOM } = require(process.env.GUI_CETZ_DOM_MODULE || 'jsdom')); } catch {}
 const mxClient = process.env.GUI_CETZ_MXCLIENT;
 const skip = !JSDOM || !mxClient ? 'Set GUI_CETZ_DOM_MODULE and GUI_CETZ_MXCLIENT for native DOM tests' : false;
+const editorUi = process.env.GUI_CETZ_EDITOR_UI || path.resolve(path.dirname(mxClient || ''), '../js/diagramly/EditorUi.js');
 
 async function fixture(t, sourceOverride, options = {}) {
   const dom = new JSDOM('<html><body><div id="graph"></div></body></html>',
@@ -34,12 +35,33 @@ async function fixture(t, sourceOverride, options = {}) {
     createVertexTemplateEntry() { return element; }, createEdgeTemplateEntry() { return element; } };
   sidebar.container.appendChild(sidebar.wrapper);
   const actions = { undo: { funct() {}, isEnabled() { return true; } },
-    redo: { funct() {}, isEnabled() { return true; } } };
+    redo: { funct() {}, isEnabled() { return true; } },
+    copy: { funct() {}, isEnabled() { return false; } },
+    paste: { funct() {}, isEnabled() { return false; } } };
   const ui = { sidebar, editor: { graph, addListener(name, callback) { ui[name] = callback; } },
     actions: { get(name) { return actions[name]; } }, container: element(), formatContainer: element(),
     sidebarContainer: element(), menubarContainer: element(), toolbarContainer: element(),
     hsplitPosition: 0, formatWidth: 240, refresh() {},
     getCurrentFile() { return { getTitle() { return 'test.cetz-1.drawio'; }, getData() { return ''; } }; } };
+  if (options.nativeClipboard) {
+    const code = fs.readFileSync(editorUi, 'utf8');
+    const start = code.indexOf('EditorUi.prototype.installNativeClipboardHandler = function()');
+    const end = code.indexOf('\n\t};', start) + '\n\t};'.length;
+    assert.ok(start >= 0 && end > start, 'load the installed Draw.io clipboard handler');
+    w.EditorUi = function () {};
+    w.eval(code.slice(start, end));
+    w.mxClient.IS_MAC = true;
+    w.document.execCommand = () => true;
+    graph.container.tabIndex = 0;
+    ui.isVirtualKeyboardDevice = () => false;
+    ui.keyHandler = { bindControlKey() {} };
+    ui.isSelectionAllowed = () => true;
+    ui.copyCells = ui.pasteCells = () => assert.fail('CeTZ must intercept native cell cloning');
+    ui.handleError = error => { throw error; };
+    w.EditorUi.prototype.installNativeClipboardHandler.call(ui);
+    // jsdom does not implement contentEditable focusability.
+    ui.clipboardElt.tabIndex = -1;
+  }
   w.Draw = { loadPlugin(callback) { callback(ui); } };
   const plugin = fs.readFileSync(path.resolve(__dirname, '../src/cetz-drawio-plugin.js'), 'utf8');
   if (!options.initialSelection) w.eval(plugin);
@@ -61,6 +83,9 @@ async function fixture(t, sourceOverride, options = {}) {
   }
   ui.fileLoaded();
   function send(target, kind, x, y) {
+    // Live preview can replace the original SVG node. Subsequent pointer
+    // events still reach the graph in a browser through its document listeners.
+    if (!target.isConnected) target = graph.container;
     const event = w.mxClient.IS_POINTER ? { down: 'pointerdown', move: 'pointermove', up: 'pointerup' } :
       { down: 'mousedown', move: 'mousemove', up: 'mouseup' };
     target.dispatchEvent(new w.MouseEvent(event[kind], { bubbles: true, clientX: x, clientY: y,
@@ -181,6 +206,155 @@ test('shape bodies can translate repeatedly after selection and control point ed
     }
     bodyGesture(40, 30);
   }
+});
+
+test('native clipboard actions and shortcuts send CeTZ commands without cloning SVG cells', { skip }, async t => {
+  const f = await fixture(t);
+  const commands = () => Object.values(f.graph.model.cells).map(cell => cell.style || '')
+    .filter(style => /cetzAction=(copy|paste);/.test(style));
+  assert.equal(f.ui.actions.get('copy').isEnabled(), false);
+  f.select('cetz-point-1-0');
+  assert.equal(f.ui.actions.get('copy').isEnabled(), true);
+  f.ui.actions.get('copy').funct();
+  assert.match(commands().at(-1), /cetzAction=copy;cetzTargets=1;/);
+  f.graph.clearSelection();
+  assert.equal(f.ui.actions.get('paste').isEnabled(), true);
+  f.ui.actions.get('paste').funct();
+  assert.match(commands().at(-1), /cetzAction=paste;cetzActionToken=/);
+  f.select('cetz-edit-0');
+  f.graph.container.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }));
+  assert.match(commands().at(-1), /cetzAction=copy;cetzTargets=0;/);
+  f.graph.clearSelection();
+  f.graph.container.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'v', metaKey: true, bubbles: true }));
+  assert.match(commands().at(-1), /cetzAction=paste;/);
+  const count = commands().length;
+  const input = f.w.document.createElement('input');
+  f.graph.container.appendChild(input);
+  input.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true }));
+  assert.equal(commands().length, count, 'text fields keep native clipboard behaviour');
+  assert.equal(Object.keys(f.graph.model.cells).filter(id => /^cetz-edit-/.test(id)).length, 4);
+});
+
+test('macOS clipboard shortcuts work through Draw.io native hidden input', {
+  skip: skip || (!fs.existsSync(editorUi) ? 'Set GUI_CETZ_EDITOR_UI to EditorUi.js for native clipboard tests' : false)
+}, async t => {
+  const f = await fixture(t, undefined, { nativeClipboard: true });
+  const commands = name => Object.values(f.graph.model.cells).filter(cell =>
+    (cell.style || '').includes('cetzAction=' + name + ';')).length;
+  f.select('cetz-edit-0');
+  f.graph.container.focus();
+  f.graph.container.dispatchEvent(new f.w.KeyboardEvent('keydown', {
+    key: 'Meta', keyCode: 91, metaKey: true, bubbles: true
+  }));
+  assert.equal(f.w.document.activeElement, f.ui.clipboardElt, 'Meta focuses the native clipboard input');
+  function shortcut(key, name) {
+    const before = commands(name);
+    f.ui.clipboardElt.dispatchEvent(new f.w.KeyboardEvent('keydown', {
+      key, keyCode: key.toUpperCase().charCodeAt(0), metaKey: true, bubbles: true, cancelable: true
+    }));
+    assert.equal(commands(name), before, 'the hidden input waits for its native clipboard event');
+    const event = new f.w.Event(name, { bubbles: true, cancelable: true });
+    f.ui.clipboardElt.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(commands(name), before + 1, 'one command per native clipboard gesture');
+  }
+  shortcut('c', 'copy');
+  shortcut('v', 'paste');
+  shortcut('v', 'paste');
+  const hostPaste = new f.w.Event('paste', { bubbles: true, cancelable: true });
+  f.ui.clipboardElt.dispatchEvent(hostPaste);
+  assert.equal(commands('paste'), 3, 'host menu paste works without a V keydown');
+  const editor = f.w.document.createElement('div'), text = f.w.document.createElement('span');
+  editor.setAttribute('contenteditable', 'true');
+  editor.appendChild(text); f.graph.container.appendChild(editor);
+  const textPaste = new f.w.Event('paste', { bubbles: true, cancelable: true });
+  text.dispatchEvent(textPaste);
+  assert.equal(textPaste.defaultPrevented, false, 'real text editors retain native paste');
+  assert.equal(commands('paste'), 3);
+  f.ui.clipboardElt.dispatchEvent(new f.w.KeyboardEvent('keyup', { key: 'Meta', keyCode: 91, bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(f.ui.clipboardElt.isConnected, false, 'releasing Meta restores graph focus');
+});
+
+test('point guides align the point center and preserve off-grid source coordinates', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *;\n' +
+    'line((0, 0), (0, 2))\nrect((1.13, 4), (2.13, 5))\n})';
+  for (const scale of [1, 2]) {
+    const f = await fixture(t, source);
+    f.graph.view.scaleAndTranslate(scale, 3, -2);
+    f.graph.graphHandler.guidesEnabled = true;
+    const unit = f.rendered.calibration.unitX * 2.5 * scale;
+    const drag = f.drag('cetz-point-0-0', 1.14 * unit, -0.74 * unit);
+    const guide = drag.handler.guide;
+    assert.equal(guide.guideX.node.style.visibility, 'visible');
+    assert.equal(guide.guideX.stroke, '#0088cf');
+    const target = f.graph.view.getState(f.graph.model.getCell('cetz-edit-1'));
+    assert.ok(Math.abs(drag.state.getCenterX() + drag.handler.currentDx - target.x) < 0.001);
+    assert.equal(drag.handler.cetzGuideSnap.x, true);
+    assert.equal(drag.handler.cetzGuideSnap.y, false);
+    f.send(f.graph.container, 'move', drag.x + 3.2 * unit, drag.y - 0.74 * unit);
+    assert.equal(guide.guideX.node.style.visibility, 'hidden');
+    assert.equal(drag.handler.cetzGuideSnap.x, false, 'moving away restores grid snapping');
+    f.send(f.graph.container, 'move', drag.x + 1.14 * unit, drag.y - 0.74 * unit);
+    f.send(f.graph.container, 'up', drag.x + 1.14 * unit, drag.y - 0.74 * unit);
+    assert.equal(Number(f.graph.getCellStyle(drag.cell).cetzGuideX), 1);
+    const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+    const patches = patchesFromEditable(source, f.rendered, xml, readAllCells);
+    const updated = patches.reduceRight((text, patch) =>
+      text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
+    assert.match(updated, /line\(\(1\.13, 0\.75\), \(0, 2\)\)/);
+    assert.equal(drag.handler.guide, null, 'drop removes guide overlays');
+    assert.equal(drag.handler.cetzGuideSnap, null, 'drop clears snapping metadata');
+  }
+});
+
+test('point guides preserve both aligned axes for a referenced text position', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *;\n' +
+    'anchor("a", (0, 0))\ncontent("a", [Text])\nrect((1.13, 1.17), (2.13, 2.17))\n})';
+  const f = await fixture(t, source);
+  f.graph.graphHandler.guidesEnabled = true;
+  const unit = f.rendered.calibration.unitX * 2.5;
+  const drag = f.drag('cetz-point-1-0', 1.14 * unit, -1.18 * unit);
+  assert.equal(drag.handler.guide.guideX.node.style.visibility, 'visible');
+  assert.equal(drag.handler.guide.guideY.node.style.visibility, 'visible');
+  f.send(f.graph.container, 'up', drag.x + 1.14 * unit, drag.y - 1.18 * unit);
+  const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  const patches = patchesFromEditable(source, f.rendered, xml, readAllCells);
+  const updated = source.slice(0, patches[0].start) + patches[0].text + source.slice(patches[0].end);
+  // The reference position is resolved from Typst's measured anchor, which
+  // includes the content anchor offset. Preserve that offset when moving it.
+  assert.match(updated, /content\(\(rel: \(1\.13, 1\.16\), to: "a"\), \[Text\]\)/);
+  const next = await renderEditable(updated, parseCanvas(updated).canvas, path.resolve('examples/basic.typ'));
+  const cells = readAllCells(next.xml), point = cells.get('cetz-point-1-0').geometry;
+  const target = cells.get('cetz-edit-2').geometry;
+  assert.ok(Math.abs(+point.x + 7 - +target.x) < 0.01);
+  assert.ok(Math.abs(+point.y + 7 - +target.y - +target.height) < 0.01);
+});
+
+test('arc endpoint guides keep the endpoint on its ellipse and retain a fractional angle', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *;\n' +
+    'arc((0, 0), start: 0deg, stop: 90deg, radius: (2, 1), anchor: "origin")\n' +
+    'rect((1.13, 4), (2.13, 5))\n})';
+  const f = await fixture(t, source);
+  f.graph.graphHandler.guidesEnabled = true;
+  const unit = f.rendered.calibration.unitX * 2.5;
+  const drag = f.drag('cetz-point-0-2', 1.14 * unit, (1 - Math.sqrt(1 - (1.13 / 2) ** 2)) * unit);
+  assert.equal(drag.handler.guide.guideX.node.style.visibility, 'visible');
+  assert.equal(drag.handler.cetzGuideSnap.x, true);
+  f.send(f.graph.container, 'up', drag.x + 1.14 * unit,
+    drag.y + (1 - Math.sqrt(1 - (1.13 / 2) ** 2)) * unit);
+  const x = (drag.cell.geometry.x + 7 - f.rendered.calibration.originX) / unit;
+  const y = (f.rendered.calibration.originY - drag.cell.geometry.y - 7) / unit;
+  assert.ok(Math.abs(x - 1.13) < 0.001);
+  assert.ok(Math.abs((x / 2) ** 2 + y ** 2 - 1) < 0.00001);
+  const xml = f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
+  const patches = patchesFromEditable(source, f.rendered, xml, readAllCells);
+  const updated = source.slice(0, patches[0].start) + patches[0].text + source.slice(patches[0].end);
+  assert.match(updated, /stop: \d+\.\d+deg/);
+  const next = await renderEditable(updated, parseCanvas(updated).canvas, path.resolve('examples/basic.typ'));
+  const after = readAllCells(next.xml).get('cetz-point-0-2').geometry;
+  const afterX = (+after.x + 7 - next.calibration.originX) / (next.calibration.unitX * 2.5);
+  assert.ok(Math.abs(afterX - 1.13) < 0.0001, 'source refresh retains alignment');
 });
 
 test('selected curve guides forward body drags to their owner', { skip }, async t => {

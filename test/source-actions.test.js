@@ -18,6 +18,19 @@ function apply(source, patches) {
     .reduce((text, patch) => text.slice(0, patch.start) + patch.text + text.slice(patch.end), source);
 }
 
+test('selection uses the latest notification without swallowing edit actions', () => {
+  const marker = (action, indices, token) => ({ cell: { parent: '1', style:
+    `cetzAction=${action};cetzTargets=${indices};cetzActionToken=${token};` } });
+  const cells = new Map([
+    ['a', marker('select', '0', 'first')],
+    ['b', marker('select', '1,2', 'last')]
+  ]);
+  assert.deepEqual(sourceAction(cells, new Map()).indices, [1, 2]);
+  cells.set('c', marker('rotate', '1', 'edit'));
+  assert.equal(sourceAction(cells, new Map()).action, 'rotate');
+  assert.deepEqual(sourceAction(cells, new Map(), new Set(['first', 'last', 'edit'])), null);
+});
+
 test('duplicate copies selected literal shapes with offsets and unique names', () => {
   const source = '#cetz.canvas({\n  import cetz.draw: *\n  rect((0, 0), (2, 1), name: "box")\n  circle((3, 1), radius: 1)\n})';
   const next = apply(source, sourceActionPatches(source, setup(source),

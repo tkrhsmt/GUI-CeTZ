@@ -90,4 +90,14 @@ function locateCanvases(text) {
   return result;
 }
 
-module.exports = { skipTrivia, closing, splitArgs, locateCanvases };
+function deletionRange(source, start, end) {
+  const lineStart = source.lastIndexOf('\n', start - 1) + 1;
+  const suffix = /^[ \t]*;?[ \t]*(?:\r?\n|$)/.exec(source.slice(end));
+  // Remove a whole standalone statement line, preserving comments and any
+  // neighbouring statements that share its first or last line.
+  return /^[ \t]*$/.test(source.slice(lineStart, start)) && suffix
+    ? { start: lineStart, end: end + suffix[0].length }
+    : { start, end };
+}
+
+module.exports = { skipTrivia, closing, splitArgs, locateCanvases, deletionRange };

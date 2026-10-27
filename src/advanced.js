@@ -1,6 +1,6 @@
 'use strict';
 
-const { closing, skipTrivia, splitArgs } = require('./scanner');
+const { closing, skipTrivia, splitArgs, deletionRange } = require('./scanner');
 const { renderCanvas } = require('./preview');
 const { templateInsertions } = require('./templates');
 const { color: parseColor, stroke: parseStroke, typstColor, typstStroke } = require('./style');
@@ -257,7 +257,7 @@ function rewriteLiteralCall(call, transform) {
     text.slice(0, edit.start) + edit.text + text.slice(edit.end), call);
 }
 
-function rewriteReferencedCall(call, dx, dy, pointOffsets) {
+function rewriteReferencedCall(call, dx, dy, pointOffsets, guide = {}) {
   const ranges = coordinateRanges(call);
   if (!ranges.length) throw new Error('This CeTZ call has no coordinates to move.');
   const edits = ranges.map((range, index) => {
@@ -271,8 +271,8 @@ function rewriteReferencedCall(call, dx, dy, pointOffsets) {
     const fromPrevious = previous && /^\(\s*\)\s*$/.test(base);
     const vertical = previous && /^\(\s*\(\s*\)\s*,\s*"\|-"\s*,/.test(base);
     const horizontal = previous && /^\(\s*\(\s*\)\s*,\s*"-\|"\s*,/.test(base);
-    const x = snapCoordinate((existing ? +existing[1] : 0) + (fromPrevious || vertical ? 0 : offset.x));
-    const y = snapCoordinate((existing ? +existing[2] : 0) + (fromPrevious || horizontal ? 0 : offset.y));
+    const x = (guide.x ? pixel : snapCoordinate)((existing ? +existing[1] : 0) + (fromPrevious || vertical ? 0 : offset.x));
+    const y = (guide.y ? pixel : snapCoordinate)((existing ? +existing[2] : 0) + (fromPrevious || horizontal ? 0 : offset.y));
     return { start: range.start, end: range.end,
       text: `(rel: (${x}, ${y}), to: ${base})` };
   });
@@ -493,7 +493,8 @@ function arcControlPoints(call) {
     { x: origin.x + arc.rx * Math.cos(radians), y: origin.y + arc.ry * Math.sin(radians) }];
 }
 
-function rewriteArcControl(text, index, x, y) {
+function rewriteArcControl(text, index, x, y, precise = false) {
+  const format = precise ? pixel : round;
   const arc = arcArguments(text);
   if (!arc) throw new Error('Arc control points require literal center, angles, and radius.');
   if (index === 0) {
@@ -502,7 +503,7 @@ function rewriteArcControl(text, index, x, y) {
     const dy = y - arcControlPoints({ call: text })[0].y;
     const px = arc.anchor === 'origin' ? origin.x + dx : x;
     const py = arc.anchor === 'origin' ? origin.y + dy : y;
-    return text.slice(0, arc.center.start) + `(${round(px)}, ${round(py)})` + text.slice(arc.center.end);
+    return text.slice(0, arc.center.start) + `(${format(px)}, ${format(py)})` + text.slice(arc.center.end);
   }
   if (index !== 1 && index !== 2) throw new Error('Unknown arc control point.');
   const origin = arcOrigin(arc);
@@ -517,13 +518,13 @@ function rewriteArcControl(text, index, x, y) {
     const nextStart = angle + 360 * Math.round((oldStart - angle) / 360);
     const nextStop = nextStart + oldStop - oldStart;
     const radius = arc.tuple || Math.abs(aspect - 1) > 1e-10
-      ? `(${round(rx)}, ${round(ry)})` : String(round(rx));
+      ? `(${format(rx)}, ${format(ry)})` : String(format(rx));
     const edits = [
-      { start: arc.start.start, end: arc.start.end, text: `${round(nextStart)}deg` },
-      { start: arc.stop.start, end: arc.stop.end, text: `${round(nextStop)}deg` }
+      { start: arc.start.start, end: arc.start.end, text: `${format(nextStart)}deg` },
+      { start: arc.stop.start, end: arc.stop.end, text: `${format(nextStop)}deg` }
     ];
     if (arc.anchor === 'origin') edits.push({ start: arc.center.start, end: arc.center.end,
-      text: `(${round(x)}, ${round(y)})` });
+      text: `(${format(x)}, ${format(y)})` });
     if (arc.radius) edits.push({ start: arc.radius.start, end: arc.radius.end, text: radius });
     else edits.push({ start: arc.end, end: arc.end, text: `, radius: ${radius}` });
     return edits.sort((a, b) => b.start - a.start).reduce((value, edit) =>
@@ -537,7 +538,7 @@ function rewriteArcControl(text, index, x, y) {
   const oldAngle = +arc.stop.value.slice(0, -3);
   while (angle - oldAngle > 180) angle -= 360;
   while (angle - oldAngle < -180) angle += 360;
-  return text.slice(0, arc.stop.start) + `${Math.round(angle)}deg` + text.slice(arc.stop.end);
+  return text.slice(0, arc.stop.start) + `${precise ? pixel(angle) : Math.round(angle)}deg` + text.slice(arc.stop.end);
 }
 
 function calibration(svg) {
@@ -836,7 +837,7 @@ function patchesFromEditable(source, rendered, xml, readCells) {
         if (name && source.slice(call.end).includes(`"${name}"`))
           throw new Error('Detach references before deleting this shared point.');
       }
-      patches.push({ start: call.start, end: call.end, text: '' }); continue;
+      patches.push({ ...deletionRange(source, call.start, call.end), text: '' }); continue;
     }
     const beforeStyle = styleMap(before.cell.style), afterStyle = styleMap(item.cell.style);
     const otherStyleChanged = Object.keys({ ...beforeStyle, ...afterStyle })
@@ -853,7 +854,13 @@ function patchesFromEditable(source, rendered, xml, readCells) {
     for (let j = 0; j < (call.points || []).length; j++) {
       const pointId = `cetz-point-${i}-${j}`;
       const pointBefore = original.get(pointId), pointAfter = cells.get(pointId);
-      if (!pointAfter || pointAfter.cell.style !== pointBefore.cell.style || pointAfter.cell.value !== pointBefore.cell.value ||
+      const pointStyle = styleMap(pointAfter?.cell.style || '');
+      const originalStyle = styleMap(pointBefore.cell.style);
+      const guideKeys = new Set(['cetzGuideX', 'cetzGuideY']);
+      const invalidStyle = Object.keys({ ...pointStyle, ...originalStyle }).some(key =>
+        guideKeys.has(key) ? pointStyle[key] !== undefined && !/^[01]$/.test(pointStyle[key]) :
+          pointStyle[key] !== originalStyle[key]);
+      if (!pointAfter || invalidStyle || pointAfter.cell.value !== pointBefore.cell.value ||
         pointAfter.cell.parent !== pointBefore.cell.parent ||
         ![pointAfter.geometry.x, pointAfter.geometry.y, pointAfter.geometry.width, pointAfter.geometry.height]
           .every(value => Number.isFinite(Number(value))) ||
@@ -862,7 +869,8 @@ function patchesFromEditable(source, rendered, xml, readCells) {
         throw new Error('CeTZ control points can only be moved.');
       if (Math.abs(+pointAfter.geometry.x - +pointBefore.geometry.x) > 0.001 ||
         Math.abs(+pointAfter.geometry.y - +pointBefore.geometry.y) > 0.001) {
-        pointMoves.push({ index: j, x: +pointAfter.geometry.x, y: +pointAfter.geometry.y });
+        pointMoves.push({ index: j, x: +pointAfter.geometry.x, y: +pointAfter.geometry.y,
+          guideX: pointStyle.cetzGuideX === '1', guideY: pointStyle.cetzGuideY === '1' });
       }
     }
     const contentResize = call.name === 'content' &&
@@ -903,25 +911,28 @@ function patchesFromEditable(source, rendered, xml, readCells) {
             cy + (x - cx) * Math.sin(radians) + (y - cy) * Math.cos(radians)];
         }
         const arcEndpoint = call.name === 'arc' && move.index === 2;
-        return { index: move.index, x: arcEndpoint ? x : snapCoordinate(x),
-          y: arcEndpoint ? y : snapCoordinate(y) };
+        const rotatedGuide = call.rotation && (move.guideX || move.guideY);
+        return { index: move.index, x: arcEndpoint || move.guideX || rotatedGuide ? x : snapCoordinate(x),
+          y: arcEndpoint || move.guideY || rotatedGuide ? y : snapCoordinate(y),
+          guideX: move.guideX || !!rotatedGuide, guideY: move.guideY || !!rotatedGuide };
       });
       let replacement;
       if (call.name === 'arc') {
         const point = coordinates[0];
-        replacement = rewriteArcControl(flattened, point.index, point.x, point.y);
+        replacement = rewriteArcControl(flattened, point.index, point.x, point.y, point.guideX || point.guideY);
       } else if (call.name === 'content' && call.pointUsesReference) {
         const point = coordinates[0], original = call.points[0];
         replacement = rewriteReferencedCall(call,
           (point.x - call.transform.tx) / call.transform.sx - original.x,
-          (point.y - call.transform.ty) / call.transform.sy - original.y);
+          (point.y - call.transform.ty) / call.transform.sy - original.y, undefined,
+          { x: point.guideX, y: point.guideY });
       } else {
         const ranges = literalPointRanges({ name: call.name, call: flattened });
         const edits = coordinates.map(point => {
           const range = ranges[point.index];
           const original = flattened.slice(range.start, range.end);
           return { start: range.start, end: range.end,
-            text: original.match(/^\s*/)[0] + `(${round(point.x)}, ${round(point.y)})` +
+            text: original.match(/^\s*/)[0] + `(${point.guideX ? pixel(point.x) : round(point.x)}, ${point.guideY ? pixel(point.y) : round(point.y)})` +
               original.match(/\s*$/)[0] };
         });
         replacement = edits.sort((a, b) => b.start - a.start).reduce((text, edit) =>
@@ -988,4 +999,4 @@ function patchesFromEditable(source, rendered, xml, readCells) {
 }
 
 module.exports = { locateEditableCalls, boundsFor, renderEditable, patchesFromEditable,
-  rewriteLiteralCall, rewriteReferencedCall };
+  rewriteLiteralCall, rewriteReferencedCall, coordinateRanges };

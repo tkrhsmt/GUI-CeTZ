@@ -347,7 +347,7 @@ Draw.loadPlugin(function (ui) {
   }
   function sendSourceAction(name, value, overrideIndices) {
     var cells = selectedEditableCells();
-    if (name !== 'export' && (!isEditablePreview() || !cells.length && !overrideIndices)) return;
+    if (name !== 'export' && (!isEditablePreview() || name !== 'paste' && !cells.length && !overrideIndices)) return;
     var indices = overrideIndices || cells.map(function (cell) { return Number(cell.id.slice('cetz-edit-'.length)); });
     var token = Date.now().toString(36) + Math.random().toString(36).slice(2);
     graph.insertVertex(graph.getDefaultParent(), null, '', -1000, -1000, 1, 1,
@@ -407,6 +407,8 @@ Draw.loadPlugin(function (ui) {
         }, parent);
       });
       menu.addSeparator(parent);
+      menu.addItem('Copy', null, function () { if (isCetz()) sendSourceAction('copy'); }, parent);
+      menu.addItem('Paste', null, function () { if (isCetz()) sendSourceAction('paste'); }, parent);
       menu.addItem('Duplicate', null, function () { if (isCetz()) sendSourceAction('duplicate'); }, parent);
       menu.addItem('Group selected', null, function () { if (isCetz()) sendSourceAction('group'); }, parent);
       menu.addItem('Ungroup selected', null, function () { if (isCetz()) sendSourceAction('ungroup'); }, parent);
@@ -447,13 +449,39 @@ Draw.loadPlugin(function (ui) {
     });
   }
   ensureCetzMenu();
+  function isClipboardTarget(target) {
+    return [ui.clipboardElt, ui.typingShim].some(function (element) {
+      return element && (element === target || element.contains && element.contains(target));
+    });
+  }
+  function isTextTarget(target) {
+    if (isClipboardTarget(target)) return false;
+    for (var node = target; node; node = node.parentNode) {
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName || '') || node.isContentEditable ||
+        node.contentEditable === 'true' || node.getAttribute && node.getAttribute('contenteditable') === 'true') return true;
+    }
+    return false;
+  }
+  // Native macOS/webview paste can arrive as a clipboard event rather than a
+  // V keydown. Draw.io directs these events through its hidden editable div.
+  ['copy', 'paste'].forEach(function (name) {
+    document.addEventListener(name, function (event) {
+      if (!isCetz() || !isEditablePreview() || isTextTarget(event.target) || ui.dialog ||
+        graph.isEditing && graph.isEditing() || name === 'copy' && !selectedEditableCells().length) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      sendSourceAction(name);
+    }, true);
+  });
   document.addEventListener('keydown', function (event) {
     if (!isCetz() || !isEditablePreview() || !(event.metaKey || event.ctrlKey) ||
-      /^(INPUT|TEXTAREA|SELECT)$/.test(event.target && event.target.tagName || '')) return;
-    var action = event.key.toLowerCase() === 'd' ? 'duplicate' :
+      isTextTarget(event.target) || ui.dialog || graph.isEditing && graph.isEditing()) return;
+    var action = event.key.toLowerCase() === 'c' ? 'copy' :
+      event.key.toLowerCase() === 'v' ? 'paste' : event.key.toLowerCase() === 'd' ? 'duplicate' :
       event.key.toLowerCase() === 'g' ? event.shiftKey ? 'ungroup' : 'group' :
       event.key === ']' ? 'forward' : event.key === '[' ? 'backward' : null;
-    if (!action || !selectedEditableCells().length) return;
+    if (!action || action !== 'paste' && !selectedEditableCells().length) return;
+    // Let the native clipboard event handle the hidden input, once per gesture.
+    if ((action === 'copy' || action === 'paste') && isClipboardTarget(event.target)) return;
     event.preventDefault(); event.stopImmediatePropagation();
     sendSourceAction(action);
   }, true);
@@ -471,11 +499,25 @@ Draw.loadPlugin(function (ui) {
     createHandler: graph.createHandler,
     updateMouseEvent: graph.updateMouseEvent,
     resetDrag: graph.graphHandler && graph.graphHandler.reset,
+    moveCells: graph.graphHandler && graph.graphHandler.moveCells,
     popup: graph.popupMenuHandler && graph.popupMenuHandler.isEnabled,
     popupFactory: graph.popupMenuHandler && graph.popupMenuHandler.factoryMethod,
     undo: ui.actions.get('undo').funct, redo: ui.actions.get('redo').funct,
     undoEnabled: ui.actions.get('undo').isEnabled, redoEnabled: ui.actions.get('redo').isEnabled
   };
+  ['copy', 'paste'].forEach(function (name) {
+    var action = ui.actions.get(name);
+    if (!action) return;
+    var nativeAction = action.funct, nativeEnabled = action.isEnabled;
+    action.funct = function () {
+      if (isCetz() && isEditablePreview() && !(graph.isEditing && graph.isEditing())) return sendSourceAction(name);
+      return nativeAction.apply(this, arguments);
+    };
+    action.isEnabled = function () {
+      return isCetz() && isEditablePreview() && !(graph.isEditing && graph.isEditing()) ? name === 'paste' || selectedEditableCells().length > 0 :
+        nativeEnabled.apply(this, arguments);
+    };
+  });
   ui.actions.get('undo').isEnabled = function () {
     return isCetz() || original.undoEnabled.apply(this, arguments);
   };
@@ -519,6 +561,8 @@ Draw.loadPlugin(function (ui) {
   var lastPreviewStyle = null;
   var lastEditCount = 0;
   var lastSelectionToken = null;
+  var lastSourceSelection = '';
+  var applyingCodeSelection = false;
   var renderedLayersReady = false;
   var renderedLayerSignature = null;
   var renderedImageLoads = [];
@@ -1141,9 +1185,18 @@ Draw.loadPlugin(function (ui) {
     var markerId = Object.keys(cells).filter(function (id) { return /^cetz-select-[\w-]+$/.test(id); }).sort().pop();
     if (!markerId || markerId === lastSelectionToken) return;
     lastSelectionToken = markerId;
-    var index = /(?:^|;)cetzSelect=(\d+)(?:;|$)/.exec(cells[markerId].style || '')?.[1];
-    var target = index && graph.getModel().getCell('cetz-edit-' + index);
-    if (target) graph.setSelectionCell(target);
+    var indices = /(?:^|;)cetzSelect=([\d,]+)(?:;|$)/.exec(cells[markerId].style || '')?.[1];
+    var targets = indices ? indices.split(',').map(function (index) {
+      return graph.getModel().getCell('cetz-edit-' + index);
+    }).filter(Boolean) : [];
+    if (targets.length) {
+      applyingCodeSelection = true;
+      try {
+        if (targets.length === 1) graph.setSelectionCell(targets[0]);
+        else graph.setSelectionCells(targets);
+      }
+      finally { applyingCodeSelection = false; }
+    }
   }
   function isTemplate(cell) {
     return !!cell && /(?:^|;)cetzTemplate=[\w-]+(?:;|$)/.test(cell.style || '');
@@ -1310,6 +1363,75 @@ Draw.loadPlugin(function (ui) {
       ? frame : null;
   }
   function quarter(value) { return Math.round(value * 4) / 4; }
+  function clearPointGuides(handler) {
+    handler.cetzGuideSnap = null;
+    handler.cetzPointGuideActive = false;
+  }
+  function preparePointGuide(handler, cell) {
+    var guide = handler.guide;
+    if (!guide || guide.cetzPointGuide) return;
+    guide.cetzPointGuide = true;
+    guide.getGuideColor = function () { return '#0088cf'; };
+    var ownerId = 'cetz-edit-' + cell.id.split('-')[2];
+    var states = guide.states.filter(function (state) {
+      return state.cell && state.cell !== cell && state.cell.id !== ownerId &&
+        /^cetz-(?:edit|point)-\d+/.test(state.cell.id || '');
+    }).map(function (state) {
+      if (!/^cetz-point-/.test(state.cell.id)) return state;
+      var point = new mxRectangle(state.getCenterX(), state.getCenterY(), 0, 0);
+      point.cell = state.cell;
+      return point;
+    });
+    guide.setStates(states);
+    // Align the mathematical point, rather than the edges of its 14px handle.
+    var move = guide.move;
+    guide.move = function (bounds, delta, gridEnabled, clone) {
+      var scale = graph.view.scale || 1;
+      var center = new mxRectangle(bounds.x + 7 * scale, bounds.y + 7 * scale, 0, 0);
+      handler.cetzPointGuideActive = true;
+      try {
+        var style = graph.getCellStyle(cell);
+        if (style.cetzArcHandle === 'end') {
+          // The endpoint must stay on its ellipse. Pick one reachable alignment
+          // and let snapDelta solve the other coordinate on that ellipse.
+          var translate = graph.view.translate || { x: 0, y: 0 };
+          var cx = (Number(style.cetzArcCenterX) + translate.x) * scale;
+          var cy = (Number(style.cetzArcCenterY) + translate.y) * scale;
+          var rx = Number(style.cetzArcRadiusX) * scale, ry = Number(style.cetzArcRadiusY) * scale;
+          var px = center.x + delta.x, py = center.y + delta.y;
+          var tolerance = Math.max(2, this.getGuideTolerance(gridEnabled) * scale);
+          var best = null;
+          states.forEach(function (state) {
+            if (guide.isStateIgnored(state)) return;
+            ['x', 'y'].forEach(function (axis) {
+              var values = axis === 'x' ? [state.x, state.getCenterX(), state.x + state.width] :
+                [state.y, state.getCenterY(), state.y + state.height];
+              values.forEach(function (value) {
+                var ratio = axis === 'x' ? (value - cx) / rx : (value - cy) / ry;
+                if (!Number.isFinite(ratio) || Math.abs(ratio) > 1) return;
+                var x = axis === 'x' ? value : cx + (px < cx ? -1 : 1) * rx * Math.sqrt(1 - ratio * ratio);
+                var y = axis === 'y' ? value : cy + (py < cy ? -1 : 1) * ry * Math.sqrt(1 - ratio * ratio);
+                var distance = Math.hypot(x - px, y - py);
+                if (distance < tolerance && (!best || distance < best.distance))
+                  best = { axis: axis, x: x, y: y, state: state, distance: distance };
+              });
+            });
+          });
+          this.distanceEnabled = false;
+          if (!best) {
+            this.hide();
+            return graph.snapDelta(delta, center, !gridEnabled, false, false);
+          }
+          var target = new mxRectangle(best.x, best.y, 0, 0);
+          target.cell = best.state.cell;
+          this.setStates([target]);
+          this.horizontal = best.axis === 'x'; this.vertical = best.axis === 'y';
+        }
+        return move.call(this, center, delta, gridEnabled, clone);
+      }
+      finally { handler.cetzPointGuideActive = false; }
+    };
+  }
   if (typeof mxVertexHandler !== 'undefined' && mxVertexHandler.prototype.updateHint) {
     var originalVertexHint = mxVertexHandler.prototype.updateHint;
     mxVertexHandler.prototype.updateHint = function () {
@@ -1695,7 +1817,24 @@ Draw.loadPlugin(function (ui) {
         };
         if (original.resetDrag) graph.graphHandler.reset = function () {
           clearDragImages(this);
+          clearPointGuides(this);
           return original.resetDrag.apply(this, arguments);
+        };
+        if (original.moveCells) graph.graphHandler.moveCells = function (cells, dx, dy) {
+          var point = cells.length === 1 && /^cetz-point-\d+-\d+$/.test(cells[0].id || '') && cells[0];
+          if (!point) return original.moveCells.apply(this, arguments);
+          var model = graph.getModel(), snap = this.cetzGuideSnap || {};
+          model.beginUpdate();
+          try {
+            graph.setCellStyles('cetzGuideX', snap.x ? '1' : '0', [point]);
+            graph.setCellStyles('cetzGuideY', snap.y ? '1' : '0', [point]);
+            var args = Array.prototype.slice.call(arguments);
+            // Preserve fractional guide positions through mxGraph's drop rounding.
+            var arcEnd = graph.getCellStyle(point).cetzArcHandle === 'end' && (snap.x || snap.y);
+            if (snap.x || arcEnd) args[1] = this.currentDx / graph.view.scale;
+            if (snap.y || arcEnd) args[2] = this.currentDy / graph.view.scale;
+            return original.moveCells.apply(this, args);
+          } finally { model.endUpdate(); }
         };
       }
       if (original.constrainChild) graph.isConstrainChild = function (cell) {
@@ -1734,13 +1873,15 @@ Draw.loadPlugin(function (ui) {
       if (original.useGuidesForEvent) graph.graphHandler.useGuidesForEvent = function () {
         var cells = graph.getSelectionCells();
         if (isEditablePreview() && cells.length === 1 &&
-          /^cetz-point-\d+-\d+$/.test(cells[0].id || '')) return false;
+          /^cetz-point-\d+-\d+$/.test(cells[0].id || '')) preparePointGuide(this, cells[0]);
         return original.useGuidesForEvent.apply(this, arguments);
       };
-      if (original.snapDelta) graph.snapDelta = function (delta, bounds) {
+      if (original.snapDelta) graph.snapDelta = function (delta, bounds, ignoreGrid, ignoreX, ignoreY) {
         var cells = graph.getSelectionCells();
         var cell = isEditablePreview() && cells.length === 1 ? cells[0] : null;
         if (cell && /^cetz-point-\d+-\d+$/.test(cell.id || '')) {
+          var handler = graph.graphHandler;
+          handler.cetzGuideSnap = { x: !!ignoreX, y: !!ignoreY };
           var owner = graph.getModel().getCell('cetz-edit-' + cell.id.split('-')[2]);
           var ownerStyle = owner && graph.getCellStyle(owner);
           var ownerAngle = ownerStyle && Number(ownerStyle.cetzAngle);
@@ -1752,22 +1893,30 @@ Draw.loadPlugin(function (ui) {
           if (frame) {
             var scale = graph.view.scale || 1;
             var translate = graph.view.translate || { x: 0, y: 0 };
-            var centerX = (bounds.x + delta.x) / scale - translate.x + 7;
-            var centerY = (bounds.y + delta.y) / scale - translate.y + 7;
+            var handleOffset = handler.cetzPointGuideActive ? 0 : 7;
+            var centerX = (bounds.x + delta.x) / scale - translate.x + handleOffset;
+            var centerY = (bounds.y + delta.y) / scale - translate.y + handleOffset;
             if (arcHandle === 'end') {
               var ellipse = ['cetzArcCenterX', 'cetzArcCenterY', 'cetzArcRadiusX',
                 'cetzArcRadiusY'].map(function (key) { return Number(arcStyle[key]); });
               if (ellipse.every(Number.isFinite) && ellipse[2] > 0 && ellipse[3] > 0) {
                 var dx = (centerX - ellipse[0]) / ellipse[2];
                 var dy = (centerY - ellipse[1]) / ellipse[3];
+                if ((ignoreX && Math.abs(dx) <= 1) || (ignoreY && Math.abs(dy) <= 1)) {
+                  if (ignoreX) centerY = ellipse[1] + (dy < 0 ? -1 : 1) * ellipse[3] * Math.sqrt(1 - dx * dx);
+                  else centerX = ellipse[0] + (dx < 0 ? -1 : 1) * ellipse[2] * Math.sqrt(1 - dy * dy);
+                  delta.x = (centerX + translate.x - handleOffset) * scale - bounds.x;
+                  delta.y = (centerY + translate.y - handleOffset) * scale - bounds.y;
+                  return delta;
+                }
                 if (Math.hypot(dx, dy) > 0.001) {
                   // One-degree steps keep the endpoint on the arc and its
                   // written stop angle free of long decimal fractions.
                   var angle = Math.round(Math.atan2(dy, dx) * 180 / Math.PI) * Math.PI / 180;
                   centerX = ellipse[0] + ellipse[2] * Math.cos(angle);
                   centerY = ellipse[1] + ellipse[3] * Math.sin(angle);
-                  delta.x = (centerX + translate.x - 7) * scale - bounds.x;
-                  delta.y = (centerY + translate.y - 7) * scale - bounds.y;
+                  delta.x = (centerX + translate.x - handleOffset) * scale - bounds.x;
+                  delta.y = (centerY + translate.y - handleOffset) * scale - bounds.y;
                   return delta;
                 }
               }
@@ -1781,20 +1930,22 @@ Draw.loadPlugin(function (ui) {
               Number.isFinite(rotationCy) && Number.isFinite(ownerAngle)) {
               var radians = ownerAngle * Math.PI / 180;
               var relativeX = worldX - rotationCx, relativeY = worldY - rotationCy;
-              var localX = quarter(rotationCx + relativeX * Math.cos(radians) +
+              var snapLocal = ignoreX || ignoreY ? function (value) { return value; } : quarter;
+              var localX = snapLocal(rotationCx + relativeX * Math.cos(radians) +
                 relativeY * Math.sin(radians));
-              var localY = quarter(rotationCy - relativeX * Math.sin(radians) +
+              var localY = snapLocal(rotationCy - relativeX * Math.sin(radians) +
                 relativeY * Math.cos(radians));
               relativeX = localX - rotationCx; relativeY = localY - rotationCy;
               worldX = rotationCx + relativeX * Math.cos(radians) - relativeY * Math.sin(radians);
               worldY = rotationCy + relativeX * Math.sin(radians) + relativeY * Math.cos(radians);
             } else {
-              worldX = quarter(worldX); worldY = quarter(worldY);
+              if (!ignoreX) worldX = quarter(worldX);
+              if (!ignoreY) worldY = quarter(worldY);
             }
             var x = frame.originX + worldX * frame.unitX;
             var y = frame.originY - worldY * frame.unitY;
-            delta.x = (x + translate.x - 7) * scale - bounds.x;
-            delta.y = (y + translate.y - 7) * scale - bounds.y;
+            delta.x = (x + translate.x - handleOffset) * scale - bounds.x;
+            delta.y = (y + translate.y - handleOffset) * scale - bounds.y;
             return delta;
           }
         }
@@ -1822,8 +1973,11 @@ Draw.loadPlugin(function (ui) {
         var modelX = (this.bounds.x + this.currentDx) / scale - translate.x + anchor.x;
         var modelY = (this.bounds.y + this.currentDy) / scale - translate.y + anchor.y;
         var arcCenter = cells.length === 1 && graph.getCellStyle(cells[0]).cetzArcHandle === 'center';
-        var x = quarter((modelX - frame.originX) / frame.unitX);
-        var y = quarter((frame.originY - modelY) / frame.unitY);
+        var guided = this.cetzGuideSnap || {};
+        var x = guided.x ? Math.round((modelX - frame.originX) / frame.unitX * 100) / 100 :
+          quarter((modelX - frame.originX) / frame.unitX);
+        var y = guided.y ? Math.round((frame.originY - modelY) / frame.unitY * 100) / 100 :
+          quarter((frame.originY - modelY) / frame.unitY);
         this.hint.textContent = (arcCenter ? 'CeTZ arc center ' : 'CeTZ ') +
           '(' + x + ', ' + y + ')' + (arcCenter ? ' · start fixed' : '');
       };
@@ -1832,7 +1986,9 @@ Draw.loadPlugin(function (ui) {
         graph.popupMenuHandler.factoryMethod = function (menu, cell) {
           if (cell && /^cetz-(?:edit|point)-\d+/.test(cell.id || '') &&
             graph.getSelectionCells().indexOf(cell) < 0) graph.setSelectionCell(cell);
+          if (isEditablePreview()) menu.addItem('Paste', null, function () { sendSourceAction('paste'); });
           if (selectedEditableCells().length) {
+            menu.addItem('Copy', null, function () { sendSourceAction('copy'); });
             menu.addItem('Duplicate', null, function () { sendSourceAction('duplicate'); });
             if (selectedEditableCells().length >= 2)
               menu.addItem('Group', null, function () { sendSourceAction('group'); });
@@ -1882,10 +2038,12 @@ Draw.loadPlugin(function (ui) {
       if (graph.graphHandler) graph.graphHandler.maxLivePreview = original.maxLivePreview;
       if (graph.graphHandler) {
         clearDragImages(graph.graphHandler);
+        clearPointGuides(graph.graphHandler);
         graph.graphHandler.allowLivePreview = original.allowLivePreview;
         graph.graphHandler.updatePreview = original.updatePreview;
         graph.graphHandler.createPreviewShape = original.createPreviewShape;
         graph.graphHandler.reset = original.resetDrag;
+        graph.graphHandler.moveCells = original.moveCells;
       }
       if (graph.popupMenuHandler) {
         graph.popupMenuHandler.isEnabled = original.popup;
@@ -1971,6 +2129,13 @@ Draw.loadPlugin(function (ui) {
       graph.view.validate();
     }
     updateControls();
+    var indices = selectedEditableCells().map(function (cell) {
+      return Number(cell.id.slice('cetz-edit-'.length));
+    }).sort(function (a, b) { return a - b; });
+    var selection = indices.join(',');
+    if (isEditablePreview() && selection && selection !== lastSourceSelection && !applyingCodeSelection)
+      sendSourceAction('select', null, indices);
+    lastSourceSelection = selection;
   });
   graph.getModel().addListener('change', function () { setTimeout(update, 0); });
   new MutationObserver(function (records) {
