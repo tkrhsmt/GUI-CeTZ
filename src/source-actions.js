@@ -167,7 +167,15 @@ function moveInOutline(source, rendered, indices, after) {
     if (i) text += gaps[i - 1];
     text += source.slice(call.start, call.end);
   });
-  return [{ start: first, end: last, text }];
+  const patches=[{ start: first, end: last, text }];
+  if(rendered.mode==='3d'){
+    const positions=new Map();let cursor=first;
+    reordered.forEach((call,i)=>{if(i)cursor+=gaps[i-1].length;positions.set(call,cursor);cursor+=call.end-call.start;});
+    patches.selectStart=positions.get(moving);
+    const active=rendered.workspace.planes.find(plane=>plane.key===rendered.workspace.activePlaneKey);
+    if(active&&!active.managed){const parent=affected.find(call=>active.start>=call.start&&active.wrapperEnd<=call.end);if(parent)patches.activePlaneKey='source-plane-'+(positions.get(parent)+active.start-parent.start);}
+  }
+  return patches;
 }
 
 function moveToLayerEnd(source, rendered, indices, front) {
@@ -590,7 +598,11 @@ function sourceActionPatches(source, rendered, action, pending = []) {
     return [{start:canvas.bodyStart,end:canvas.bodyEnd,
       text:'\ncetz.draw.ortho({' + source.slice(canvas.bodyStart,canvas.bodyEnd) + '\n})\n'}];
   }
-  if (rendered.mode === '3d' && !['properties', 'focus', 'select', 'export'].includes(action.action))
+  if(rendered.mode==='3d'&&['move-before','move-after'].includes(action.action)){
+    const movable=new Set([...rendered.workspace.planes.map(plane=>plane.wrapperIndex),...rendered.workspace.objects.map(object=>object.index)]);
+    if(action.indices.length!==2||action.indices.some(index=>!movable.has(index)))throw new Error('Reorder planes, lines or content within the same parent.');
+  }
+  if (rendered.mode === '3d' && !['properties', 'focus', 'select', 'export','move-before','move-after'].includes(action.action))
     throw new Error(require('./three-dimensional').MESSAGE);
   if (!ACTIONS.has(action.action) || !action.indices.length && action.action !== 'export') throw new Error('Unknown CeTZ action.');
   if (action.action === 'focus' || action.action === 'select' || action.action === 'export') return [];

@@ -156,3 +156,14 @@ test('expression text survives XYZ position editing and transformed coordinates 
   assert.equal(object.text,null);source=apply(source,spatialEditPatches(source,full,{index:object.index,base:object.base,viewBase:full.workspace.views[0].base,points:[[2,3,4]]}));full=await render(source);
   assert.ok(source.includes('content((2, 3, 4),text)'));assert.equal(full.workspace.objects.find(o=>o.kind==='line').guidable,false);
 });
+
+test('3D Outline reorder keeps plane contents, selection and legacy identities and rejects cross-parent moves',async()=>{
+  const {planeCode}=require('../src/plane-editor');
+  let source=sourceFor('ortho({on-xy({rect((0,0),(2,1),fill:red)})\nline((0,0,0),(1,2,3))\ncontent((1,1,2),"Label")\n'+planeCode('','gui-plane-1',{kind:'xz',position:[1,2,3],angles:[10,20,30]},'cetz.draw.circle((0,0),radius:1)')+'})\nperspective({line((0,0,0),(2,2,2))})','0.5.3'),full=await render(source);
+  const plane=full.workspace.planes.find(p=>!p.managed),target=full.workspace.planes.find(p=>p.managed);full.workspace.activePlaneKey=plane.key;
+  const patches=sourceActionPatches(source,full,{action:'move-after',indices:[plane.wrapperIndex,target.wrapperIndex]});source=apply(source,patches);full=await render(source);
+  assert.ok(source.indexOf('on-xy({rect(')>source.indexOf('gui-plane-1'));const moved=full.workspace.planes.find(p=>!p.managed);assert.equal(moved.key,patches.activePlaneKey);assert.equal(moved.wrapperStart,patches.selectStart);
+  const a=full.workspace.objects.find(o=>o.view===full.workspace.views[0].index),b=full.workspace.objects.find(o=>o.view===full.workspace.views[1].index);
+  assert.throws(()=>sourceActionPatches(source,full,{action:'move-after',indices:[a.index,b.index]}),/one group/);
+  assert.throws(()=>sourceActionPatches(source,full,{action:'move-after',indices:[full.workspace.views[0].index,a.index]}),/Reorder/);
+});

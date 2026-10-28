@@ -18,7 +18,7 @@ Draw.loadPlugin(function (ui) {
     rect: '<rect x="10" y="10" width="44" height="28" rx="2"/>',
     circle: '<circle cx="32" cy="24" r="17"/>',
     content: '<rect x="8" y="10" width="48" height="28" rx="3" stroke="#93c5fd"/><path d="M18 18 H46 M18 25 H41 M18 32 H35"/>',
-    line: '<path d="M8 36 L25 11 L42 28 L56 12"/><circle cx="8" cy="36" r="2" fill="#ffffff"/><circle cx="56" cy="12" r="2" fill="#ffffff"/>',
+    line: '<path d="M8 36L56 12"/><circle cx="8" cy="36" r="2" fill="#ffffff"/><circle cx="56" cy="12" r="2" fill="#ffffff"/>',
     arc: '<path d="M10 34 A22 22 0 0 1 54 34"/><circle cx="32" cy="34" r="2" fill="#e28b23" stroke="none"/>',
     mark: '<path d="M9 34 H48 M39 25 L51 34 L39 43"/>',
     'n-star': '<path d="M32 5 L38 20 L54 20 L41 30 L46 45 L32 36 L18 45 L23 30 L10 20 L26 20 Z"/>',
@@ -27,11 +27,26 @@ Draw.loadPlugin(function (ui) {
     hobby: '<path d="M7 34 C19 12 25 13 33 25 S48 39 57 10"/><circle cx="7" cy="34" r="2"/><circle cx="33" cy="25" r="2"/><circle cx="57" cy="10" r="2"/>',
     catmull: '<path d="M7 36 C17 35 18 8 30 11 S43 36 57 13"/><circle cx="7" cy="36" r="2"/><circle cx="30" cy="11" r="2"/><circle cx="57" cy="13" r="2"/>',
   };
-  function shapeIcon(name) {
-    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="48" viewBox="0 0 64 48">' +
-      '<g fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
+  var planeGlyphs={
+    xy:'M10 15L32 3L54 15L32 27Z M21 9L43 21 M21 21L43 9',
+    xz:'M10 3L54 13V27L10 17Z M10 10L54 20 M32 8V22',
+    zy:'M10 13L54 3V17L10 27Z M10 20L54 10 M32 8V22'
+  };
+  Object.keys(planeGlyphs).forEach(function(kind){
+    shapeGlyphs['plane-'+kind]='<path d="'+planeGlyphs[kind]+'"/><text x="32" y="46" fill="#2563eb" stroke="none" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="500">'+kind.toUpperCase()+'</text>';
+  });
+  function shapeSvg(name,width,height,color) {
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="'+width+'" height="'+height+'" viewBox="0 0 64 48" aria-hidden="true">' +
+      '<g fill="none" stroke="'+color+'" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">' +
       shapeGlyphs[name] + '</g></svg>';
-    return 'data:image/svg+xml,' + encodeURIComponent(svg);
+  }
+  function shapeIcon(name) {
+    return 'data:image/svg+xml,' + encodeURIComponent(shapeSvg(name,64,48,'#2563eb'));
+  }
+  function appendShapeIcon(element,name){
+    var icon=document.createElement('img');element.cetzPrimitiveIcon=shapeIcon(name);icon.src=element.cetzPrimitiveIcon;
+    icon.alt='';icon.draggable=false;icon.style.cssText='display:block;width:34px;height:27px;object-fit:contain;pointer-events:none;';
+    element.setAttribute('data-cetz-tool',name);element.className=(element.className||'')+' cetzShapeTool';element.appendChild(icon);
   }
   var originalShowTooltip = sidebar.showTooltip;
   var originalGetTooltipOffset = sidebar.getTooltipOffset;
@@ -73,13 +88,7 @@ Draw.loadPlugin(function (ui) {
       element.style.width = '44px';
       element.style.minHeight = '38px';
       element.style.margin = '0';
-      var icon = document.createElement('img');
-      element.cetzPrimitiveIcon = shapeIcon(name);
-      icon.src = element.cetzPrimitiveIcon;
-      icon.alt = '';
-      icon.draggable = false;
-      icon.style.cssText = 'display:block;width:34px;height:27px;object-fit:contain;pointer-events:none;';
-      element.appendChild(icon);
+      appendShapeIcon(element,name);
       element.setAttribute('aria-label', name);
       // Draw.io uses an empty native title so its own delayed preview can appear.
       element.setAttribute('title', '');
@@ -136,7 +145,7 @@ Draw.loadPlugin(function (ui) {
   var threeHint = document.createElement('div');
   threeHint.className = 'cetz3DHint'; threeHint.setAttribute('role', 'note');
   threeHint.style.cssText = 'display:none;';
-  threeHint.textContent = '3D: ドラッグで回転 · クリックで平面を選択';
+  threeHint.textContent = '3D: Drag to orbit · Click to select';
   sidebar.wrapper.insertBefore(threeHint, controls);
   var outline = document.createElement('div');
   outline.className = 'cetzOutline';
@@ -569,25 +578,25 @@ Draw.loadPlugin(function (ui) {
   function beginSpatialPlacement(name,icon,edit,pointIndex){
     finishThreeDrag();cancelPlacement();
     var view=edit?((threeWorkspace()||{}).views||[]).filter(function(view){return view.index===edit.view;})[0]:threeView();
-    if(edit&&!edit.guidable){threeNotice.textContent='この座標式はPropertiesで編集してください。';return;}
+    if(edit&&!edit.guidable){threeNotice.textContent='Edit this coordinate expression in Properties.';return;}
     if(edit&&view)threeViewSelect.value=String(view.index);
-    if(!is3D()||!view||!view.matrix){threeNotice.textContent='校正された3Dビューを選んでください。';return;}
-    if(workspaceFlight||inspectorFlight||workspacePending.length){threeNotice.textContent='視点の更新後にもう一度選んでください。';return;}
+    if(!is3D()||!view||!view.matrix){threeNotice.textContent='Choose a calibrated 3D view.';return;}
+    if(workspaceFlight||inspectorFlight||workspacePending.length){threeNotice.textContent='Wait for the view update, then choose the tool again.';return;}
     var hint=document.createElement('div');hint.className='cetzPlacementHint cetzSpatialHint';
     hint.style.cssText='position:absolute;z-index:20;box-sizing:border-box;width:280px;max-width:calc(100% - 24px);padding:10px;border:1px solid #4675e7;border-radius:5px;background:var(--vscode-editor-background,var(--spatial-bg,#fff));color:var(--vscode-editor-foreground,var(--spatial-fg,#26334a));font:12px/1.5 -apple-system,sans-serif;white-space:normal;';
-    hint.innerHTML='<div class="cetzSpatialStage" role="status" aria-live="polite"></div><div class="cetzSpatialCoordinates"></div><label style="display:flex;gap:8px;align-items:center;margin:8px 0"><span>座標値</span><input aria-label="3D座標値" type="number" step="any" style="min-width:0;flex:1;width:100%;box-sizing:border-box"></label>'+
-      (name==='content'?'<label style="display:flex;gap:8px;margin-bottom:8px"><span>文字</span><input aria-label="3D文字" value="Text" maxlength="10000" style="min-width:0;flex:1;width:100%"></label>':'')+
-      '<div style="display:flex;flex-wrap:wrap;gap:6px"><button type="button" data-action="back">戻る</button><button type="button" data-action="confirm">この座標を確定</button><button type="button" data-action="cancel">キャンセル</button></div><div class="cetzSpatialNote" style="font-size:10px;opacity:.75;margin-top:6px"></div>';
+    hint.innerHTML='<div class="cetzSpatialStage" role="status" aria-live="polite"></div><div class="cetzSpatialCoordinates"></div><label style="display:flex;gap:8px;align-items:center;margin:8px 0"><span>Coordinate</span><input aria-label="3D coordinate" type="number" step="any" style="min-width:0;flex:1;width:100%;box-sizing:border-box"></label>'+
+      (name==='content'?'<label style="display:flex;gap:8px;margin-bottom:8px"><span>Text</span><input aria-label="3D text" value="Text" maxlength="10000" style="min-width:0;flex:1;width:100%"></label>':'')+
+      '<div style="display:flex;flex-wrap:wrap;gap:6px"><button type="button" data-action="back">Back</button><button type="button" data-action="confirm">Confirm</button><button type="button" data-action="cancel">Cancel</button></div><div class="cetzSpatialNote" style="font-size:10px;opacity:.75;margin-top:6px"></div>';
     var preview=document.createElementNS('http://www.w3.org/2000/svg','g');preview.setAttribute('data-cetz-placement','3d-'+name);preview.setAttribute('pointer-events','none');
     graph.view.getOverlayPane().appendChild(preview);graph.container.appendChild(hint);
     var firstStage=typeof pointIndex==='number'?pointIndex*3:0;
     placement={name:name,spatial:true,view:view,scene:inspectorScene(),edit:edit,firstStage:firstStage,lastStage:typeof pointIndex==='number'?firstStage+2:name==='line'?5:2,
       stage:firstStage,points:edit?edit.points.map(function(point){return point.slice();}):[[0,0,0]],hint:hint,preview:preview,icon:icon,
       cursor:graph.container.style.cursor,outline:icon&&icon.style.outline,clipId:'cetz-spatial-'+(++spatialGuideId),snap:null};
-    placement.valueInput=hint.querySelector('[aria-label="3D座標値"]');placement.valueInput.value=String(placement.points[Math.floor(firstStage/3)][firstStage%3]);
+    placement.valueInput=hint.querySelector('[aria-label="3D coordinate"]');placement.valueInput.value=String(placement.points[Math.floor(firstStage/3)][firstStage%3]);
     if(edit&&name==='content'){
-      var textInput=hint.querySelector('[aria-label="3D文字"]');textInput.value=edit.text===null?'':edit.text;textInput.disabled=edit.text===null;
-      if(textInput.disabled)textInput.placeholder='文字の式はPropertiesで編集';
+      var textInput=hint.querySelector('[aria-label="3D text"]');textInput.value=edit.text===null?'':edit.text;textInput.disabled=edit.text===null;
+      if(textInput.disabled)textInput.placeholder='Edit the text expression in Properties';
     }
     placement.valueInput.addEventListener('input',function(){
       if(!placement||!placement.spatial)return;
@@ -603,18 +612,18 @@ Draw.loadPlugin(function (ui) {
     hint.querySelector('[data-action="confirm"]').addEventListener('click',confirmSpatialCoordinate);
     hint.querySelector('[data-action="back"]').addEventListener('click',backSpatialCoordinate);
     hint.querySelector('[data-action="cancel"]').addEventListener('click',cancelPlacement);
-    if(icon){icon.style.outline='2px solid #4675e7';icon.setAttribute('aria-pressed','true');}
+    if(icon){icon.style.outline='2px solid #2563eb';icon.setAttribute('aria-pressed','true');}
     graph.container.style.cursor='crosshair';if(graph.container.tabIndex<0)graph.container.tabIndex=0;graph.container.focus();
     updateSpatialSelection();previewSpatialPlacement();spatialPlacementHint();
   }
   function spatialPlacementHint(message){
     if(!placement||!placement.spatial)return;
     var p=placement,axis='XYZ'[p.stage%3],index=Math.floor(p.stage/3),point=p.points[index];
-    p.hint.querySelector('.cetzSpatialStage').textContent=(p.edit?'編集 · ':'')+(p.name==='line'?(index===0?'始点':'終点'):'文字の位置')+' · '+axis+'を指定（'+(p.stage-p.firstStage+1)+' / '+(p.lastStage-p.firstStage+1)+'）';
-    p.hint.querySelector('.cetzSpatialCoordinates').textContent=p.points.map(function(point,i){return (i+1)+'点目 ('+point.map(function(v){return Number(v.toFixed(6));}).join(', ')+')';}).join(' ／ ');
-    p.hint.querySelector('.cetzSpatialNote').textContent=message||(p.outOfView?'現在の点はカメラの後方です。数値で指定できます。':p.axisHidden?'この軸は画面に垂直です。数値を入力して確定してください。':p.snap?p.snap.label+'へ吸着':'軸上をクリック／数値入力 → Enter · 刻み '+snapStep()+' · Escで中止');
+    p.hint.querySelector('.cetzSpatialStage').textContent=(p.edit?'Edit · ':'')+p.name+': '+placementSteps[p.name][index]+' · '+axis+' ('+(p.stage-p.firstStage+1)+' / '+(p.lastStage-p.firstStage+1)+')';
+    p.hint.querySelector('.cetzSpatialCoordinates').textContent=p.points.map(function(point,i){return placementSteps[p.name][i]+': ('+point.map(function(v){return Number(v.toFixed(6));}).join(', ')+')';}).join(' / ');
+    p.hint.querySelector('.cetzSpatialNote').textContent=message||(p.outOfView?'This point is behind the camera. Enter its coordinates.':p.axisHidden?'This axis is edge-on. Enter a value to continue.':p.snap?'Snapped to '+p.snap.label:'Click along the axis or enter a value · Enter to confirm · Step '+snapStep()+' · Esc to cancel');
     p.hint.querySelector('[data-action="back"]').disabled=p.stage===p.firstStage;
-    p.valueInput.step=String(snapStep());p.valueInput.setAttribute('aria-label','3D座標値');p.valueInput.title=(index+1)+'点目の'+axis;
+    p.valueInput.step=String(snapStep());p.valueInput.setAttribute('aria-label','3D coordinate');p.valueInput.title=placementSteps[p.name][index]+' '+axis;
     if(document.activeElement!==p.valueInput)p.valueInput.value=String(point[p.stage%3]);
   }
   function spatialSnapPoints(){
@@ -660,12 +669,12 @@ Draw.loadPlugin(function (ui) {
   function confirmSpatialCoordinate(){
     var p=placement;if(!p||!p.spatial)return;
     var value=p.valueInput.value===''?NaN:Number(p.valueInput.value);
-    if(!Number.isFinite(value)||Math.abs(value)>1e6){p.valueInput.setAttribute('aria-invalid','true');spatialPlacementHint('有限の座標値を入力してください。');return;}
+    if(!Number.isFinite(value)||Math.abs(value)>1e6){p.valueInput.setAttribute('aria-invalid','true');spatialPlacementHint('Enter a finite coordinate value.');return;}
     p.points[Math.floor(p.stage/3)][p.stage%3]=value;
     if(p.stage===p.lastStage){
-      if(p.name==='line'&&Math.hypot.apply(Math,p.points[0].map(function(n,i){return n-p.points[1][i];}))<1e-6){spatialPlacementHint('始点と異なる終点を指定してください。');return;}
+      if(p.name==='line'&&Math.hypot.apply(Math,p.points[0].map(function(n,i){return n-p.points[1][i];}))<1e-6){spatialPlacementHint('Choose an end point different from the start point.');return;}
       var payload={space:'xyz',view:p.view.index,base:p.view.base,points:p.points};
-      if(p.name==='content'&&!p.hint.querySelector('[aria-label="3D文字"]').disabled)payload.text=p.hint.querySelector('[aria-label="3D文字"]').value;
+      if(p.name==='content'&&!p.hint.querySelector('[aria-label="3D text"]').disabled)payload.text=p.hint.querySelector('[aria-label="3D text"]').value;
       if(p.edit){
         payload.index=p.edit.index;payload.base=p.edit.base;payload.viewBase=p.view.base;
         cancelPlacement();queueWorkspaceAction('spatial-edit',payload);return;
@@ -1011,11 +1020,12 @@ Draw.loadPlugin(function (ui) {
     '.cetzWorkspaceToggle{display:flex;align-items:center;gap:8px;min-height:28px;padding:0;cursor:pointer}.cetzWorkspaceToggle>span{font-size:11px;margin:0;opacity:.85}.cetzWorkspaceToggle input[type=checkbox]{appearance:auto;flex:none;order:-1;width:14px;height:14px;margin:0;accent-color:var(--ws-accent)}.cetzDimensionTabs{align-items:center;flex-wrap:wrap;gap:4px;max-width:calc(100% - 12px);margin-left:12px;vertical-align:middle}.cetzDimensionTabs button{padding:5px 10px;min-height:28px}.cetzDimensionNotice:empty{display:none}.cetzDimensionNotice{flex:1 0 100%;font-size:10px;line-height:1.5;overflow-wrap:anywhere;white-space:normal}.cetzPlaneRail{flex-direction:column;align-items:center;gap:6px;padding:6px 0;width:48px}.cetzPlaneRail button{flex-direction:column;gap:3px;width:38px;min-height:46px;padding:5px 2px;font-size:10px}.cetzPlaneRail button svg{display:block;flex:none}.cetz3DHint{padding:10px 14px;font-size:10px;line-height:1.7;opacity:.6;white-space:normal;overflow-wrap:anywhere}';
   rail.appendChild(workspaceStyle);
   workspaceStyle.textContent +=
-    '.cetzDimensionTabs{grid-column:3;grid-row:2;align-items:stretch;flex-wrap:nowrap;gap:16px;height:34px;max-width:none;margin:0 0 0 -10px;padding:0 12px;border-bottom:1px solid var(--ws-line);line-height:normal;overflow:hidden}.cetzDimensionSwitch{display:flex;align-items:stretch;flex:none;max-width:100%;gap:8px}' +
-    '.cetzDimensionTabs .cetzDimensionSwitch button[role=tab]{flex:none;gap:6px;height:34px;min-height:34px;margin:0;padding:0 12px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;box-shadow:none;font:500 12px/18px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;white-space:nowrap;opacity:.6}.cetzDimensionTabs .cetzDimensionSwitch button[role=tab]:enabled:hover{background:var(--ws-hover);border-bottom-color:var(--ws-line);opacity:1}.cetzDimensionTabs .cetzDimensionSwitch button[role=tab][aria-selected=true]{background:transparent;border-bottom-color:var(--ws-accent);opacity:1;font-weight:600}.cetzDimensionTabs .cetzDimensionSwitch button[role=tab]:disabled{opacity:.4}.cetzDimensionTabs .cetzDimensionSwitch button[role=tab]:focus-visible{outline-offset:-4px}.cetzDimensionIcon{display:flex;align-items:center;justify-content:center;flex:none;width:14px;height:14px}.cetzDimensionIcon svg{display:block}.cetzDimensionTabs button[aria-selected=true] .cetzDimensionIcon{color:var(--ws-accent)}' +
+    '.cetzDimensionTabs{grid-column:3;grid-row:2;align-items:stretch;flex-wrap:nowrap;gap:16px;height:34px;max-width:none;margin:0 0 0 -10px;padding:0 12px;border-bottom:1px solid var(--ws-line);line-height:normal;overflow:hidden}.cetzDimensionSwitch{display:flex;align-items:stretch;flex:none;min-width:0;max-width:none;gap:4px}' +
+    '.cetzDimensionTabs .cetzDimensionSwitch button[role=tab]{flex:none;min-width:0;gap:6px;height:34px;min-height:34px;margin:0;padding:0 8px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;box-shadow:none;font:500 12px/18px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;white-space:nowrap;opacity:.6}.cetzDimensionTabs .cetzDimensionSwitch button[role=tab]:enabled:hover{background:var(--ws-hover);border-bottom-color:var(--ws-line);opacity:1}.cetzDimensionTabs .cetzDimensionSwitch button[role=tab][aria-selected=true]{background:transparent;border-bottom-color:var(--ws-accent);opacity:1;font-weight:600}.cetzDimensionTabs .cetzDimensionSwitch button[role=tab]:disabled{opacity:.4}.cetzDimensionTabs .cetzDimensionSwitch button[role=tab]:focus-visible{outline-offset:-4px}.cetzDimensionIcon{display:flex;align-items:center;justify-content:center;flex:none;width:14px;height:14px}.cetzDimensionIcon svg{display:block}.cetzDimensionTabs button[aria-selected=true] .cetzDimensionIcon{color:var(--ws-accent)}' +
     '.cetzDimensionTabs .cetzDimensionNotice{align-self:center;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;line-height:18px;opacity:.65}';
   workspaceStyle.textContent += '.cetzSpatialHint{--spatial-bg:#fff;--spatial-fg:#26334a;overflow-wrap:anywhere}.geDarkMode .cetzSpatialHint{--spatial-bg:#252628;--spatial-fg:#dedede}.cetzSpatialStage{font-weight:600}.cetzSpatialCoordinates{font-size:11px;opacity:.8;margin-top:4px}.cetzSpatialHint input,.cetzSpatialHint button{font:inherit;color:inherit;border:1px solid var(--vscode-panel-border,#b8c0cb);border-radius:4px;background:var(--vscode-input-background,var(--spatial-bg));padding:4px 6px;min-height:28px;box-sizing:border-box}.cetzSpatialHint button{cursor:pointer;font-size:11px}.cetzSpatialHint button:disabled{opacity:.4;cursor:default}.cetzSpatialHint [data-action=confirm]{border-color:#4675e7}.cetzSpatialHint input:focus-visible,.cetzSpatialHint button:focus-visible{outline:2px solid #4675e7;outline-offset:1px}.cetzSpatialHint input[aria-invalid=true]{border-color:#d64b4b}';
   workspaceStyle.textContent += '.cetzSpatialEditControls{--edit-bg:#f2f3f5}.geDarkMode .cetzSpatialEditControls{--edit-bg:#303236}.cetzSpatialEditControls button{appearance:none;min-width:0;min-height:28px;margin:0;padding:5px 8px;font:11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:inherit;background:var(--vscode-input-background,var(--edit-bg));border:1px solid var(--vscode-panel-border,#b8c0cb);border-radius:5px;cursor:pointer}.cetzSpatialEditControls button:focus-visible{outline:2px solid #4675e7;outline-offset:1px}.cetzSpatialEditControls button:disabled{opacity:.4;cursor:default}';
+  workspaceStyle.textContent += '.cetzPlaneRail button.cetzShapeTool{flex:none;display:inline-flex;align-items:center;justify-content:center;width:44px;height:38px;min-height:38px;padding:4px;gap:0;background:transparent;border:1px solid transparent;border-radius:5px}.cetzPlaneRail button.cetzShapeTool:enabled:hover{background:var(--ws-hover);border-color:var(--ws-accent)}.cetzPlaneRail button.cetzShapeTool[aria-pressed=true]{background:var(--ws-selected);border-color:var(--ws-accent)}.cetzDimensionTabs [role=tab]>span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cetzSpatialHint label>span{flex:none}';
   function workspaceTitle(panel,title) {
     var summary=document.createElement('summary');summary.className='cetzWorkspaceSummary';
     var eyebrow=document.createElement('small');eyebrow.className='cetzWorkspaceEyebrow';eyebrow.textContent='WORKSPACE / CeTZ';summary.appendChild(eyebrow);
@@ -1046,15 +1056,15 @@ Draw.loadPlugin(function (ui) {
   }
   var threeViewSelect = threeField('3D view', 'select');
   var projectionSettings={};
-  var threeProjection = threeField('投影方式', 'select');
-  threeOption(threeProjection,'ortho','Ortho · 平行投影');
-  threeOption(threeProjection,'perspective','Perspective · 透視投影');
+  var threeProjection = threeField('Projection', 'select');
+  threeOption(threeProjection,'ortho','Ortho');
+  threeOption(threeProjection,'perspective','Perspective');
   threeProjection.addEventListener('change',function(){
     var view=threeView();
     if(view&&threeProjection.value!==view.kind)queueWorkspaceAction('projection-kind',{viewKey:view.key,kind:threeProjection.value});
     updateThreeWorkspace();
   });
-  var threePlaneSelect = threeField('Drawing plane', 'select');
+  var threePlaneSelect = threeField('Base plane', 'select');
   [['xy','XY · Z offset'],['xz','XZ · Y offset'],['zy','ZY · X offset']].forEach(function (entry) { threeOption(threePlaneSelect, entry[0], entry[1]); });
   threePlaneSelect.value = 'xy';
   var threeDepth = threeField('Plane offset', 'number'); threeDepth.value = '0'; threeDepth.step = 'any';
@@ -1067,7 +1077,7 @@ Draw.loadPlugin(function (ui) {
     return input;
   });
   var threeAngleRow = document.createElement('div');
-  threeAngleRow.className='cetzWorkspaceVector';threeAngleRow.setAttribute('role','group');threeAngleRow.setAttribute('aria-label','カメラ角度');
+  threeAngleRow.className='cetzWorkspaceVector';threeAngleRow.setAttribute('role','group');threeAngleRow.setAttribute('aria-label','Camera angles');
   threeAngles.forEach(function (input,i) {
     input.parentNode.children[0].textContent=['X','Y','Z'][i];input.parentNode.setAttribute('data-axis',['X','Y','Z'][i]);
     threeAngleRow.appendChild(input.parentNode);
@@ -1088,22 +1098,26 @@ Draw.loadPlugin(function (ui) {
     return threeButton(entry[0], function () { queueThreeCamera(entry[1], true); });
   });
   var threeCreateButton = threeButton('Enable 3D view', function () { sendSourceAction('create-view', null, []); });
-  var planeSelect=threeField('描画面','select');
-  var planePosition=['X','Y','Z'].map(function(axis){var input=threeField('平面位置 '+axis,'number');input.step='any';return input;});
-  var planeAngles=['X','Y','Z'].map(function(axis){var input=threeField('平面回転 '+axis+' °','number');input.step='any';return input;});
-  var cameraPosition=['X','Y','Z'].map(function(axis){var input=threeField('カメラ位置 '+axis,'number');input.step='any';return input;});
+  var threeProjectionButton=threeButton('Projection properties',function(){
+    finishThreeDrag();cancelPlacement();var cell=threeCameraCell(threeView());
+    if(cell){graph.setSelectionCell(cell);updateControls();if(inspector.scrollIntoView)inspector.scrollIntoView({block:'nearest'});}
+  });
+  var planeSelect=threeField('Selected plane','select');
+  var planePosition=['X','Y','Z'].map(function(axis){var input=threeField('Plane position '+axis,'number');input.step='any';return input;});
+  var planeAngles=['X','Y','Z'].map(function(axis){var input=threeField('Plane rotation '+axis+' °','number');input.step='any';return input;});
+  var cameraPosition=['X','Y','Z'].map(function(axis){var input=threeField('Camera position '+axis,'number');input.step='any';return input;});
   function compactVector(inputs,title){var row=document.createElement('div');row.className='cetzWorkspaceVector';row.setAttribute('role','group');row.setAttribute('aria-label',title);
     inputs.forEach(function(input,i){input.parentNode.children[0].textContent=['X','Y','Z'][i];input.parentNode.setAttribute('data-axis',['X','Y','Z'][i]);row.appendChild(input.parentNode);});threePanel.appendChild(row);return row;}
-  var cameraPositionRow=compactVector(cameraPosition,'カメラ位置'),planePositionRow=compactVector(planePosition,'平面位置'),planeAnglesRow=compactVector(planeAngles,'平面回転');
+  var cameraPositionRow=compactVector(cameraPosition,'Camera position'),planePositionRow=compactVector(planePosition,'Plane position'),planeAnglesRow=compactVector(planeAngles,'Plane rotation');
   threeDepth.parentNode.style.display='none';
-  var editPlaneButton=threeButton('この面を2D描画',function(){if(currentPlane())requestDimension('2d',currentPlane().key);});
-  var addPlaneButton=threeButton('平面を追加',function(){queueWorkspaceAction('plane-create',{viewKey:threeView()&&threeView().key,kind:threePlaneSelect.value,position:[0,0,0],angles:[0,0,0]});});
+  var editPlaneButton=threeButton('Edit in 2D',function(){if(currentPlane())requestDimension('2d',currentPlane().key);});
+  var addPlaneButton=threeButton('Add plane',function(){queueWorkspaceAction('plane-create',{viewKey:threeView()&&threeView().key,kind:threePlaneSelect.value,position:[0,0,0],angles:[0,0,0]});});
   planeSelect.addEventListener('change',function(){var plane=(threeWorkspace().planes||[]).filter(function(p){return p.key===planeSelect.value;})[0];if(plane)selectThreePlane(plane);});
   function poseDraftChanged(){
     var plane=currentPlane();if(!plane){updateThreeWorkspace();return;}
     var position=planePosition.map(function(i){return i.value===''?NaN:Number(i.value);}),angles=planeAngles.map(function(i){return i.value===''?NaN:Number(i.value);});
     planeDraft={key:plane.key,kind:threePlaneSelect.value,position:position,angles:angles,invalid:!position.concat(angles).every(Number.isFinite)};
-    if(planeDraft.invalid){threeNotice.textContent='平面の位置と角度を数値で入力してください。';return;}
+    if(planeDraft.invalid){threeNotice.textContent='Enter numeric plane position and rotation values.';return;}
     queueWorkspaceAction('plane-settings',planeDraft);
   }
   planePosition.concat(planeAngles).concat([threePlaneSelect]).forEach(function(input){input.addEventListener('change',poseDraftChanged);});
@@ -1131,27 +1145,70 @@ Draw.loadPlugin(function (ui) {
   workspaceButtonIcon(threeOrbitButton,'<path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v5h-5"/>');
   workspaceButtonIcon(threePanButton,'<path d="M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/>');
   workspaceButtonIcon(threeCreateButton,'<path d="M12 5v14M5 12h14"/>');
+  workspaceButtonIcon(threeProjectionButton,'<path d="M4 7h16M4 17h16M9 4v6M15 14v6"/>');
   workspaceButtonIcon(addPlaneButton,'<path d="M3 9l8-5 10 5-8 5ZM3 9v7l10 5 8-5V9M17 3v6M14 6h6"/>');
   workspaceButtonIcon(editPlaneButton,'<path d="M4 5h16v14H4ZM8 15l8-8M11 7h5v5"/>');
   editPlaneButton.className='cetzWorkspacePrimary';
-  var viewSection=workspaceSection(threePanel,'ビュー');
-  threeViewSelect.parentNode.children[0].textContent='投影ビュー';viewSection.appendChild(threeViewSelect.parentNode);viewSection.appendChild(threeProjection.parentNode);viewSection.appendChild(threeCreateButton);
-  workspaceGrid(viewSection,'視点の操作',[threeOrbitButton,threePanButton]);workspaceGrid(viewSection,'視点のプリセット',threePresets);
+  var viewSection=workspaceSection(threePanel,'View');
+  threeViewSelect.parentNode.children[0].textContent='View';viewSection.appendChild(threeViewSelect.parentNode);viewSection.appendChild(threeProjection.parentNode);viewSection.appendChild(threeCreateButton);
+  workspaceGrid(viewSection,'View controls',[threeOrbitButton,threePanButton]);workspaceGrid(viewSection,'View presets',threePresets);
+  viewSection.appendChild(threeProjectionButton);
   threeHint.style.padding='0';viewSection.appendChild(threeHint);
-  var cameraSection=workspaceSection(threePanel,'カメラ');
-  vectorGroup(cameraSection,'角度 °',threeAngleRow);vectorGroup(cameraSection,'位置',cameraPositionRow);
-  var planeSection=workspaceSection(threePanel,'描画面');
-  planeSelect.parentNode.children[0].textContent='選択中の平面';planeSection.appendChild(planeSelect.parentNode);
-  threePlaneSelect.parentNode.children[0].textContent='基準面';planeSection.appendChild(threePlaneSelect.parentNode);
-  vectorGroup(planeSection,'位置',planePositionRow);vectorGroup(planeSection,'回転 °',planeAnglesRow);
-  var planeHint=document.createElement('div');planeHint.className='cetzWorkspaceHint';planeHint.textContent='位置・回転は親座標系の値です。';planeSection.appendChild(planeHint);
+  var cameraSection=workspaceSection(threePanel,'Camera');
+  vectorGroup(cameraSection,'Angles °',threeAngleRow);vectorGroup(cameraSection,'Position',cameraPositionRow);
+  var planeSection=workspaceSection(threePanel,'Drawing plane');
+  planeSelect.parentNode.children[0].textContent='Selected plane';planeSection.appendChild(planeSelect.parentNode);
+  threePlaneSelect.parentNode.children[0].textContent='Base plane';planeSection.appendChild(threePlaneSelect.parentNode);
+  vectorGroup(planeSection,'Position',planePositionRow);vectorGroup(planeSection,'Rotation °',planeAnglesRow);
+  var planeHint=document.createElement('div');planeHint.className='cetzWorkspaceHint';planeHint.textContent='Position and rotation use the parent coordinate system.';planeSection.appendChild(planeHint);
   planeSection.appendChild(addPlaneButton);planeSection.appendChild(editPlaneButton);
-  var displaySection=workspaceSection(threePanel,'表示');
+  var displaySection=workspaceSection(threePanel,'Display');
   [threeGridToggle,threeAxesToggle].forEach(function(input,i){
-    input.parentNode.className='cetzWorkspaceField cetzWorkspaceToggle';input.parentNode.children[0].textContent=i?'XYZ軸':'3Dグリッド';displaySection.appendChild(input.parentNode);
+    input.parentNode.className='cetzWorkspaceField cetzWorkspaceToggle';input.parentNode.children[0].textContent=i?'XYZ axes':'3D grid';displaySection.appendChild(input.parentNode);
   });
   threePanel.appendChild(threeNotice);
   var threeViewSignature = '', threePlaneGrid = null, threeGuides = null, threeGuideSignature = null, threeGuideFlags = '', threePlaneSignature = null;
+  var threePlaneAxes=null,threePlaneAxesSignature=null,threePlaneAxisNodes=null,threePlaneOrigin=null,threePlaneOriginLabel=null;
+  function drawThreePlaneAxes(plane,matrix){
+    if(!arguments.length)plane=currentPlane();
+    if(!is3D()||!threeAxesToggle.checked||!plane||String(plane.view)!==threeViewSelect.value||!plane.matrix){
+      if(threePlaneAxes)threePlaneAxes.style.display='none';threePlaneAxesSignature=null;return;
+    }
+    matrix=matrix||plane.matrix.map(function(row){return [row[0],row[1],row[3]];});
+    var pane=graph.view.getOverlayPane(),scale=graph.view.scale||1,tr=graph.view.translate;
+    if(!threePlaneAxes){
+      function node(name,parent,attributes){var element=document.createElementNS('http://www.w3.org/2000/svg',name);Object.keys(attributes).forEach(function(key){element.setAttribute(key,String(attributes[key]));});parent.appendChild(element);return element;}
+      threePlaneAxes=document.createElementNS('http://www.w3.org/2000/svg','g');
+      threePlaneAxes.setAttribute('pointer-events','none');threePlaneAxes.setAttribute('aria-hidden','true');threePlaneAxes.setAttribute('opacity','.58');
+      threePlaneAxes.style.pointerEvents='none';
+      threePlaneAxisNodes=['#d64b4b','#309b56'].map(function(color,i){
+        var group=node('g',threePlaneAxes,{'data-cetz-plane-axis':'XY'[i],stroke:color,fill:color});
+        var path=node('path',group,{fill:'none','stroke-width':1,'vector-effect':'non-scaling-stroke'}),arrow=node('polygon',group,{stroke:'none'});
+        var label=node('text',group,{stroke:'white','stroke-width':3,'paint-order':'stroke','vector-effect':'non-scaling-stroke'});label.textContent='Local '+'XY'[i];
+        return {group:group,path:path,arrow:arrow,label:label};
+      });
+      threePlaneOrigin=node('circle',threePlaneAxes,{'data-cetz-plane-origin':'true',fill:'white',stroke:'#4675c8','stroke-width':1.5,'vector-effect':'non-scaling-stroke'});
+      threePlaneOriginLabel=node('text',threePlaneAxes,{fill:'#4675c8',stroke:'white','stroke-width':3,'paint-order':'stroke','vector-effect':'non-scaling-stroke','text-anchor':'end'});threePlaneOriginLabel.textContent='O (0, 0)';
+    }
+    threePlaneAxes.style.display='';threePlaneAxes.setAttribute('data-cetz-plane-axes',plane.key);
+    threePlaneAxes.setAttribute('transform','translate('+(tr.x*scale)+' '+(tr.y*scale)+') scale('+scale+')');
+    // Keep guides above filled artwork and below the interactive manipulator.
+    var before=planeManipulator&&planeManipulator.parentNode===pane?planeManipulator:null;
+    if(threePlaneAxes.parentNode!==pane||threePlaneAxes.nextSibling!==before)pane.insertBefore(threePlaneAxes,before);
+    var bounds=threePlaneBounds(plane.localBounds),signature=JSON.stringify([plane.key,matrix,bounds,scale]);
+    if(signature===threePlaneAxesSignature)return;threePlaneAxesSignature=signature;
+    function project(point){var p=applyThree(matrix,point,true);return p&&p.every(function(n){return Number.isFinite(n)&&Math.abs(n)<100000;})?p:null;}
+    threePlaneAxisNodes.forEach(function(axis,i){
+      var a=project(i?[0,bounds.bottom]:[bounds.left,0]),b=project(i?[0,bounds.top]:[bounds.right,0]);
+      var length=a&&b&&Math.hypot(b[0]-a[0],b[1]-a[1]);axis.group.style.display=length&&length*scale>2?'':'none';if(!length||length*scale<=2)return;
+      var x=b[0],y=b[1],ux=(x-a[0])/length,uy=(y-a[1])/length,size=5/scale;
+      axis.path.setAttribute('d','M '+a.join(' ')+' L '+b.join(' '));axis.path.setAttribute('stroke-dasharray',(5/scale)+' '+(4/scale));
+      axis.arrow.setAttribute('points',[[x,y],[x-size*ux+size*.5*uy,y-size*uy-size*.5*ux],[x-size*ux-size*.5*uy,y-size*uy+size*.5*ux]].map(function(p){return p.join(',');}).join(' '));
+      axis.label.setAttribute('x',x+7/scale);axis.label.setAttribute('y',y-6/scale);axis.label.setAttribute('font-size',11/scale);
+    });
+    var origin=project([0,0]);threePlaneOrigin.style.display=threePlaneOriginLabel.style.display=origin?'':'none';
+    if(origin){threePlaneOrigin.setAttribute('cx',origin[0]);threePlaneOrigin.setAttribute('cy',origin[1]);threePlaneOrigin.setAttribute('r',3/scale);threePlaneOriginLabel.setAttribute('x',origin[0]-7/scale);threePlaneOriginLabel.setAttribute('y',origin[1]+15/scale);threePlaneOriginLabel.setAttribute('font-size',11/scale);}
+  }
   function drawThreeGuides(view) {
     if (!graph.view.getBackgroundPane) return;
     var pane = graph.view.getBackgroundPane();
@@ -1181,11 +1238,12 @@ Draw.loadPlugin(function (ui) {
   }
   function transformThreeBackground() {
     var scale = graph.view.scale || 1, translate = graph.view.translate;
-    [threeGuides, threePlaneGrid].forEach(function (node) {
+    [threeGuides, threePlaneGrid, threePlaneAxes].forEach(function (node) {
       if (node) node.setAttribute('transform','translate('+(translate.x*scale)+' '+(translate.y*scale)+') scale('+scale+')');
     });
   }
   function drawThreePlaneGrid(frame) {
+    if(!planeGesture&&!threeOrbitPreview)drawThreePlaneAxes();
     if (!graph.view.getBackgroundPane) return;
     if (!threePlaneGrid) {
       threePlaneGrid = document.createElementNS('http://www.w3.org/2000/svg','g');
@@ -1318,7 +1376,7 @@ Draw.loadPlugin(function (ui) {
     var active = is3D(); threePanel.style.display = active ? '' : 'none';
     graph.getSelectionModel().setSingleSelection(active || original.singleSelection);
     if (active) {
-      var selection=graph.getSelectionCells(),allowedSelection=selection.filter(function(cell){return !!threePlaneForCell(cell)||!!threeObjectForCell(cell);});
+      var selection=graph.getSelectionCells(),allowedSelection=selection.filter(function(cell){return !!threePlaneForCell(cell)||!!threeObjectForCell(cell)||!!threeProjectionForCell(cell);});
       if (selection.length>1 || allowedSelection.length!==selection.length) graph.setSelectionCells(allowedSelection.slice(0,1));
     }
     if (!active) { threeOrbitMode = false; threePanMode = false; drawThreePlaneGrid(null); drawThreeGuides(null); return; }
@@ -1365,8 +1423,9 @@ Draw.loadPlugin(function (ui) {
     }
     planePosition.concat(planeAngles).forEach(function(input){input.disabled=!selected;});editPlaneButton.disabled=!selected||!!workspaceFlight;
     var view=threeView();
-    if(selected&&!threeObjectForCell(graph.getSelectionCell())&&!workspaceFlight&&selected.view!==Number(threeViewSelect.value))threeViewSelect.value=String(selected.view);
+    if(selected&&!threeObjectForCell(graph.getSelectionCell())&&!threeProjectionForCell(graph.getSelectionCell())&&!workspaceFlight&&selected.view!==Number(threeViewSelect.value))threeViewSelect.value=String(selected.view);
     view=threeView();threeProjection.value=view?view.kind:'';threeProjection.disabled=!view||!!workspaceFlight;threeViewSelect.cetzViewKey=view&&view.key;lastPlaneIdentity=selected?{key:selected.key,base:selected.base}:null;
+    threeProjectionButton.disabled=!view||!!workspaceFlight;
     if(cameraDraft&&view&&cameraDraft.viewKey===view.key&&cameraDraft.position.every(function(v,i){return v===view.position[i];}))cameraDraft=null;
     var cameraPose=cameraDraft&&view&&cameraDraft.viewKey===view.key?cameraDraft.position:view&&view.position;
     cameraPosition.forEach(function(input,i){if(document.activeElement!==input)input.value=cameraPose?String(cameraPose[i]):'0';});
@@ -1381,11 +1440,11 @@ Draw.loadPlugin(function (ui) {
     var frame = threePlane();
     drawThreeGuides(view);
     drawThreePlaneGrid(frame);updateSpatialSelection();
-    threeNotice.textContent = angles && !angles.every(Number.isFinite) ? 'Camera angles are expressions. Choose a preset or enter X/Y/Z angles to orbit.' : !views.length ? 'Choose Enable 3D view to orbit this scene and use the drawing tools.' : threeObjectForCell(graph.getSelectionCell())?'編集ハンドルでXYZを指定し直すか、Propertiesで座標・文字・装飾を変更できます。': !frame ?
-      'This plane is edge-on or cannot be calibrated. 「この面を2D描画」で正面から編集できます。' : !planes.length?'右の線分・文字・平面アイコンから追加してください。':
-      planeDraft&&planeDraft.invalid?'平面の位置と角度を数値で完成させてください。':selected?
-      '':
-      '右の面アイコンから描画面を追加してください。ドラッグで視点を回転できます。';
+    threeNotice.textContent = angles && !angles.every(Number.isFinite) ? 'Camera angles are expressions. Choose a preset or enter X/Y/Z angles to orbit.' : !views.length ? 'Choose Enable 3D view to orbit this scene and use the drawing tools.' : threeObjectForCell(graph.getSelectionCell())?'Click a handle to edit XYZ, or use Properties for coordinates, text and appearance.': !frame ?
+      'This plane is edge-on or cannot be calibrated. Use Edit in 2D for a front view.' : !planes.length?'Use the right toolbar to add a line, content or plane.':
+      planeDraft&&planeDraft.invalid?'Complete the numeric plane position and rotation.':selected?
+      'Drag XYZ arrows to move or rotation rings to rotate. Shift snaps rotation to 15°.':
+      'Use the right toolbar to add a plane. Drag to orbit.';
   }
   var threeDownEvent = typeof PointerEvent === 'undefined' ? 'mousedown' : 'pointerdown';
   var threeMoveEvent = threeDownEvent === 'mousedown' ? 'mousemove' : 'pointermove';
@@ -1442,6 +1501,7 @@ Draw.loadPlugin(function (ui) {
     preview.shapes.forEach(function(shape){shape.destroy();});
     preview.hidden.forEach(function(entry){entry.node.style.visibility=entry.visibility;});
     if(preview.node&&preview.node.parentNode)preview.node.parentNode.removeChild(preview.node);
+    drawThreePlaneAxes();
   }
   function prepareThreeOrbit(angles) {
     if(!angles||inspectorFlight||threeOrbitPreview)return null;
@@ -1598,6 +1658,8 @@ Draw.loadPlugin(function (ui) {
       var a=threeProject(matrix,p),b=threeProject(matrix,q);
       path.setAttribute('d',a&&b&&a.concat(b).every(function(v){return Math.abs(v)<100000;})?'M '+[(a[0]+translate.x)*scale,(a[1]+translate.y)*scale].join(' ')+' L '+[(b[0]+translate.x)*scale,(b[1]+translate.y)*scale].join(' '):'');
     });
+    var selectedPart=preview.parts.filter(function(entry){return entry.plane&&entry.plane.key===selectedPlaneKey;})[0];
+    if(selectedPart)drawThreePlaneAxes(selectedPart.plane,threePlaneProjection(matrix,selectedPart.world));
     return true;
   }
   function updateThreeDrag(immediate) {
@@ -1627,7 +1689,8 @@ Draw.loadPlugin(function (ui) {
     threeDragTimer = setTimeout(render,32);
   }
   if (graph.container && graph.container.addEventListener) graph.container.addEventListener(threeDownEvent, function (event) {
-    if (!is3D() || workspaceFlight || workspacePending.length || placement || event.button !== 0 || threeDrag) return;
+    if (!is3D() || workspaceFlight || workspacePending.length || placement || event.button !== 0 || threeDrag || planeGesture) return;
+    var planeHandle=event.target&&event.target.closest&&event.target.closest('[data-cetz-plane-handle]');if(planeHandle){event.preventDefault();event.stopImmediatePropagation();if(typeof clearCanvasHighlight==='function')clearCanvasHighlight();startPlaneGesture(event,planeHandle);return;}
     if(event.target&&event.target.closest&&event.target.closest('[data-cetz-spatial-handle]')){event.preventDefault();event.stopImmediatePropagation();return;}
     var angles = threeCameraAngles();
     if (!angles || !angles.every(Number.isFinite)) angles = null;
@@ -1684,11 +1747,11 @@ Draw.loadPlugin(function (ui) {
   var dimensionTabs=document.createElement('div'); dimensionTabs.className='cetzDimensionTabs';
   dimensionTabs.style.cssText='display:none;';
   var dimensionSwitch=document.createElement('div');dimensionSwitch.className='cetzDimensionSwitch';
-  dimensionSwitch.setAttribute('role','tablist');dimensionSwitch.setAttribute('aria-label','描画モード');dimensionTabs.appendChild(dimensionSwitch);
+  dimensionSwitch.setAttribute('role','tablist');dimensionSwitch.setAttribute('aria-label','Drawing mode');dimensionTabs.appendChild(dimensionSwitch);
   var tab2D=document.createElement('button'),tab3D=document.createElement('button');
-  [[tab2D,'2D描画','2d'],[tab3D,'3D描画','3d']].forEach(function(entry){
+  [[tab2D,'2D drawing','2d'],[tab3D,'3D drawing','3d']].forEach(function(entry){
     entry[0].type='button';entry[0].setAttribute('role','tab');entry[0].setAttribute('aria-label',entry[1]);
-    entry[0].title=entry[2]==='2d'?'平面の座標で図形を編集':'平面の配置と視点を設定';
+    entry[0].title=entry[2]==='2d'?'Edit shapes in plane coordinates':'Arrange planes and set the view';
     var icon=document.createElement('span');icon.className='cetzDimensionIcon';
     icon.innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+
       (entry[2]==='2d'?'<path d="M5 5h14v14H5ZM5 14l5-5 4 4 5-5"/>':'<path d="m12 3 9 5v8l-9 5-9-5V8ZM3 8l9 5 9-5M12 13v8M7.5 5.5l9 5"/>')+'</svg>';
@@ -1704,38 +1767,35 @@ Draw.loadPlugin(function (ui) {
   var planeRail=document.createElement('div');planeRail.className='cetzPlaneRail';
   planeRail.style.cssText='display:none;';rail.appendChild(planeRail);
   [['xy','XY'],['xz','XZ'],['zy','ZY']].forEach(function(entry){
-    var button=document.createElement('button');button.type='button';button.setAttribute('aria-label','描画面 '+entry[1]);
-    button.title='on-'+entry[0]+'平面を追加';
-    button.innerHTML='<svg width="28" height="24" viewBox="0 0 28 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M3 15L12 3L25 9L16 21Z" fill="currentColor" fill-opacity=".12"/><path d="M7 16L20 8M9 7L20 14" opacity=".45"/></svg>';
-    var label=document.createElement('span');label.textContent=entry[1];label.style.display='block';button.appendChild(label);
+    var button=document.createElement('button');button.type='button';button.setAttribute('aria-label','Drawing plane '+entry[1]);
+    button.title='Add '+entry[1]+' plane';
+    appendShapeIcon(button,'plane-'+entry[0]);
     button.addEventListener('click',function(){
       finishThreeDrag();cancelPlacement();threePanel.open=true;
       queueWorkspaceAction('plane-create',{kind:entry[0],position:[0,0,0],angles:[0,0,0],viewKey:threeView()&&threeView().key});
     });planeRail.appendChild(button);
   });
   var spatialDivider=document.createElement('div');spatialDivider.style.cssText='width:26px;border-top:1px solid var(--ws-line);margin:4px 0;';planeRail.appendChild(spatialDivider);
-  [['line','線分','<path d="M5 19L23 5"/><circle cx="5" cy="19" r="2"/><circle cx="23" cy="5" r="2"/>'],
-    ['content','文字','<path d="M6 6H22M14 6V20M10 20H18"/>']].forEach(function(entry){
-    var button=document.createElement('button');button.type='button';button.setAttribute('aria-label','3D '+entry[0]);button.setAttribute('aria-pressed','false');
-    button.title=entry[1]+'を3D座標で追加：'+(entry[0]==='line'?'始点X→Y→Z、終点X→Y→Z':'位置X→Y→Z');
-    button.innerHTML='<svg width="28" height="24" viewBox="0 0 28 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'+entry[2]+'</svg><span>'+entry[1]+'</span>';
-    button.addEventListener('click',function(){beginSpatialPlacement(entry[0],button);});planeRail.appendChild(button);
+  ['line','content'].forEach(function(name){
+    var button=document.createElement('button');button.type='button';button.setAttribute('aria-label','3D '+name);button.setAttribute('aria-pressed','false');
+    button.title=name+' · 3D: '+(name==='line'?'Start X → Y → Z, then End X → Y → Z':'Text position X → Y → Z');appendShapeIcon(button,name);
+    button.addEventListener('click',function(){beginSpatialPlacement(name,button);});planeRail.appendChild(button);
   });
   var spatialEditControls=document.createElement('div');spatialEditControls.className='cetzSpatialEditControls';spatialEditControls.style.cssText='display:none;flex-wrap:wrap;gap:6px;margin:8px 0;';
-  var spatialEditButtons=['XYZを編集','始点を移動','終点を移動'].map(function(label,i){
+  var spatialEditButtons=['Edit XYZ','Move start','Move end'].map(function(label,i){
     var button=document.createElement('button');button.type='button';button.textContent=label;button.setAttribute('aria-label','3D '+label);
     button.addEventListener('click',function(){var object=threeObjectForCell(graph.getSelectionCell());if(object)beginSpatialPlacement(object.kind,null,object,i===0?undefined:i-1);});
     spatialEditControls.appendChild(button);return button;
   });controls.insertBefore(spatialEditControls,inspector);
   var twoPanel=document.createElement('details');twoPanel.open=true;twoPanel.className='cetzWorkspace cetz2DWorkspace';
-  twoPanel.style.cssText='display:none;';workspaceTitle(twoPanel,'2D描画設定');
-  var twoSection=workspaceSection(twoPanel,'描画キャンバス');
+  twoPanel.style.cssText='display:none;';workspaceTitle(twoPanel,'2D workspace');
+  var twoSection=workspaceSection(twoPanel,'Canvas');
   var twoContext=document.createElement('div');twoContext.className='cetzWorkspaceHint';twoSection.appendChild(twoContext);
   var twoGridLabel=document.createElement('label');twoGridLabel.className='cetzWorkspaceField cetzWorkspaceToggle';
-  var twoGrid=document.createElement('input');twoGrid.type='checkbox';twoGrid.setAttribute('aria-label','2Dグリッドとスナップ');
+  var twoGrid=document.createElement('input');twoGrid.type='checkbox';twoGrid.setAttribute('aria-label','2D grid and snap');
   twoGrid.addEventListener('change',function(){graph.gridEnabled=twoGrid.checked;if(graph.view.validateBackground)graph.view.validateBackground();});
-  twoGridLabel.appendChild(twoGrid);var twoGridText=document.createElement('span');twoGridText.textContent='グリッドとスナップ';twoGridLabel.appendChild(twoGridText);twoSection.appendChild(twoGridLabel);
-  var twoBack=document.createElement('button');twoBack.type='button';twoBack.textContent='3D描画へ戻る';
+  twoGridLabel.appendChild(twoGrid);var twoGridText=document.createElement('span');twoGridText.textContent='Grid and snap';twoGridLabel.appendChild(twoGridText);twoSection.appendChild(twoGridLabel);
+  var twoBack=document.createElement('button');twoBack.type='button';twoBack.textContent='Back to 3D';
   workspaceButtonIcon(twoBack,'<path d="M5 12h14M11 6l-6 6 6 6"/>');twoBack.addEventListener('click',function(){requestDimension('3d');});twoSection.appendChild(twoBack);
   sidebar.wrapper.insertBefore(twoPanel,controls);
   var workspacePending=[],workspaceFlight=null,dimensionPending=null,pendingThreeAngles=null;
@@ -1788,6 +1848,11 @@ Draw.loadPlugin(function (ui) {
     var index=Number(graph.getCellStyle(cell).cetzSourceIndex);
     return ((threeWorkspace() || {}).planes || []).filter(function (plane) { return plane.wrapperIndex===index; })[0] || null;
   }
+  function threeProjectionForCell(cell){
+    if(!cell||!/^cetz-edit-\d+$/.test(cell.id||''))return null;
+    var index=Number(graph.getCellStyle(cell).cetzSourceIndex);
+    return ((threeWorkspace()||{}).views||[]).filter(function(view){return view.index===index;})[0]||null;
+  }
   function threePlaneCell(plane) {
     var cells=graph.getModel().cells||{};
     return Object.keys(cells).map(function(id){return cells[id];}).filter(function(cell){
@@ -1830,6 +1895,7 @@ Draw.loadPlugin(function (ui) {
   }
   var spatialSelectionLayer=null,spatialSelectionSignature=null;
   function updateSpatialSelection(){
+    updatePlaneManipulator();
     var cell=is3D()&&!placement&&!threeDrag&&!threeOrbitPreview&&graph.getSelectionCell(),object=threeObjectForCell(cell),view=object&&((threeWorkspace()||{}).views||[]).filter(function(view){return view.index===object.view;})[0];
     var signature=object&&object.guidable&&view?JSON.stringify([cell.id,object.base,object.points,view.matrix,graph.view.scale,graph.view.translate.x,graph.view.translate.y]):null;
     if(signature&&signature===spatialSelectionSignature&&spatialSelectionLayer&&spatialSelectionLayer.parentNode===graph.view.getOverlayPane()&&spatialSelectionLayer.style.display!=='none')return;
@@ -1847,11 +1913,153 @@ Draw.loadPlugin(function (ui) {
       var circle=document.createElementNS('http://www.w3.org/2000/svg','circle');circle.setAttribute('cx',point[0]);circle.setAttribute('cy',point[1]);circle.setAttribute('r','5');
       circle.setAttribute('fill','white');circle.setAttribute('stroke','#4675e7');circle.setAttribute('stroke-width','2');circle.setAttribute('pointer-events','all');
       circle.setAttribute('data-cetz-spatial-handle',String(i));circle.style.cursor='pointer';
-      var title=document.createElementNS('http://www.w3.org/2000/svg','title');title.textContent=(object.kind==='line'?(i===0?'始点':'終点'):'文字の位置')+'のXYZを編集';circle.appendChild(title);layer.appendChild(circle);
+      var title=document.createElementNS('http://www.w3.org/2000/svg','title');title.textContent=(object.kind==='line'?(i===0?'Start point':'End point'):'Text position')+' · Edit XYZ';circle.appendChild(title);layer.appendChild(circle);
       circle.addEventListener('click',function(event){event.preventDefault();event.stopImmediatePropagation();beginSpatialPlacement(object.kind,null,object,i);});
     });
     graph.view.getOverlayPane().appendChild(layer);spatialSelectionLayer=layer;
   }
+  var planeManipulator=null,planeManipulatorSignature=null,planeGesture=null,planeGestureFrame=null,planeGestureTimer=null;
+  function planePoseWorld(plane,pose){
+    var r=threeRotation(pose.angles,true),axes={xy:[0,1],xz:[0,2],zy:[2,1]}[plane.kind];
+    return r.map(function(row,i){return [row[axes[0]],row[axes[1]],pose.position[i]];});
+  }
+  function planePivot(plane,pose){
+    var b=plane.localBounds||{x:-2.5,y:-2.5,width:5,height:5},local=[b.x+b.width/2,b.y+b.height/2],world=planePoseWorld(plane,pose);
+    return world.map(function(row){return row[0]*local[0]+row[1]*local[1]+row[2];});
+  }
+  function clearPlaneManipulator(){
+    if(planeManipulator&&planeManipulator.parentNode)planeManipulator.parentNode.removeChild(planeManipulator);
+    planeManipulator=null;planeManipulatorSignature=null;
+  }
+  function drawPlaneManipulator(plane,pose,gesture){
+    clearPlaneManipulator();
+    var center=threeProject(plane.parentMatrix,planePivot(plane,pose));if(!center)return;
+    var scale=graph.view.scale,tr=graph.view.translate,c=[(center[0]+tr.x)*scale,(center[1]+tr.y)*scale],colors=['#d64b4b','#309b56','#397bd5'];
+    var layer=document.createElementNS('http://www.w3.org/2000/svg','g');layer.setAttribute('data-cetz-plane-manipulator',plane.key);layer.setAttribute('pointer-events','none');
+    function node(name,attributes){var element=document.createElementNS('http://www.w3.org/2000/svg',name);Object.keys(attributes).forEach(function(key){element.setAttribute(key,String(attributes[key]));});layer.appendChild(element);return element;}
+    function handle(element,mode,axis){element.setAttribute('data-cetz-plane-handle',mode+'-'+axis);element.setAttribute('pointer-events',element.localName==='path'||element.getAttribute('fill')==='none'?'stroke':'all');element.style.cursor=mode==='move'?'move':'crosshair';var title=document.createElementNS('http://www.w3.org/2000/svg','title');title.textContent=(mode==='move'?'Move ':'Rotate ')+'XYZ'[axis]+(mode==='rotate'?' around plane center':'');element.appendChild(title);}
+    var rotationKnobs=[];
+    ['X','Y','Z'].forEach(function(axis,i){
+      var radius=38+i*9,angle=(-150+i*60)*Math.PI/180,x=c[0]+radius*Math.cos(angle),y=c[1]+radius*Math.sin(angle);
+      handle(node('circle',{cx:c[0],cy:c[1],r:radius,fill:'none',stroke:colors[i],'stroke-width':1.5,'stroke-opacity':.45}), 'rotate',i);
+      rotationKnobs.push({axis:axis,index:i,x:x,y:y});
+    });
+    var pivot=planePivot(plane,pose),w=plane.parentMatrix[2].reduce(function(sum,n,i){return sum+n*pivot.concat(1)[i];},0);
+    ['X','Y','Z'].forEach(function(axis,i){
+      var d=[0,1].map(function(j){return (plane.parentMatrix[j][i]-center[j]*plane.parentMatrix[2][i])/w;}),length=Math.hypot(d[0],d[1]);
+      if(length*scale<.5)return;
+      var x=c[0]+d[0]/length*83,y=c[1]+d[1]/length*83;
+      handle(node('path',{d:'M '+c.join(' ')+' L '+x+' '+y,fill:'none',stroke:colors[i],'stroke-width':2.5}), 'move',i);
+      var ux=d[0]/length,uy=d[1]/length;
+      handle(node('path',{d:'M '+(x-ux*8-uy*4)+' '+(y-uy*8+ux*4)+' L '+x+' '+y+' L '+(x-ux*8+uy*4)+' '+(y-uy*8-ux*4),fill:'none',stroke:colors[i],'stroke-width':2.5}), 'move',i);
+      handle(node('circle',{cx:x,cy:y,r:5,fill:'white',stroke:colors[i],'stroke-width':2}), 'move',i);
+      var text=node('text',{x:x+7,y:y+4,fill:colors[i],'font-size':11,stroke:'none'});text.textContent=axis;
+    });
+    rotationKnobs.forEach(function(knob){
+      handle(node('circle',{cx:knob.x,cy:knob.y,r:5,fill:'white',stroke:colors[knob.index],'stroke-width':2}), 'rotate',knob.index);
+      var text=node('text',{x:knob.x+7,y:knob.y-7,fill:colors[knob.index],'font-size':10,stroke:'none'});text.textContent='R'+knob.axis;
+    });
+    node('circle',{cx:c[0],cy:c[1],r:3,fill:'#4675e7',stroke:'white','stroke-width':1});
+    if(gesture){
+      var label=(gesture.mode==='move'?'Move ':'Rotate ')+'XYZ'[gesture.axis]+': '+Number((gesture.mode==='move'?pose.position[gesture.axis]:pose.angles[gesture.axis]).toFixed(4))+(gesture.mode==='rotate'?'°':'')+' · '+(gesture.mode==='rotate'?'Shift: 15°':'Step '+snapStep());
+      var text=node('text',{x:c[0]+12,y:c[1]+83,fill:'#4675e7',stroke:'white','stroke-width':3,'paint-order':'stroke','font-size':12});text.textContent=label;
+    }
+    graph.view.getOverlayPane().appendChild(layer);planeManipulator=layer;
+  }
+  function updatePlaneManipulator(){
+    if(planeGesture)return;
+    var plane=is3D()&&!placement&&!threeDrag&&!threeOrbitPreview&&!workspaceFlight&&threePlaneForCell(graph.getSelectionCell());
+    if(!plane||!plane.parentMatrix||!plane.matrix||!plane.position||!plane.angles||!plane.position.concat(plane.angles).every(Number.isFinite)){clearPlaneManipulator();return;}
+    var predicted=threePlaneProjection(plane.parentMatrix,planePoseWorld(plane,plane));
+    if([[0,0],[1,0],[0,1]].some(function(point){var a=applyThree(predicted,point,true),b=threeProject(plane.matrix,[point[0],point[1],0]);return !a||!b||Math.hypot(a[0]-b[0],a[1]-b[1])>.2;})){clearPlaneManipulator();return;}
+    var signature=JSON.stringify([plane.key,plane.base,plane.parentMatrix,graph.view.scale,graph.view.translate.x,graph.view.translate.y]);
+    if(planeManipulator&&planeManipulator.parentNode&&signature===planeManipulatorSignature)return;
+    drawPlaneManipulator(plane,plane);planeManipulatorSignature=signature;
+  }
+  function startPlaneGesture(event,handle){
+    var plane=threePlaneForCell(graph.getSelectionCell());if(!plane||!plane.parentMatrix||!plane.position||!plane.angles||inspectorFlight||planeDraft&&planeDraft.invalid)return;
+    var fields=handle.getAttribute('data-cetz-plane-handle').split('-'),pivot=planePivot(plane,plane),center=threeProject(plane.parentMatrix,pivot);
+    if(!center)return;
+    var point=mxUtils.convertPoint(graph.container,event.clientX,event.clientY),scale=graph.view.scale,tr=graph.view.translate;
+    planeGesture={plane:plane,mode:fields[0],axis:Number(fields[1]),scene:inspectorScene(),pointerId:event.pointerId,x:point.x,y:point.y,last:point,
+      center:[(center[0]+tr.x)*scale,(center[1]+tr.y)*scale],pivot:pivot,initial:{position:plane.position.slice(),angles:plane.angles.slice()},pose:{position:plane.position.slice(),angles:plane.angles.slice()},rotation:0,previousAngle:Math.atan2(point.y-(center[1]+tr.y)*scale,point.x-(center[0]+tr.x)*scale),shapes:[],hidden:[],moved:false};
+    graph.container.style.cursor=fields[0]==='move'?'move':'crosshair';
+  }
+  function preparePlanePreview(gesture){
+    var data;try{data=JSON.parse(decodeURIComponent(graph.getCellStyle(graph.getModel().getCell('cetz-preview-background')).cetzOrbit||'null'));}catch(error){}
+    var info=data&&data.views.filter(function(view){return view.index===gesture.plane.view;})[0],parts=info&&(info.parts||info.planeTextures)||[],target=parts.filter(function(part){return part.type==='plane'&&part.key===gesture.plane.key;})[0];
+    var old=gesture.plane.matrix.map(function(row){return [row[0],row[1],row[3]];});gesture.inverse=inverseThree(old);
+    gesture.preview=document.createElementNS('http://www.w3.org/2000/svg','g');gesture.preview.setAttribute('data-cetz-plane-preview',gesture.plane.key);gesture.preview.setAttribute('pointer-events','none');graph.view.getOverlayPane().appendChild(gesture.preview);
+    var scale=graph.view.scale,tr=graph.view.translate,geometry=data&&data.geometry;
+    var complete=!!(info&&info.parts&&data.views.length===1&&gesture.inverse);
+    var sources=complete?parts:target?[target]:[];
+    sources.forEach(function(part){
+      if(!part.svg||!geometry)return;
+      var pane=document.createElementNS('http://www.w3.org/2000/svg','g');gesture.preview.appendChild(pane);var warp=null;
+      if(part===target&&gesture.inverse&&gesture.plane.parentMatrix[2].slice(0,3).some(function(n){return Math.abs(n)>1e-10;})){
+        var foreign=document.createElementNS('http://www.w3.org/2000/svg','foreignObject');foreign.setAttribute('width','1');foreign.setAttribute('height','1');foreign.style.overflow='visible';pane.appendChild(foreign);
+        warp=document.createElementNS('http://www.w3.org/1999/xhtml','div');warp.style.cssText='position:absolute;width:1px;height:1px;overflow:visible;transform-origin:0 0;pointer-events:none;';foreign.appendChild(warp);pane=warp;
+      }
+      var shape=createDragShape(new mxRectangle((geometry.x+tr.x)*scale,(geometry.y+tr.y)*scale,geometry.width*scale,geometry.height*scale),'data:image/svg+xml,'+encodeURIComponent(part.svg));shape.init(pane);shape.redraw();gesture.shapes.push(shape);
+      if(part===target){gesture.texture=shape;gesture.warp=warp;if(warp&&shape.node){shape.node.style.position='absolute';shape.node.style.left=shape.bounds.x+'px';shape.node.style.top=shape.bounds.y+'px';}}
+    });
+    var image=graph.view.getState(graph.getModel().getCell('cetz-preview-image'));
+    if(image&&image.shape&&image.shape.node){var node=image.shape.node;gesture.hidden.push({node:node,visibility:node.style.visibility,opacity:node.style.opacity});if(complete)node.style.visibility='hidden';else node.style.opacity='.25';}
+    if(threePlaneGrid){gesture.hidden.push({node:threePlaneGrid,visibility:threePlaneGrid.style.visibility,opacity:threePlaneGrid.style.opacity});threePlaneGrid.style.visibility='hidden';}
+    gesture.surface=document.createElementNS('http://www.w3.org/2000/svg','polygon');gesture.surface.setAttribute('fill','#4675e7');gesture.surface.setAttribute('fill-opacity','.08');gesture.surface.setAttribute('stroke','#4675e7');gesture.surface.setAttribute('stroke-width','1.5');gesture.preview.appendChild(gesture.surface);
+  }
+  function renderPlaneGesture(){
+    var g=planeGesture;if(!g)return;
+    if(!g.preview)preparePlanePreview(g);
+    var matrix=threePlaneProjection(g.plane.parentMatrix,planePoseWorld(g.plane,g.pose)),scale=graph.view.scale,tr=graph.view.translate;
+    if(g.texture&&g.inverse){
+      var transform=threeMultiply(matrix,g.inverse),viewport=[[scale,0,tr.x*scale],[0,scale,tr.y*scale],[0,0,1]],inverse=[[1/scale,0,-tr.x],[0,1/scale,-tr.y],[0,0,1]],m=threeMultiply(threeMultiply(viewport,transform),inverse);
+      if(g.warp)g.warp.style.transform='matrix3d('+[m[0][0],m[1][0],0,m[2][0],m[0][1],m[1][1],0,m[2][1],0,0,1,0,m[0][2],m[1][2],0,m[2][2]].join(',')+')';
+      else g.texture.node.setAttribute('transform','matrix('+[m[0][0],m[1][0],m[0][1],m[1][1],m[0][2],m[1][2]].join(' ')+')');
+    }
+    var b=threePlaneBounds(g.plane.localBounds),corners=threeClipProjected(matrix,[[b.left,b.bottom],[b.right,b.bottom],[b.right,b.top],[b.left,b.top]]);
+    g.surface.setAttribute('points',corners.map(function(point){return [(point[0]+tr.x)*scale,(point[1]+tr.y)*scale].join(',');}).join(' '));
+    drawThreePlaneAxes(g.plane,matrix);
+    planePosition.forEach(function(input,i){if(document.activeElement!==input)input.value=String(g.pose.position[i]);});planeAngles.forEach(function(input,i){if(document.activeElement!==input)input.value=String(g.pose.angles[i]);});
+    g.preview.setAttribute('data-cetz-plane-position',g.pose.position.join(','));g.preview.setAttribute('data-cetz-plane-angles',g.pose.angles.join(','));drawPlaneManipulator(g.plane,g.pose,g);
+  }
+  function finishPlaneGesture(commit){
+    var g=planeGesture;if(!g)return;
+    cancelPlaneGestureFrame();
+    planeGesture=null;
+    g.shapes.forEach(function(shape){shape.destroy();});g.hidden.forEach(function(entry){entry.node.style.visibility=entry.visibility;entry.node.style.opacity=entry.opacity;});if(g.preview&&g.preview.parentNode)g.preview.parentNode.removeChild(g.preview);
+    clearPlaneManipulator();graph.container.style.cursor='grab';
+    if(commit&&g.moved&&g.scene===inspectorScene()&&g.pose.position.concat(g.pose.angles).some(function(value,i){return Math.abs(value-g.initial.position.concat(g.initial.angles)[i])>1e-6;})){
+      planeDraft={key:g.plane.key,kind:g.plane.kind,position:g.pose.position.slice(),angles:g.pose.angles.slice(),invalid:false};
+      queueWorkspaceAction('plane-settings',{key:g.plane.key,kind:g.plane.kind,position:g.pose.position,angles:g.pose.angles,select:true});
+    }else{updateThreeWorkspace();updatePlaneManipulator();}
+  }
+  function updatePlaneGesture(event){
+    var g=planeGesture;if(!g||event.pointerId!==g.pointerId)return;event.preventDefault();event.stopImmediatePropagation();
+    var point=mxUtils.convertPoint(graph.container,event.clientX,event.clientY),axis=g.axis;
+    g.moved=g.moved||Math.hypot(point.x-g.x,point.y-g.y)>2;
+    if(g.mode==='move'){
+      var m=g.plane.parentMatrix,p=g.pivot,origin=threeProject(m,p),h=p.concat(1),w=m[2].reduce(function(sum,n,i){return sum+n*h[i];},0),d=[0,1].map(function(i){return (m[i][axis]-origin[i]*m[2][axis])/w;}),length=d[0]*d[0]+d[1]*d[1];
+      if(length>1e-12){var dx=(point.x-g.x)/graph.view.scale,dy=(point.y-g.y)/graph.view.scale,t=(dx*d[0]+dy*d[1])/length,j=Math.abs(d[0])>=Math.abs(d[1])?0:1,u=origin[j]+t*d[j],base=p.slice();base[axis]=0;var a=m[j].reduce(function(sum,n,i){return sum+n*base.concat(1)[i];},0),c=m[2].reduce(function(sum,n,i){return sum+n*base.concat(1)[i];},0),value=(a-u*c)/(u*m[2][axis]-m[j][axis]);if(Number.isFinite(value)&&Math.abs(value)<1e6)g.pose.position[axis]=snapValue(g.initial.position[axis]+value-p[axis]);}
+    }else{
+      var angle=Math.atan2(point.y-g.center[1],point.x-g.center[0]),delta=angle-g.previousAngle;while(delta>Math.PI)delta-=Math.PI*2;while(delta< -Math.PI)delta+=Math.PI*2;g.rotation+=delta;g.previousAngle=angle;
+      var step=event.shiftKey?15:1;g.pose.angles[axis]=Math.round((g.initial.angles[axis]+g.rotation*180/Math.PI)/step)*step;
+      var world=planePoseWorld(g.plane,{position:[0,0,0],angles:g.pose.angles}),b=g.plane.localBounds||{x:-2.5,y:-2.5,width:5,height:5};g.pose.position=world.map(function(row,i){return Number((g.pivot[i]-row[0]*(b.x+b.width/2)-row[1]*(b.y+b.height/2)).toFixed(6));});
+    }
+    if(g.moved&&planeGestureFrame===null&&planeGestureTimer===null){
+      var render=function(){cancelPlaneGestureFrame();renderPlaneGesture();};
+      planeGestureFrame=requestAnimationFrame(render);planeGestureTimer=setTimeout(render,32);
+    }
+  }
+  function cancelPlaneGestureFrame(){
+    if(planeGestureFrame!==null){cancelAnimationFrame(planeGestureFrame);planeGestureFrame=null;}
+    if(planeGestureTimer!==null){clearTimeout(planeGestureTimer);planeGestureTimer=null;}
+  }
+  document.addEventListener(threeMoveEvent,updatePlaneGesture,true);
+  document.addEventListener(threeUpEvent,function(event){if(planeGesture&&event.pointerId===planeGesture.pointerId){updatePlaneGesture(event);finishPlaneGesture(true);}},true);
+  document.addEventListener('pointercancel',function(){finishPlaneGesture(false);},true);
+  document.addEventListener('keydown',function(event){if(planeGesture&&event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();finishPlaneGesture(false);}},true);
+  if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('blur',function(){finishPlaneGesture(true);});
   function threePlaneCorners(plane) {
     if(!plane.matrix)return null;
     var h=plane.matrix.map(function(row){return [row[0],row[1],row[3]];}),b=threePlaneBounds(plane.localBounds);
@@ -1860,7 +2068,7 @@ Draw.loadPlugin(function (ui) {
   }
   function threePlaneAt(x,y,proximity) {
     var planes=((threeWorkspace() || {}).planes || []).filter(function (plane) { return String(plane.view)===threeViewSelect.value; });
-    var cell=graph.getCellAt(x,y),style=cell&&graph.getCellStyle(cell),at=style&&Number(style.cetzStart);
+    var cell=graph.getCellAt(x,y,null,null,null,function(state){var style=graph.getCellStyle(state.cell),at=Number(style.cetzStart);return !/^cetz-edit-/.test(state.cell.id||'')||['ortho','perspective','scope','group','on-xy','on-xz','on-zy','on-yz'].indexOf(style.cetzKind)>=0||!planes.some(function(plane){return at>=plane.bodyStart&&at<plane.bodyEnd;});}),style=cell&&graph.getCellStyle(cell),at=style&&Number(style.cetzStart);
     var owners=planes.filter(function (plane) { return Number.isFinite(at) && at>=plane.wrapperStart && at<plane.wrapperEnd; });
     owners.sort(function(a,b){return b.bodyStart-a.bodyStart;});
     if(owners.length)return owners[0];
@@ -1888,7 +2096,7 @@ Draw.loadPlugin(function (ui) {
     updateThreeWorkspace();
   }
   function queueWorkspaceAction(name,payload){
-    finishThreeDrag();cancelPlacement();
+    finishPlaneGesture(true);finishThreeDrag();cancelPlacement();
     var item={name:name,payload:payload};
     var existing=workspacePending.filter(function(p){return p.name===name&&name!=='plane-create'&&(p.payload.key||p.payload.viewKey)===(payload.key||payload.viewKey);})[0];
     if(existing)existing.payload=payload;else workspacePending.push(item);
@@ -1899,16 +2107,16 @@ Draw.loadPlugin(function (ui) {
     var drafts=Object.keys(inspectorStates).map(function(id){return inspectorStates[id];}).filter(function(state){return Object.keys(state.values).length||!state.valid||state.composing;});
     if(drafts.length){
       drafts.forEach(function(state){if(state.valid&&!state.composing)state.ready=true;});flushInspectorDrafts();
-      if(!inspectorFlight)setDimensionNotice('編集中のプロパティを完成させてください。');return;
+      if(!inspectorFlight)setDimensionNotice('Complete the property edits first.');return;
     }
     var item=workspacePending.shift(),payload=Object.assign({},item.payload),data=threeWorkspace();
     if(!data)return;
     if(item.name==='spatial-edit'&&!(data.objects||[]).some(function(object){return object.index===payload.index&&object.base===payload.base;})){
-      threeNotice.textContent='対象が更新されました。選び直して編集してください。';return;
+      threeNotice.textContent='The object changed. Select it again to edit.';return;
     }
     if(item.name==='plane-create'||item.name==='camera-position'||item.name==='projection-kind'){
       var view=data.views.filter(function(v){return v.key===payload.viewKey;})[0];
-      if(!view){threeNotice.textContent='3Dビューを選び直してください。';return;}
+      if(!view){threeNotice.textContent='Choose the 3D view again.';return;}
       payload.view=view.index;payload.base=view.base;
       if(item.name==='projection-kind'){
         if(payload.kind===view.kind){flushWorkspaceActions();return;}
@@ -1919,26 +2127,26 @@ Draw.loadPlugin(function (ui) {
     }
     if(item.name==='plane-settings'||item.name==='plane-delete'){
       var plane=(data.planes||[]).filter(function(p){return p.key===payload.key;})[0];
-      if(!plane){threeNotice.textContent='描画面を選び直してください。';return;}
+      if(!plane){threeNotice.textContent='Choose the drawing plane again.';return;}
       payload.base=plane.base;
     }
     workspaceFlight={name:item.name,payload:payload,selectionSerial:planeSelectionSerial,stamp:workspaceStamp()};
     sendSourceAction(item.name,encodedProperties(payload),[]);
   }
   function requestDimension(mode,key){
-    finishThreeDrag();cancelPlacement();
+    finishPlaneGesture(true);finishThreeDrag();cancelPlacement();
     dimensionPending={mode:mode,planeKey:key||selectedPlaneKey||(planeContext()&&planeContext().key)};
     flushInspectorDrafts();flushWorkspaceActions();flushDimensionRequest();
   }
   function flushDimensionRequest(){
     if(!dimensionPending||!isCetz()||workspaceFlight||workspacePending.length||inspectorFlight||pendingThreeAngles)return;
     var dirty=Object.keys(inspectorStates).some(function(id){return Object.keys(inspectorStates[id].values).length||!inspectorStates[id].valid||inspectorStates[id].composing||inspectorStates[id].error;});
-    if(dirty||planeDraft&&planeDraft.invalid){setDimensionNotice('編集中の値を完成させてから切り替えてください。');return;}
+    if(dirty||planeDraft&&planeDraft.invalid){setDimensionNotice('Complete the current values before switching.');return;}
     var request=dimensionPending;dimensionPending=null;
     if(request.mode===(is3D()?'3d':'2d')&&(!request.planeKey||request.planeKey===(planeContext()&&planeContext().key)))return;
     var memoryKey=is3D()?'3d':('2d:'+(planeContext()&&planeContext().key||'canvas'));
     viewMemory[memoryKey]=captureDimensionViewport();
-    setDimensionNotice('切り替え中…');
+    setDimensionNotice('Switching…');
     workspaceFlight={name:'workspace-mode',payload:request,stamp:workspaceStamp()};
     sendSourceAction('workspace-mode',encodedProperties(request),[]);
   }
@@ -1950,7 +2158,7 @@ Draw.loadPlugin(function (ui) {
     tab2D.setAttribute('aria-selected',!spatial?'true':'false');tab3D.setAttribute('aria-selected',spatial?'true':'false');
     tab2D.tabIndex=!spatial?0:-1;tab3D.tabIndex=spatial?0:-1;
     twoPanel.style.display=active&&!spatial?'':'none';
-    twoContext.textContent=context?'編集面: '+context.label+' · 面のローカルX/Y座標 · グリッド '+snapStep():'キャンバスのX/Y座標 · グリッド '+snapStep();
+    twoContext.textContent=context?'Plane: '+context.label+' · Local X/Y · Grid '+snapStep():'Canvas X/Y · Grid '+snapStep();
     twoBack.style.display=context?'':'none';twoGrid.checked=graph.gridEnabled;
     planeRail.style.display=spatial?'flex':'none';paletteStrip.style.display=spatial?'none':'';
     if(workspaceFlight&&workspaceFlight.stamp!==workspaceStamp()){
@@ -1969,7 +2177,7 @@ Draw.loadPlugin(function (ui) {
         workspacePending.forEach(function(item){if(item.name==='plane-settings'&&item.payload.key===completed.payload.key)item.payload.key=data.activePlaneKey;});
       }
       if(completed.name==='workspace-mode'){
-        setDimensionNotice(completed.payload.mode===(spatial?'3d':'2d')?'':'3D設定から描画面を選んでください。');
+        setDimensionNotice(completed.payload.mode===(spatial?'3d':'2d')?'':'Choose a drawing plane in the 3D workspace.');
         var state=viewMemory[spatial?'3d':('2d:'+(context&&context.key||'canvas'))];
         if(completed.payload.mode===(spatial?'3d':'2d')){
           dimensionViewport={stamp:workspaceStamp(),state:state};
@@ -2343,7 +2551,7 @@ Draw.loadPlugin(function (ui) {
   }
 
   function sendSourceAction(name, value, overrideIndices) {
-    if (is3D() && ['properties','focus','select','export','create-view','workspace-mode','plane-create','plane-settings','plane-delete','camera-position','projection-kind','spatial-edit'].indexOf(name) < 0) return;
+    if (is3D() && ['properties','focus','select','export','create-view','workspace-mode','plane-create','plane-settings','plane-delete','camera-position','projection-kind','spatial-edit','move-before','move-after'].indexOf(name) < 0) return;
     var cells = selectedEditableCells();
     if (name !== 'export' && ['create-view','workspace-mode','plane-create','plane-settings','plane-delete','camera-position','projection-kind','spatial-edit'].indexOf(name)<0 && (!isEditablePreview() || name !== 'paste' && !cells.length && !overrideIndices)) return;
     var indices = overrideIndices || cells.map(function (cell) { return Number(cell.id.slice('cetz-edit-'.length)); });
@@ -2393,20 +2601,20 @@ Draw.loadPlugin(function (ui) {
     } finally { model.endUpdate(); }
   }
   function add3DMenu(menu, parent) {
-    menu.addItem('3D線分 · XYZを順に指定',null,function(){beginSpatialPlacement('line');},parent);
-    menu.addItem('3D文字 · XYZを順に指定',null,function(){beginSpatialPlacement('content');},parent);
+    menu.addItem('3D line · Set XYZ coordinates',null,function(){beginSpatialPlacement('line');},parent);
+    menu.addItem('3D content · Set XYZ coordinates',null,function(){beginSpatialPlacement('content');},parent);
     menu.addSeparator(parent);
-    [['xy','XY平面'],['xz','XZ平面'],['zy','ZY平面']].forEach(function(entry){
+    [['xy','XY plane'],['xz','XZ plane'],['zy','ZY plane']].forEach(function(entry){
       menu.addItem(entry[1],null,function(){queueWorkspaceAction('plane-create',{viewKey:threeView()&&threeView().key,kind:entry[0],position:[0,0,0],angles:[0,0,0]});},parent);
     });
-    menu.addItem('この面を2D描画',null,function(){requestDimension('2d',currentPlane()&&currentPlane().key);},parent);
+    menu.addItem('Edit in 2D',null,function(){requestDimension('2d',currentPlane()&&currentPlane().key);},parent);
     menu.addSeparator(parent);
     menu.addItem('Delete selected', null, function () { graph.removeCells(graph.getSelectionCells()); }, parent);
     menu.addItem('Go to Typst call', null, function () { sendSourceAction('focus'); }, parent);
     menu.addItem('Export PDF, SVG or PNG', null, function () { sendSourceAction('export'); }, parent);
     menu.addItem('Undo', null, function () { sendHistoryAction('undo'); }, parent);
     menu.addItem('Redo', null, function () { sendHistoryAction('redo'); }, parent);
-    [['Zoom in', 'zoomIn'], ['Zoom out', 'zoomOut'], ['Fit', 'fitWindow']].forEach(function (entry) {
+    [['Zoom in', 'zoomIn'], ['Zoom out', 'zoomOut'], ['Fit view', 'fitWindow']].forEach(function (entry) {
       menu.addItem(entry[0], null, function () { if (typeof graph[entry[1]] === 'function') graph[entry[1]](); }, parent);
     });
   }
@@ -3715,7 +3923,7 @@ Draw.loadPlugin(function (ui) {
     var spatialObject=is3D()&&threeObjectForCell(cell);
     spatialEditControls.style.display=spatialObject?'flex':'none';
     spatialEditButtons.forEach(function(button,i){button.style.display=spatialObject&&(i===0||spatialObject.kind==='line')?'':'none';button.disabled=!spatialObject||!spatialObject.guidable||!!workspaceFlight||!!inspectorFlight;});
-    if(spatialObject){spatialEditButtons[0].textContent=spatialObject.kind==='line'?'XYZを編集':'位置を編集';spatialEditButtons[0].setAttribute('aria-label','3D '+spatialEditButtons[0].textContent);}
+    if(spatialObject){spatialEditButtons[0].textContent=spatialObject.kind==='line'?'Edit XYZ':'Edit position';spatialEditButtons[0].setAttribute('aria-label','3D '+spatialEditButtons[0].textContent);}
     var previewCell = false;
     if (isEditablePreview() && cell) {
       var point = /^cetz-point-(\d+)-\d+$/.exec(cell.id || '');
@@ -4058,7 +4266,9 @@ Draw.loadPlugin(function (ui) {
     });
   }
   function outlineIcon(kind) {
+    if(kind==='line'||kind==='content')return shapeSvg(kind,17,17,'currentColor');
     var paths = {
+      ortho:'M12 3L21 8V16L12 21L3 16V8ZM3 8L12 13L21 8M12 13V21',perspective:'M12 3L21 8V16L12 21L3 16V8ZM3 8L12 13L21 8M12 13V21',
       rect: 'M5 5H19V19H5Z', circle: 'M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16',
       line: 'M5 18L19 6M4 17h2v2H4ZM18 5h2v2h-2Z', content: 'M5 5H19M12 5V19M8 19H16',
       arc: 'M5 18A10 10 0 0 1 19 6', bezier: 'M4 18C4 2 20 22 20 6M4 5V18M20 6V19',
@@ -4083,7 +4293,7 @@ Draw.loadPlugin(function (ui) {
     var frame = cetzFrame();
     var entries = Object.keys(cells).filter(function (id) { return /^cetz-edit-\d+$/.test(id); })
       .map(function (id) { return { id: id, cell: cells[id], style: graph.getCellStyle(cells[id]),
-        index: Number(id.slice(10)) }; }).filter(function(entry){return !is3D()||!!threePlaneForCell(entry.cell)||!!threeObjectForCell(entry.cell);});
+        index: Number(id.slice(10)) }; }).filter(function(entry){return !is3D()||!!threePlaneForCell(entry.cell)||!!threeObjectForCell(entry.cell)||!!threeProjectionForCell(entry.cell);});
     var selected = {};
     graph.getSelectionCells().forEach(function (cell) {
       var point = /^cetz-point-(\d+)-\d+$/.exec(cell.id || '');
@@ -4117,18 +4327,18 @@ Draw.loadPlugin(function (ui) {
     var count = document.createElement('span'); count.className = 'cetzOutlineCount'; count.textContent = String(entries.length);
     count.setAttribute('aria-label', entries.length + ' objects'); headingLine.appendChild(count); heading.appendChild(headingLine);
     var hint = document.createElement('div'); hint.className = 'cetzOutlineHint';
-    hint.textContent = is3D() ? '平面・3D線分・文字 · 選択して編集' : selection ? Object.keys(selected).length + ' selected · Drag handles to reorder' : 'Objects & groups · Drag handles to reorder';
+    hint.textContent = is3D() ? 'Drag within a projection to reorder. Depth order follows sorted in Properties.' : selection ? Object.keys(selected).length + ' selected · Drag handles to reorder' : 'Objects & groups · Drag handles to reorder';
     heading.appendChild(hint); outline.appendChild(heading);
     outlineList = document.createElement('div'); outlineList.className = 'cetzOutlineList';
     outlineList.setAttribute('role', 'list'); outlineList.setAttribute('aria-label', 'Drawing objects'); outline.appendChild(outlineList);
     if (!entries.length) {
       var empty = document.createElement('div'); empty.className = 'cetzOutlineEmpty';
-      empty.textContent = is3D() ? '右の線分・文字・平面アイコンから追加してください。' : 'No objects yet. Choose a shape from the right toolbar to start drawing.'; outlineList.appendChild(empty);
+      empty.textContent = is3D() ? 'Use the right toolbar to add a line, content or plane.' : 'No objects yet. Choose a shape from the right toolbar to start drawing.'; outlineList.appendChild(empty);
     }
     var children = {};
     entries.forEach(function (entry) {
       var parent = entry.style.cetzGroup;
-      if (is3D()) parent = 'root';
+      if (is3D()){var child=threePlaneForCell(entry.cell)||threeObjectForCell(entry.cell),view=child&&((threeWorkspace()||{}).views||[]).filter(function(view){return view.index===child.view;})[0],parentCell=view&&threeCameraCell(view);parent=parentCell?String(parentCell.id.slice(10)):'root';}
       if (parent === undefined || parent === '') parent = 'root';
       if (!children[parent]) children[parent] = [];
       children[parent].push(entry);
@@ -4146,8 +4356,8 @@ Draw.loadPlugin(function (ui) {
         row.setAttribute('data-selected', selected[entry.id] ? 'true' : 'false'); row.draggable = false;
         row.style.paddingLeft = (2 + depth * 14) + 'px';
         var grip = document.createElement('span'); grip.className = 'cetzOutlineGrip';
-        grip.textContent = '⋮⋮'; grip.draggable = !is3D();
-        if (is3D()) grip.style.display = 'none';
+        grip.textContent = '⋮⋮'; grip.draggable = !is3D()||!threeProjectionForCell(entry.cell);
+        if (!grip.draggable) grip.style.display = 'none';
         grip.setAttribute('aria-label', 'Drag to reorder'); grip.title = 'Drag to reorder';
         var select = document.createElement('button'); select.className = 'cetzOutlineSelect'; select.type = 'button';
         select.title = entry.description; select.setAttribute('aria-label', entry.description);
@@ -4185,10 +4395,11 @@ Draw.loadPlugin(function (ui) {
           var button = document.createElement('button'); button.type = 'button'; button.textContent = move[0];
           button.setAttribute('aria-label', move[0] === '↑' ? 'Move layer up' : 'Move layer down');
           button.className = 'cetzOutlineMove';
-          button.style.display = move[1] && !is3D() ? '' : 'none';
+          var neighbor=siblings[move[3]],canMove=move[1]&&(!is3D()||!threeProjectionForCell(entry.cell)&&neighbor&&entry.style.cetzGroup===neighbor.style.cetzGroup);
+          button.style.display = canMove ? '' : 'none';
           button.addEventListener('click', function (event) {
             event.stopPropagation();
-            if (move[1]) sendSourceAction(move[2], null,
+            if (canMove) sendSourceAction(move[2], null,
               [entry.index, siblings[move[3]].index]);
           });
           row.appendChild(button);
@@ -4226,6 +4437,7 @@ Draw.loadPlugin(function (ui) {
         select.addEventListener('click', selectEntry);
         row.addEventListener('click', selectEntry);
         grip.addEventListener('dragstart', function (event) {
+          if(!grip.draggable){event.preventDefault();return;}
           outlineDragging = true;
           clearOutlineDropLine();
           event.stopPropagation();
@@ -4236,7 +4448,7 @@ Draw.loadPlugin(function (ui) {
         });
         row.addEventListener('dragover', function (event) {
           event.preventDefault(); event.stopPropagation();
-          if (!outlineDragging) return;
+          if (!outlineDragging||is3D()&&threeProjectionForCell(entry.cell)) return;
           if (outlineDropRow !== row) clearOutlineDropLine();
           outlineDropRow = row;
           row.style.boxShadow = outlineDropAfter(event, row)
@@ -4256,6 +4468,7 @@ Draw.loadPlugin(function (ui) {
           if (!/^cetz:\d+$/.test(dragged || '')) return;
           var from = Number(dragged.slice(5));
           if (!Number.isSafeInteger(from) || !cells['cetz-edit-' + from] || from === entry.index) return;
+          if(is3D()&&(threeProjectionForCell(entry.cell)||threeProjectionForCell(cells['cetz-edit-'+from])||graph.getCellStyle(cells['cetz-edit-'+from]).cetzGroup!==entry.style.cetzGroup))return;
           var after = outlineDropAfter(event, row);
           sendSourceAction(after ? 'move-after' : 'move-before', null, [from, entry.index]);
         });
@@ -4269,6 +4482,7 @@ Draw.loadPlugin(function (ui) {
     applyOutlineHeight(outlineHeight);
   }
   function update() {
+    if(planeGesture&&(!is3D()||planeGesture.scene!==inspectorScene()))finishPlaneGesture(false);
     suppressCachedSelectionBorders();
     var active = isCetz(), preview = active && isPreview();
     if(threeOrbitPreview&&(!is3D()||threeOrbitPreview.source!==inspectorScene()||
@@ -4376,7 +4590,7 @@ Draw.loadPlugin(function (ui) {
           !/^cetz-(?:point|guide|axis|origin|render)-/.test(cell.id) && cell.id !== 'cetz-preview-image';
       };
       graph.isCellSelectable = function (cell) {
-        if (is3D()) return !!threePlaneForCell(cell)||!!threeObjectForCell(cell);
+        if (is3D()) return !!threePlaneForCell(cell)||!!threeObjectForCell(cell)||!!threeProjectionForCell(cell);
         return !!cell && !['preview-image', 'cetz-preview-background'].includes(cell.id) &&
           !/^cetz-grid3d-/.test(cell.id) &&
           !/^cetz-select-/.test(cell.id) &&
@@ -4391,7 +4605,7 @@ Draw.loadPlugin(function (ui) {
         // Plane containers are source hit boxes with no paint of their own.
         // Keep them in the view so mxGraph does not discard their selection
         // when a source-selection command changes the model.
-        if (is3D() && (threePlaneForCell(cell)||threeObjectForCell(cell))) return true;
+        if (is3D() && (threePlaneForCell(cell)||threeObjectForCell(cell)||threeProjectionForCell(cell))) return true;
         if (/^cetz-render-\d+$/.test(cell.id || '')) return renderedLayersReady;
         if (cell.id === 'cetz-preview-image' && renderedLayersReady) return false;
         var control = /^cetz-(?:point|guide)-(\d+)-\d+$/.exec(cell.id || '');
@@ -4731,8 +4945,8 @@ Draw.loadPlugin(function (ui) {
     }
     updateControls();
     if(is3D()){
-      var selected=selectedEditableCells()[0],object=threeObjectForCell(selected),style=selected&&graph.getCellStyle(selected),data=threeWorkspace();
-      if(object)threeViewSelect.value=String(object.view);
+      var selected=selectedEditableCells()[0],object=threeObjectForCell(selected),projection=threeProjectionForCell(selected),style=selected&&graph.getCellStyle(selected),data=threeWorkspace();
+      if(object||projection){var viewIndex=object?object.view:projection.index;threeViewSelect.value=String(viewIndex);if(currentPlane()&&currentPlane().view!==viewIndex){var inView=(data.planes||[]).filter(function(plane){return plane.view===viewIndex;});selectedPlaneKey=inView.length?inView[0].key:null;lastPlaneIdentity=null;planeUIKey=null;planeDraft=null;}}
       var candidates=data&&style?(data.planes||[]).filter(function(p){var at=Number(style.cetzStart);return p.index===Number(style.cetzSourceIndex)||p.wrapperIndex===Number(style.cetzSourceIndex)||at>=p.bodyStart&&at<p.bodyEnd;}):[];
       candidates.sort(function(a,b){return b.bodyStart-a.bodyStart;});
       if(candidates.length&&selectedPlaneKey!==candidates[0].key){selectedPlaneKey=candidates[0].key;planeSelectionSerial++;planeUIKey=null;planeDraft=null;updateThreeWorkspace();}

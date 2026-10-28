@@ -530,3 +530,22 @@ test('guided 3D object edits preserve style and other elements and undo in one s
   object=workspace().objects.find(o=>o.kind==='content');send({index:object.index,base:object.base,viewBase:workspace().views[0].base,points:[[3,2,1]],text:'Label'});
   await until(()=>source.text.includes('content((3, 2, 1),[Label],anchor:"south")')&&workspace().objects.find(o=>o.kind==='content').points[0][0]===3);
 });
+
+test('plane manipulation, projection arguments and 3D reorder participate in source history and keep selection',async t=>{
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,y:30deg,{on-xy({rect((0,0),(2,1),fill:red)})\nline((1,2,3),(2,3,4))\ncontent((2,1,3),"Label")})})';
+  const {source,gui,save,action,until,selectedIndices}=await extensionFixture(t,initial);
+  const workspace=()=>JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  function send(name,payload,targets=''){const value=encodeURIComponent(JSON.stringify(payload)).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));save(gui.text.replace('</root>',action(name,targets).replace('cetzAction='+name+';','cetzAction='+name+';cetzValue='+value+';')+'</root>'));}
+  let plane=workspace().planes[0];send('plane-settings',{key:plane.key,base:plane.base,kind:'xy',position:[2,3,4],angles:[0,0,90],select:true});
+  await until(()=>source.text.includes('rotate(x: 0deg, y: 0deg, z: 90deg)')&&workspace().planes[0].managed&&selectedIndices()===String(workspace().planes[0].wrapperIndex));
+  assert.ok(source.text.includes('rect((0,0),(2,1),fill:red)'));const moved=source.text;
+  save(gui.text.replace('</root>',action('undo')+'</root>'));await until(()=>source.text===initial&&!workspace().planes[0].managed);
+  save(gui.text.replace('</root>',action('redo')+'</root>'));await until(()=>source.text===moved&&workspace().planes[0].managed);
+  const view=workspace().views[0];send('properties',{base:view.base,values:{sorted:'false',flatten:'false','cull-face':'none','reset-transform':'false'}},String(view.index));
+  await until(()=>source.text.includes('sorted: false')&&gui.text.includes('sorted%3A%20false'));
+  const configured=source.text;plane=workspace().planes[0];const content=workspace().objects.find(object=>object.kind==='content');
+  save(gui.text.replace('</root>',action('move-after',plane.wrapperIndex+','+content.index)+'</root>'));
+  await until(()=>source.text.indexOf('gui-plane-1')>source.text.indexOf('content((2,1,3)')&&selectedIndices()===String(workspace().planes[0].wrapperIndex));
+  assert.equal(workspace().activePlaneKey,'gui-plane-1');assert.ok(source.text.includes('rotate(x: 0deg, y: 0deg, z: 90deg)'));
+  save(gui.text.replace('</root>',action('undo')+'</root>'));await until(()=>source.text===configured&&workspace().activePlaneKey==='gui-plane-1');
+});

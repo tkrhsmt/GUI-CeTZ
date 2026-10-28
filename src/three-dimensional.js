@@ -4,7 +4,7 @@ const { closing, skipTrivia, splitArgs, deletionRange } = require('./scanner');
 const { renderCanvas } = require('./preview');
 const { layerInstrumentation, splitSvgLayers } = require('./svg-layers');
 const { propertyModel, SCHEMAS, argumentsOf } = require('./properties');
-const { probesFor, calibratedViews, calibratedPlanes, axisRanges, project, planePoint, insertion3D } = require('./three-workspace');
+const { probesFor, calibratedViews, calibratedPlanes, calibratedPlaneParents, axisRanges, project, planePoint, insertion3D } = require('./three-workspace');
 
 const CONTAINERS = new Set(['ortho', 'perspective', 'on-xy', 'on-xz', 'on-zy', 'on-yz', 'group', 'scope']);
 const MESSAGE = '3D: use the view controls and drawing plane tools. Edit existing geometry in Properties; free screen transformations are ambiguous in 3D.';
@@ -214,7 +214,8 @@ async function render3D(source, canvas, filePath) {
   const modelMatrix = matrix => matrix && [
     matrix[0].map((value,i)=>value*scale+shift[0]*matrix[2][i]),
     matrix[1].map((value,i)=>value*scale+shift[1]*matrix[2][i]),matrix[2]];
-  const workspace = { planes:planes.map(plane=>({...plane, matrix:modelMatrix(calibratedPlanes(probes,split.layers).find(item=>item.index===plane.index)?.matrix)})), views: calibrated.map(view => ({ ...view, key:`view-${calls[view.index].start}`,base:calls[view.index].call,position:require('./plane-editor').cameraInfo(source,calls[view.index]).position,matrix: view.matrix && [
+  const planeMatrices=new Map(calibratedPlanes(probes,split.layers).map(item=>[item.index,item.matrix])),parentMatrices=new Map(calibratedPlaneParents(probes,split.layers).map(item=>[item.index,item.matrix]));
+  const workspace = { planes:planes.map(plane=>({...plane, matrix:modelMatrix(planeMatrices.get(plane.index)),parentMatrix:modelMatrix(parentMatrices.get(plane.index))})), views: calibrated.map(view => ({ ...view, key:`view-${calls[view.index].start}`,base:calls[view.index].call,position:require('./plane-editor').cameraInfo(source,calls[view.index]).position,matrix: view.matrix && [
     view.matrix[0].map((value, i) => value * scale + shift[0] * view.matrix[2][i]),
     view.matrix[1].map((value, i) => value * scale + shift[1] * view.matrix[2][i]),
     view.matrix[2]
@@ -317,7 +318,7 @@ async function render3D(source, canvas, filePath) {
     });
     const rawDistance=args.find(arg=>arg.key==='distance')?.value||'auto';
     const distance=rawDistance.trim()==='auto'?'auto':/^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*$/.test(rawDistance)?Number(rawDistance):null;
-    return {index:view.index,kind:view.kind,angles,distance,adaptiveDepth,sorted:!args.some(arg=>arg.key==='sorted'&&arg.value.trim()==='false'),parts:supported&&parts.length?parts:null};
+    return {index:view.index,kind:view.kind,angles,distance,adaptiveDepth,planeTextures:supported?null:parts.filter(part=>part.type==='plane'),sorted:!args.some(arg=>arg.key==='sorted'&&arg.value.trim()==='false'),parts:supported&&parts.length?parts:null};
   }) };
   const finalBackground=background.replace(/cetzWorkspace=[^;]*;/,`cetzWorkspace=${encodeURIComponent(JSON.stringify(workspace))};cetzOrbit=${encodeURIComponent(JSON.stringify(orbit))};`);
   return { mode: '3d', calls, canvas, source, calibration: null, workspace,

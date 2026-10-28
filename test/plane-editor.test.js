@@ -163,3 +163,15 @@ test('plane-local placement and duplication inherit outer draw imports without w
   source=apply(source,sourceActionPatches(source,local,{action:'duplicate',indices:[0]}));full=await render(source);
   assert.equal((source.match(/import cetz\.draw: \*/g)||[]).length,1);assert.equal(full.workspace.planes.length,2);
 });
+
+for(const version of ['0.4.2','0.5.3'])test(`plane manipulators calibrate parent coordinates under nested transforms in CeTZ ${version}`,async()=>{
+  const {planeCode}=require('../src/plane-editor'),project=require('../src/three-workspace').project;
+  for(const kind of ['xy','xz','zy']){
+    const source=doc('ortho(x:20deg,y:30deg,{scope({translate(x:7,y:-3,z:2)\n'+planeCode(doc('',version), 'gui-plane-1',{kind,position:[2,3,4],angles:[0,0,90]},'cetz.draw.rect((0,0),(2,1))')+'})})',version);
+    const full=await render(source),plane=full.workspace.planes[0];assert.ok(plane.parentMatrix);
+    for(const [u,v] of [[0,0],[1,0],[0,1],[2,-1]]){
+      const world=kind==='xy'?[2-v,3+u,4]:kind==='xz'?[2,3+u,4+v]:[2-v,3,4+u];
+      const expected=project(plane.parentMatrix,world),actual=project(plane.matrix,[u,v,0]);actual.forEach((n,i)=>assert.ok(Math.abs(n-expected[i])<.002));
+    }
+  }
+});

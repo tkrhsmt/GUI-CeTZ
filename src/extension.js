@@ -262,7 +262,7 @@ async function syncToSource(session) {
     }
     if (!session.editable) throw new Error('This canvas has no editable CeTZ shapes.');
     try {
-      if (session.editable.mode === '3d' && !['properties', 'focus', 'select', 'export', 'create-view', 'plane-create', 'plane-settings', 'plane-delete', 'camera-position', 'projection-kind', 'spatial-edit'].includes(sourceCommand.action))
+      if (session.editable.mode === '3d' && !['properties', 'focus', 'select', 'export', 'create-view', 'plane-create', 'plane-settings', 'plane-delete', 'camera-position', 'projection-kind', 'spatial-edit', 'move-before', 'move-after'].includes(sourceCommand.action))
         throw new Error(require('./three-dimensional').MESSAGE);
       if (sourceCommand.action === 'copy') {
         await vscode.env.clipboard.writeText(copyShapes(source.getText(), session.editable, sourceCommand.indices));

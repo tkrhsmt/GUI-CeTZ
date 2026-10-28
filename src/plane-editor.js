@@ -60,7 +60,7 @@ function planesFor(source, calls) {
     const position = managed ? numericArguments(source.slice(transforms[0].start,transforms[0].end),'translate') :
       Number.isFinite(offset) ? (kind === 'xy' ? [0,0,offset] : kind === 'xz' ? [0,offset,0] : [offset,0,0]) : null;
     const angles = managed ? numericArguments(source.slice(transforms[1].start,transforms[1].end),'rotate',true) : [0,0,0];
-    return [{ key:managed ? name : `source-plane-${call.start}`, label:managed ? `平面 ${name.slice('gui-plane-'.length)} · ${kind.toUpperCase()}` : `${call.name} · ${index+1}`,
+    return [{ key:managed ? name : `source-plane-${call.start}`, label:managed ? `Plane ${name.slice('gui-plane-'.length)} · ${kind.toUpperCase()}` : `${call.name} · ${index+1}`,
       index,wrapperIndex:managed?calls.indexOf(parent):index,view:calls.indexOf(view), kind, managed, position, angles,
       start:call.start, bodyStart:call.bodyStart, bodyEnd:call.bodyEnd,
       wrapperStart:managed ? parent.start : call.start, wrapperEnd:managed ? parent.end : call.end,
@@ -176,11 +176,11 @@ function planeSettingsPatches(source, rendered, payload) {
     }
     const body=source.slice(plane.bodyStart,plane.bodyEnd),local=require('./plane-boolean').installLocalBooleans(body);
     if(local!==body)patches.push({start:plane.bodyStart,end:plane.bodyEnd,text:local});
-    patches.activePlaneKey=key;return patches;
+    patches.activePlaneKey=key;if(payload.select)patches.selectStart=plane.wrapperStart;return patches;
   }
   const patches = [{start:plane.wrapperStart,end:plane.wrapperEnd,
     text:planeCode(source,key,payload,source.slice(plane.bodyStart,plane.bodyEnd))}];
-  patches.activePlaneKey = key;
+  patches.activePlaneKey = key;if(payload.select)patches.selectStart=plane.wrapperStart;
   return patches;
 }
 function convertTo3D(source, canvas) {

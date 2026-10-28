@@ -12,16 +12,17 @@ function probesFor(calls, tag, planes = [], source = '') {
   const projections = calls.flatMap((call, index) =>
     ['ortho', 'perspective'].includes(call.name) && call.bodyStart != null ? [{ index, call, samples: [] }] : []);
   const planeTargets = planes.map(plane => ({index:plane.index,call:calls[plane.index],samples:[]}));
-  const edits = projections.concat(planeTargets).map(projection => {
+  const planeParents=planes.map(plane=>({index:plane.index,call:calls[plane.index],offset:plane.wrapperStart,samples:[]}));
+  const edits = projections.concat(planeTargets,planeParents).map(projection => {
     const text = SAMPLES.map(p => {
       const id = next++;
       projection.samples.push({ id, point: [p[0] + EPS / 2, p[1], p[2]] });
       return `${tag}(cetz.draw.line((${p.join(',')}), (${p[0] + EPS},${p[1]},${p[2]}), stroke: 0.001pt + black), ${id}, no-bounds: true)`;
     }).join('\n');
-    const offset=projection.call.name==='ortho'||projection.call.name==='perspective'?require('./plane-editor').cameraInfo(source,projection.call).end:projection.call.bodyStart;
+    const offset=projection.offset??(projection.call.name==='ortho'||projection.call.name==='perspective'?require('./plane-editor').cameraInfo(source,projection.call).end:projection.call.bodyStart);
     return { offset: Number.isFinite(offset)?offset:projection.call.bodyStart, text: `\ncetz.draw.scope({ ${text}\n})\n` };
   });
-  return { projections, planeTargets, edits, count: next, excluded: new Set(Array.from({length: next - calls.length}, (_, i) => calls.length + i)) };
+  return { projections, planeTargets, planeParents, edits, count: next, excluded: new Set(Array.from({length: next - calls.length}, (_, i) => calls.length + i)) };
 }
 function solve(matrix, values) {
   const n = values.length, a = matrix.map((row, i) => [...row, values[i]]);
@@ -83,6 +84,7 @@ function calibratedTargets(targets, layers) {
 }
 function calibratedViews(probes,layers) { return calibratedTargets(probes.projections,layers); }
 function calibratedPlanes(probes,layers) { return calibratedTargets(probes.planeTargets || [],layers); }
+function calibratedPlaneParents(probes,layers) { return calibratedTargets(probes.planeParents || [],layers); }
 function axisRanges(matrix, bounds, padding = 160) {
   const origin=project(matrix,[0,0,0]);
   if(!origin) return [[-5,5],[-5,5],[-5,5]];
@@ -160,4 +162,4 @@ function spatialEditPatches(source,rendered,payload){
   const patches=require('./properties').propertyPatches(rendered,{indices:[object.index],value:encodeURIComponent(JSON.stringify({base:call.call,values}))});
   patches.selectStart=call.start;return patches;
 }
-module.exports = { probesFor, calibratedViews, calibratedPlanes, axisRanges, project, fitCamera, planePoint, insertion3D, spatialEditPatches, solve };
+module.exports = { probesFor, calibratedViews, calibratedPlanes, calibratedPlaneParents, axisRanges, project, fitCamera, planePoint, insertion3D, spatialEditPatches, solve };
