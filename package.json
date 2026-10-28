@@ -2,7 +2,7 @@
   "name": "gui-cetz",
   "displayName": "GUI CeTZ",
   "description": "Edit CeTZ shapes in Draw.io while preserving Typst source and exact advanced SVG rendering.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "tkrhsmt",
   "repository": {
     "type": "git",

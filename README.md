@@ -77,11 +77,11 @@ Use CeTZ **0.5.2** for the complete catalog; `boolean` is unavailable in CeTZ 0.
    npx @vscode/vsce package
    ```
 
-   This creates `gui-cetz-0.1.1.vsix` in the repository root (the version in the filename follows `package.json`).
+   This creates `gui-cetz-0.2.0.vsix` in the repository root (the version in the filename follows `package.json`).
 3. Install the generated VSIX with the VS Code command-line tool:
 
    ```sh
-   code --install-extension gui-cetz-0.1.1.vsix
+   code --install-extension gui-cetz-0.2.0.vsix
    ```
 
    Alternatively, in VS Code open the Extensions view, select **… → Install from VSIX…**, and choose the generated file.
