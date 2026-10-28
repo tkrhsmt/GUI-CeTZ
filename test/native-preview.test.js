@@ -55,11 +55,12 @@ async function fixture(t, sourceOverride, options = {}) {
     redo: { funct() {}, isEnabled() { return true; } },
     copy: { funct() {}, isEnabled() { return false; } },
     paste: { funct() {}, isEnabled() { return false; } } };
+  let currentFileReady = !options.nativeFitWindow;
   const ui = { sidebar, editor: { graph, addListener(name, callback) { ui[name] = callback; } },
     actions: { get(name) { return actions[name]; } }, container: element(), formatContainer: element(),
     sidebarContainer: element(), menubarContainer: element(), toolbarContainer: element(),
     hsplitPosition: 0, formatWidth: 240, refresh() {},
-    getCurrentFile() { return { getTitle() { return 'test.cetz-1.drawio'; }, getData() { return ''; } }; } };
+    getCurrentFile() { return currentFileReady ? { getTitle() { return 'test.cetz-1.drawio'; }, getData() { return ''; } } : null; } };
   if(options.nativeCanvas){
     // Install the actual editor hooks: unlike bare mxGraph, the infinite
     // canvas owns translate and reconciles it again after every validation.
@@ -81,8 +82,13 @@ async function fixture(t, sourceOverride, options = {}) {
     w.eval('(function(){var graph=window.__cetzCanvasGraph;'+code.slice(paddingAt,paddingEnd)+'})();');
     graph.container.style.overflow='auto';
     Object.defineProperties(graph.container,{clientWidth:{value:800},clientHeight:{value:600}});
+    if(options.clampedScroll)Object.defineProperties(graph.container,{
+      scrollWidth:{get:()=>Math.max(800,parseFloat(graph.view.getDrawPane().ownerSVGElement.style.minWidth)||0)},
+      scrollHeight:{get:()=>Math.max(600,parseFloat(graph.view.getDrawPane().ownerSVGElement.style.minHeight)||0)}
+    });
     for(const name of ['scrollLeft','scrollTop']){
-      let value=0;Object.defineProperty(graph.container,name,{get:()=>value,set:next=>{value=Math.max(0,Number(next));},configurable:true});
+      const limit=()=>!options.clampedScroll?Infinity:name==='scrollLeft'?graph.container.scrollWidth-800:graph.container.scrollHeight-600;
+      let value=0;Object.defineProperty(graph.container,name,{get:()=>Math.min(value,limit()),set:next=>{value=Math.min(limit(),Math.max(0,Number(next)));},configurable:true});
     }
     w.__cetzCanvasUI=ui;
     w.eval('(function(){var ui=window.__cetzCanvasUI,graph=ui.editor.graph;'+code.slice(start,end)+'\n}})();');
@@ -121,6 +127,37 @@ async function fixture(t, sourceOverride, options = {}) {
     // jsdom does not implement contentEditable focusability.
     ui.clipboardElt.tabIndex = -1;
   }
+  let nativeFits = 0;
+  if (options.nativeFitWindow) {
+    const code = fs.readFileSync(path.resolve(path.dirname(editorUi), '../grapheditor/EditorUi.js'), 'utf8');
+    w.EditorUi = function () {};
+    for (const name of ['setFitWindowEnabled', 'isFitWindowSupported', 'updateFitWindow', 'installFitWindowHandler']) {
+      const start = code.indexOf('EditorUi.prototype.' + name + ' = function('), end = code.indexOf('\n};', start) + 4;
+      assert.ok(start >= 0 && end > start); w.eval(code.slice(start, end));
+      ui[name] = w.EditorUi.prototype[name];
+    }
+    const events = new w.mxEventSource();
+    ui.addListener = events.addListener.bind(events); ui.fireEvent = events.fireEvent.bind(events);
+    ui.editor.isChromelessView = () => false;
+    ui.fitDiagramOrPages = () => { nativeFits++; graph.fit(20); };
+    ui.installFitWindowHandler();
+    const actionCode = fs.readFileSync(path.resolve(path.dirname(editorUi), '../grapheditor/Actions.js'), 'utf8');
+    const start = actionCode.indexOf("var fitWindowAction = this.addAction('fitWindow'"), end = actionCode.indexOf("this.addAction('fitPage'", start);
+    assert.ok(start >= 0 && end > start);
+    w.Editor = { ctrlKey: 'Ctrl', shiftKey: 'Shift' }; w.__cetzFitUI = ui;
+    w.__cetzFitActions = { addAction(name, funct) { return actions[name] = { funct, setToggleAction() {}, setSelectedCallback() {} }; } };
+    w.eval('(function(){var ui=window.__cetzFitUI,graph=ui.editor.graph;' + actionCode.slice(start, end) + '}).call(window.__cetzFitActions);');
+  }
+  if (options.nativeRefresh) {
+    const code=fs.readFileSync(path.resolve(path.dirname(editorUi),'../grapheditor/EditorUi.js'),'utf8');
+    w.EditorUi=w.EditorUi||function(){};
+    const start=code.indexOf('EditorUi.prototype.refresh = function('),end=code.indexOf('\n};',start)+4;
+    assert.ok(start>=0&&end>start);w.eval(code.slice(start,end));ui.refresh=w.EditorUi.prototype.refresh;ui.format={};
+    ui.boundNativeRefresh=ui.refresh.bind(ui);
+    // Native refresh clears the rail width while laying out the standard
+    // format panel. Its scrollbar metrics can differ until CeTZ restores it.
+    graph.getContainerMetrics=()=>({scrollbars:true,offsetWidth:800,offsetHeight:ui.formatContainer.style.width==='48px'?600:587});
+  }
   w.Draw = { loadPlugin(callback) { callback(ui); } };
   const plugin = fs.readFileSync(path.resolve(__dirname, '../src/cetz-drawio-plugin.js'), 'utf8');
   if (!options.initialSelection) w.eval(plugin);
@@ -140,6 +177,7 @@ async function fixture(t, sourceOverride, options = {}) {
     assert.equal(initialHandler.selectionBorder.opacity, 100, 'reproduce a handler created before plugin loading');
     w.eval(plugin);
   }
+  currentFileReady = true;
   ui.fileLoaded();
   function send(target, kind, x, y) {
     // Live preview can replace the original SVG node. Subsequent pointer
@@ -167,7 +205,7 @@ async function fixture(t, sourceOverride, options = {}) {
     return shape.node;
   }
   return { w, graph, ui, source, rendered, send, select, drag, imageDocument, initialHandler,
-    paletteEntries, nativePaletteClicks: () => nativePaletteClicks };
+    paletteEntries, nativePaletteClicks: () => nativePaletteClicks, nativeFits: () => nativeFits };
 }
 
 function cubicVertices(data) {
@@ -2364,6 +2402,109 @@ test('a queued 2D tab follows the selected legacy plane across camera header edi
   const payload=JSON.parse(decodeURIComponent(f.graph.getCellStyle(cmd).cetzValue));
   assert.equal(payload.planeKey,f.rendered.workspace.planes[1].key);
   await acceptWorkspaceUI(f,state);assert.equal(f.rendered.calls.length,1);assert.equal(f.rendered.calls[0].name,'circle');
+});
+
+test('late native refresh keeps the 2D viewport after the CeTZ rail layout settles', {skip},async t=>{
+  const f=await fixture(t,undefined,{nativeCanvas:true,clampedScroll:true,nativeRefresh:true,loadedLayers:true}),g=f.graph;
+  g.container.scrollLeft=123;g.container.scrollTop=157;
+  const origin=()=>{const c=f.rendered.calibration,v=g.view;return [(c.originX+v.translate.x)*v.scale-g.container.scrollLeft,(c.originY+v.translate.y)*v.scale-g.container.scrollTop];};
+  const before=origin();
+  for(let i=0;i<5;i++){
+    f.ui.boundNativeRefresh(true);
+    f.ui.formatContainer.style.width='48px';
+    // Validation/resize runs again after the native standard-panel width
+    // has been replaced by the 48px CeTZ rail, outside the model event.
+    g.view.validate();g.sizeDidChange();
+    origin().forEach((value,j)=>assert.ok(Math.abs(value-before[j])<1e-5,`late refresh moved axis ${j} by ${value-before[j]} pixels`));
+  }
+});
+
+test('native page patches preserve the viewport when shapes are added and deleted', {skip},async t=>{
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\ncircle((4,2),radius:1)\n})';
+  const f=await fixture(t,source,{nativeCanvas:true,clampedScroll:true,loadedLayers:true,modelCoordinates:true,nativeFitWindow:true}),{w,graph:g,ui}=f;
+  assert.equal(ui.fitWindowEnabled,false,'initial framing must not enable native automatic fitting');
+  assert.equal(f.nativeFits(),1,'initial framing fits once');
+  w.EditorUi=function(){};w.EditorUi.debug=function(){};w.Editor={guid:()=> 'fixture',config:{}};w.urlParams={};
+  w.Graph=w.mxGraph;
+  w.eval(fs.readFileSync(path.resolve(path.dirname(editorUi),'Pages.js'),'utf8'));
+  w.eval(fs.readFileSync(path.resolve(path.dirname(editorUi),'DiffSync.js'),'utf8'));
+  Object.setPrototypeOf(ui,w.EditorUi.prototype);
+  g.setShadowVisible=function(){};g.setAdaptiveColors=function(){};
+  const pageFor=xml=>{
+    const doc=w.mxUtils.parseXml(xml),node=doc.getElementsByTagName('mxGraphModel')[0];
+    const model=new w.mxGraphModel();new w.mxCodec(doc).decode(node,model);
+    const page=new w.DiagramPage(doc.getElementsByTagName('diagram')[0]);
+    page.root=model.root;
+    page.viewState={...g.getViewState(),pageFormat:new w.mxRectangle(0,0,+node.getAttribute('pageWidth'),+node.getAttribute('pageHeight'))};
+    return page;
+  };
+  let shadow=pageFor(f.rendered.xml);
+  ui.currentPage=pageFor(f.rendered.xml);ui.currentPage.root=g.model.root;ui.pages=[ui.currentPage];
+  g.view.validate();g.sizeDidChange();g.container.scrollLeft=123;g.container.scrollTop=157;
+  const origin=()=>{const c=f.rendered.calibration,v=g.view;return [(c.originX+v.translate.x)*v.scale-g.container.scrollLeft,(c.originY+v.translate.y)*v.scale-g.container.scrollTop];};
+  const before=origin(),scale=g.view.scale,fits=f.nativeFits();
+  for(const addition of ['rect((-10,15),(-8,16))','', 'rect((30,-30),(32,-29))','']){
+    const text=source.replace('circle(',addition+'\ncircle('),next=await renderEditable(text,parseCanvas(text).canvas,path.resolve('examples/basic.typ'));
+    const incoming=pageFor(next.xml),patch=ui.diffPages([shadow],[incoming]);
+    g.model.beginUpdate();
+    try{ui.pages=ui.applyPatches(ui.pages,[patch],true);}finally{g.model.endUpdate();}
+    f.rendered=next;shadow=incoming;
+    g.view.validate();g.sizeDidChange();
+    ui.fireEvent(new w.mxEventObject('pageFormatChanged'));
+    await new Promise(resolve=>setTimeout(resolve,30));
+    assert.equal(g.view.scale,scale,'native page patches keep the zoom');
+    assert.equal(f.nativeFits(),fits,'bounds changes do not fit again');
+    origin().forEach((value,i)=>assert.ok(Math.abs(value-before[i])<1e-5,`native page patch drifted axis ${i} by ${value-before[i]} pixels`));
+  }
+  for(let i=0;i<2;i++){
+    ui.actions.get('fitWindow').funct();
+    assert.equal(f.nativeFits(),fits+i+1,'explicit Fit view always fits once');
+    assert.equal(ui.fitWindowEnabled,false,'explicit Fit view never enables automatic fitting');
+    ui.fireEvent(new w.mxEventObject('pageFormatChanged'));
+    assert.equal(f.nativeFits(),fits+i+1);
+  }
+  ui.getCurrentFile=()=>({getTitle:()=> 'ordinary.drawio',getData:()=> ''});g.model.clear();
+  ui.actions.get('fitWindow').funct();
+  assert.equal(ui.fitWindowEnabled,true,'ordinary Draw.io files retain native automatic fitting');
+  ui.actions.get('fitWindow').funct();assert.equal(ui.fitWindowEnabled,false);
+});
+
+for(const nativeCanvas of [false,true])test(`source merges preserve the CeTZ viewport with ${nativeCanvas?'native infinite canvas':'bare mxGraph'}`, {skip},async t=>{
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\nrect((0,0),(2,1))\ncircle((4,2),radius:1)\n})';
+  const f=await fixture(t,source,{nativeCanvas,clampedScroll:true}),g=f.graph,state={source,scene:{},liveMerge:true};
+  if(!nativeCanvas)Object.defineProperties(g.container,{clientWidth:{value:800},clientHeight:{value:600}});
+  await loadWorkspaceScene(f,state,f.rendered);
+  g.view.setScale(1.25);g.view.validate();g.sizeDidChange();
+  g.container.scrollLeft=123;g.container.scrollTop=157;
+  const origin=()=>{const c=f.rendered.calibration,v=g.view;return [(c.originX+v.translate.x)*v.scale-g.container.scrollLeft,(c.originY+v.translate.y)*v.scale-g.container.scrollTop];};
+  const before=origin();
+  // Moving the left/top bound expands Typst's SVG and relocates the graph's
+  // calibration origin. The unedited circle must stay at the same screen point.
+  for(const [x,y] of [[1,1],[-10,15],[-20,30],[0,0],[-10,15]]){
+    state.source=source.replace('rect((0,0),(2,1))',`rect((${x},${y}),(${x+2},${y+1}))`);
+    const next=await renderEditable(state.source,parseCanvas(state.source).canvas,path.resolve('examples/basic.typ'));
+    await loadWorkspaceScene(f,state,next);
+    await new Promise(resolve=>f.w.requestAnimationFrame(resolve));g.view.validate();g.sizeDidChange();
+    assert.equal(g.view.scale,1.25);
+    origin().forEach((value,i)=>assert.ok(Math.abs(value-before[i])<1e-5,`axis ${i} drifted by ${value-before[i]} pixels`));
+  }
+  g.view.setScale(2);g.view.validate();g.sizeDidChange();
+  g.container.scrollLeft+=37;g.container.scrollTop+=59;
+  const navigated=origin();
+  state.source=source;
+  await loadWorkspaceScene(f,state,await renderEditable(source,parseCanvas(source).canvas,path.resolve('examples/basic.typ')));
+  g.view.validate();g.sizeDidChange();
+  assert.equal(g.view.scale,2,'source updates keep the latest user zoom');
+  origin().forEach((value,i)=>assert.ok(Math.abs(value-navigated[i])<1e-5,`source updates keep the latest user scroll: axis ${i} drifted by ${value-navigated[i]} pixels`));
+  if(nativeCanvas){
+    state.source=source.replace('rect((0,0),(2,1))','rect((30,-30),(32,-29))');
+    await loadWorkspaceScene(f,state,await renderEditable(state.source,parseCanvas(state.source).canvas,path.resolve('examples/basic.typ')));
+    g.container.scrollLeft=g.container.scrollWidth-820;g.container.scrollTop=g.container.scrollHeight-620;
+    const farCorner=origin();state.source=source;
+    await loadWorkspaceScene(f,state,await renderEditable(source,parseCanvas(source).canvas,path.resolve('examples/basic.typ')));
+    g.view.validate();g.sizeDidChange();
+    origin().forEach((value,i)=>assert.ok(Math.abs(value-farCorner[i])<1e-5,`shrinking bounds must not clamp scroll: axis ${i} drifted by ${value-farCorner[i]} pixels`));
+  }
 });
 
 for(const nativeCanvas of [false,true])test(`dimension switching restores center, zoom and scroll with ${nativeCanvas?'native infinite canvas':'bare mxGraph'}`, {skip},async t=>{

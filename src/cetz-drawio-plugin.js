@@ -2615,7 +2615,7 @@ Draw.loadPlugin(function (ui) {
     menu.addItem('Undo', null, function () { sendHistoryAction('undo'); }, parent);
     menu.addItem('Redo', null, function () { sendHistoryAction('redo'); }, parent);
     [['Zoom in', 'zoomIn'], ['Zoom out', 'zoomOut'], ['Fit view', 'fitWindow']].forEach(function (entry) {
-      menu.addItem(entry[0], null, function () { if (typeof graph[entry[1]] === 'function') graph[entry[1]](); }, parent);
+      menu.addItem(entry[0], null, function () { var action = ui.actions.get(entry[1]); if (action) action.funct(); }, parent);
     });
   }
   function ensureCetzMenu() {
@@ -2860,6 +2860,30 @@ Draw.loadPlugin(function (ui) {
   var previousFormatGutter = null;
   var previousFormatMinWidth = null;
   var previousFormatMaxWidth = null;
+  var viewportLayoutDepth = 0;
+  function preserve2DViewport(layout) {
+    return function () {
+      var view = graph.view, container = graph.container;
+      var viewport = container && !viewportLayoutDepth && activeMode && isEditablePreview() && !is3D() ? {
+        x: container.scrollLeft / view.scale - view.translate.x,
+        y: container.scrollTop / view.scale - view.translate.y
+      } : null;
+      viewportLayoutDepth++;
+      try { return layout.apply(this, arguments); }
+      finally {
+        viewportLayoutDepth--;
+        if (viewport) {
+          container.scrollLeft = (viewport.x + view.translate.x) * view.scale;
+          container.scrollTop = (viewport.y + view.translate.y) * view.scale;
+        }
+      }
+    };
+  }
+  // Native refresh listeners can retain a bound EditorUi.refresh from before
+  // this plugin loaded. Guard the actual layout entry points they all call,
+  // including the delayed validation after the CeTZ rail is restored.
+  if (graph.sizeDidChange) graph.sizeDidChange = preserve2DViewport(graph.sizeDidChange);
+  if (graph.view.validate) graph.view.validate = preserve2DViewport(graph.view.validate);
   var originalRefresh = ui.refresh;
   if (originalRefresh) ui.refresh = function () {
     var result = originalRefresh.apply(this, arguments);
@@ -3748,6 +3772,20 @@ Draw.loadPlugin(function (ui) {
   function isPreview() { return !!graph.getModel().getCell('preview-image') ||
     !!graph.getModel().getCell('cetz-preview-background'); }
   function isEditablePreview() { return !!graph.getModel().getCell('cetz-preview-background'); }
+  var fitWindowAction = ui.actions.get('fitWindow');
+  if (fitWindowAction) {
+    var nativeFitWindowAction = fitWindowAction.funct;
+    fitWindowAction.funct = function () {
+      if (!isCetz()) return nativeFitWindowAction.apply(this, arguments);
+      // Modern Draw.io's action toggles persistent fitting when nothing is
+      // selected. CeTZ changes pageFormat with the SVG bounds on every sync,
+      // which would then recenter the canvas on additions and deletions.
+      if (ui.setFitWindowEnabled) ui.setFitWindowEnabled(false);
+      if (ui.fitDiagramOrPages) return ui.fitDiagramOrPages();
+      try { return nativeFitWindowAction.apply(this, arguments); }
+      finally { if (ui.setFitWindowEnabled) ui.setFitWindowEnabled(false); }
+    };
+  }
   function cetzAnchor(cell) {
     if (!cell) return null;
     if (/^cetz-point-\d+-\d+$/.test(cell.id || '')) return { x: 7, y: 7 };
@@ -3768,6 +3806,56 @@ Draw.loadPlugin(function (ui) {
     };
     return Object.values(frame).every(Number.isFinite) && frame.unitX > 0 && frame.unitY > 0
       ? frame : null;
+  }
+  function viewportFrame() {
+    var frame = isCetz() && cetzFrame();
+    if (!frame) return null;
+    var file = ui.getCurrentFile(), context = planeContext();
+    return { x: frame.originX, y: frame.originY,
+      key: (typeof file.getId === 'function' && file.getId() || file.getTitle()) + ':' +
+        (is3D() ? '3d' : '2d:' + (context && context.key || 'canvas')) };
+  }
+  var previousViewportFrame = viewportFrame();
+  var viewportPadding = { x: 0, y: 0 }, nativePagePadding = graph.getPagePadding;
+  if (nativePagePadding) graph.getPagePadding = function () {
+    var padding = nativePagePadding.apply(this, arguments);
+    return isCetz() ? new mxPoint(padding.x + viewportPadding.x, padding.y + viewportPadding.y) : padding;
+  };
+  if (graph.graphModelChanged) {
+    var nativeGraphModelChanged = graph.graphModelChanged;
+    graph.graphModelChanged = function () {
+      var before = previousViewportFrame, view = graph.view, container = graph.container;
+      var x = before && (before.x + view.translate.x) * view.scale - container.scrollLeft;
+      var y = before && (before.y + view.translate.y) * view.scale - container.scrollTop;
+      var result = nativeGraphModelChanged.apply(this, arguments);
+      var after = viewportFrame();
+      previousViewportFrame = after;
+      if (before && after && before.key === after.key) {
+        // Typst's bounds can relocate the calibration origin on every render.
+        // Preserve its screen position after Draw.io finishes validation and
+        // infinite-canvas translation, so unrelated shapes do not drift.
+        var scrollbars = graph.getContainerMetrics ? graph.getContainerMetrics().scrollbars : mxUtils.hasScrollbars(container);
+        if (scrollbars) {
+          var left = (after.x + view.translate.x) * view.scale - x;
+          var top = (after.y + view.translate.y) * view.scale - y;
+          var extraX = Math.max(0, -left, container.scrollWidth > 0 ? left + container.clientWidth - container.scrollWidth : 0);
+          var extraY = Math.max(0, -top, container.scrollHeight > 0 ? top + container.clientHeight - container.scrollHeight : 0);
+          // A shrinking SVG can put the requested scroll outside the canvas.
+          // Extend native padding instead of letting the browser clamp it.
+          if (nativePagePadding && (extraX > 0 || extraY > 0)) {
+            viewportPadding.x += extraX / view.scale;
+            viewportPadding.y += extraY / view.scale;
+            view.validate(); graph.sizeDidChange();
+          }
+          container.scrollLeft = (after.x + view.translate.x) * view.scale - x;
+          container.scrollTop = (after.y + view.translate.y) * view.scale - y;
+        } else if (before.x !== after.x || before.y !== after.y) {
+          view.setTranslate((x + container.scrollLeft) / view.scale - after.x,
+            (y + container.scrollTop) / view.scale - after.y);
+        }
+      }
+      return result;
+    };
   }
   function snapStep() {
     var scale = graph.view && graph.view.scale || 1;
@@ -4485,6 +4573,7 @@ Draw.loadPlugin(function (ui) {
     if(planeGesture&&(!is3D()||planeGesture.scene!==inspectorScene()))finishPlaneGesture(false);
     suppressCachedSelectionBorders();
     var active = isCetz(), preview = active && isPreview();
+    if (active && ui.fitWindowEnabled && ui.setFitWindowEnabled) ui.setFitWindowEnabled(false);
     if(threeOrbitPreview&&(!is3D()||threeOrbitPreview.source!==inspectorScene()||
       threeOrbitPreview.imageStyle!==(graph.getModel().getCell('cetz-preview-image')||{}).style))clearThreeOrbitPreview();
     threeHint.style.display = active && is3D() ? '' : 'none';
@@ -4929,6 +5018,9 @@ Draw.loadPlugin(function (ui) {
       var fit = active && ui.actions.get('fitWindow');
       if (fit) fit.funct();
     }
+    // During initial loading getCurrentFile() can still be null when the
+    // model event fires. Seed the frame once the file and layout are ready.
+    previousViewportFrame = viewportFrame();
   }
   ui.editor.addListener('fileLoaded', function () {
     if (!isCetz()) original.gridSize = graph.gridSize;
