@@ -1023,3 +1023,15 @@ test('resolves local imports next to the source file', async () => {
     assert.match(svg, /^<svg\b/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('template imports follow lexical scope and ignore sibling imports, strings and comments',()=>{
+  const {hasDrawImport,insertionFor}=require('../src/templates');
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({\nimport cetz.draw: *\northo({on-xy({\nrect((0,0),(2,1))\n})})\n})';
+  const start=source.indexOf('{',source.indexOf('on-xy')),end=source.indexOf('}',start),plane={bodyStart:start+1,bodyEnd:end};
+  assert.equal(hasDrawImport(source,end),true);assert.ok(!insertionFor(source,plane,'circle((1,1),radius:1)').text.includes('import'));
+  for(const ignored of ['scope({import cetz.draw: *})','let note="import cetz.draw: *"','// import cetz.draw: *','/* import cetz.draw: * */']){
+    const text=source.replace('import cetz.draw: *',ignored),at=text.indexOf('}',text.indexOf('on-xy'));
+    assert.equal(hasDrawImport(text,at),false,ignored);
+    assert.ok(insertionFor(text,{bodyStart:text.indexOf('{',text.indexOf('on-xy'))+1,bodyEnd:at},'circle((1,1),radius:1)').text.includes('import cetz.draw: *'));
+  }
+});

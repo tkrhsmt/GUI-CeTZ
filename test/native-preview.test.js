@@ -26,7 +26,9 @@ async function fixture(t, sourceOverride, options = {}) {
   w.HTMLCanvasElement.prototype.getContext = () => ({ measureText: text => ({ width: text.length * 6 }) });
   // These fixtures dispatch MouseEvents, including document-level drag events.
   // Keep the mouse path consistent across jsdom versions that add PointerEvent.
-  w.PointerEvent = undefined;
+  w.PointerEvent = options.pointerEvents ? class extends w.MouseEvent {
+    constructor(type,init={}) { super(type,init); this.pointerId=init.pointerId??1; this.pointerType=init.pointerType||'mouse'; }
+  } : undefined;
   w.mxLoadResources = false; w.mxLoadStylesheets = false;
   w.eval(fs.readFileSync(mxClient, 'utf8'));
   const graph = new w.mxGraph(w.document.getElementById('graph'));
@@ -58,6 +60,33 @@ async function fixture(t, sourceOverride, options = {}) {
     sidebarContainer: element(), menubarContainer: element(), toolbarContainer: element(),
     hsplitPosition: 0, formatWidth: 240, refresh() {},
     getCurrentFile() { return { getTitle() { return 'test.cetz-1.drawio'; }, getData() { return ''; } }; } };
+  if(options.nativeCanvas){
+    // Install the actual editor hooks: unlike bare mxGraph, the infinite
+    // canvas owns translate and reconciles it again after every validation.
+    const code=fs.readFileSync(path.resolve(path.dirname(editorUi),'../grapheditor/EditorUi.js'),'utf8');
+    const start=code.indexOf('var graphViewValidate = graph.view.validate;');
+    const sizeStart=code.indexOf('graph.sizeDidChange = function()',start),end=code.indexOf('\n\t\t\t};',sizeStart)+'\n\t\t\t};'.length;
+    assert.ok(start>=0&&sizeStart>start&&end>sizeStart);
+    const graphCode=fs.readFileSync(path.resolve(path.dirname(editorUi),'../grapheditor/Graph.js'),'utf8');
+    w.Graph=function(){};
+    for(const name of ['getPageSize','getPageLayout','getDefaultTranslate','updateMinimumSize']){
+      const at=graphCode.indexOf('Graph.prototype.'+name+' = function'),to=graphCode.indexOf('\n};',at)+4;
+      assert.ok(at>=0&&to>at);w.eval(graphCode.slice(at,to));graph[name]=w.Graph.prototype[name];
+    }
+    w.mxUtils.unscale=w.mxUtils.unscale||((value,scale,translate=0)=>value/scale-translate);
+    graph.scrollTileSize=new w.mxRectangle(0,0,1000,1000);graph.pageVisible=false;
+    graph.getContainerMetrics=()=>({scrollbars:true,offsetWidth:800,offsetHeight:600});graph.isViewer=()=>false;
+    const paddingAt=code.indexOf('graph.getPagePadding = function()'),paddingEnd=code.indexOf('\n\t};',paddingAt)+5;
+    assert.ok(paddingAt>=0&&paddingEnd>paddingAt);w.__cetzCanvasGraph=graph;
+    w.eval('(function(){var graph=window.__cetzCanvasGraph;'+code.slice(paddingAt,paddingEnd)+'})();');
+    graph.container.style.overflow='auto';
+    Object.defineProperties(graph.container,{clientWidth:{value:800},clientHeight:{value:600}});
+    for(const name of ['scrollLeft','scrollTop']){
+      let value=0;Object.defineProperty(graph.container,name,{get:()=>value,set:next=>{value=Math.max(0,Number(next));},configurable:true});
+    }
+    w.__cetzCanvasUI=ui;
+    w.eval('(function(){var ui=window.__cetzCanvasUI,graph=ui.editor.graph;'+code.slice(start,end)+'\n}})();');
+  }
   if (options.nativeSelection) {
     const code = fs.readFileSync(path.resolve(path.dirname(editorUi), '../grapheditor/EditorUi.js'), 'utf8');
     const start = code.indexOf('EditorUi.prototype.isSelectionAllowed = function(evt)');
@@ -1790,26 +1819,28 @@ test('continuous arrow input survives intermediate source renders without rewind
   assert.equal(f.graph.getCellStyle(f.graph.model.getCell('cetz-edit-0')).cetzMoveX, undefined, 'Undo cancels unacknowledged keyboard movement');
 });
 
-test('3D native inspector edits XYZ, selects projection parents and blocks screen movement', { skip }, async t => {
-  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\northo({line((0,0,0), (1,2,3))})\n})';
+test('3D native selection exposes planes and blocks selection of their geometry and projection', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\northo({on-xy({line((0,0), (1,2))})})\n})';
   const f = await fixture(t, source);
   const panel = f.ui.sidebar.wrapper;
   f.select('cetz-edit-0');
   assert.match(panel.querySelector('.cetz3DHint').textContent, /3D/);
   assert.equal(panel.querySelector('.cetz3DHint').style.display, '');
-  const z = panel.querySelector('[aria-label="End Z"]');
-  assert.ok(z, panel.querySelector('.cetzInspector').outerHTML); assert.equal(z.value, '3');
-  z.value = '-1.012345678'; z.dispatchEvent(new f.w.Event('change', {bubbles:true}));
-  await waitForInspector(() => inspectorCommands(f).length === 1);
-  const command = f.graph.getCellStyle(inspectorCommands(f)[0]);
-  assert.equal(JSON.parse(decodeURIComponent(command.cetzValue)).values.$1, '(1, 2, -1.012345678)');
+  assert.equal(f.graph.getSelectionCount(),0,'geometry cannot be selected');
+  assert.equal(panel.querySelector('[aria-label="End Z"]'),null);
   const cell = f.graph.model.getCell('cetz-edit-0');
   assert.equal(f.graph.isCellMovable(cell), false);
   assert.equal(f.graph.isCellResizable(cell), false);
-  assert.equal(f.graph.isCellDeletable(cell), true);
+  assert.equal(f.graph.isCellDeletable(cell), false,'3D deletion targets planes rather than their individual geometry');
   assert.equal(f.graph.isCellRotatable(cell), false);
   f.select('cetz-edit-1');
-  assert.ok(panel.querySelector('.cetzInspector [aria-label="x"]'));
+  assert.equal(f.graph.getSelectionCell().id,'cetz-edit-1','the plane can be selected');
+  assert.equal(f.graph.isCellDeletable(f.graph.getSelectionCell()),true);
+  f.select('cetz-edit-2');assert.equal(f.graph.getSelectionCount(),0,'projection controls are separate from canvas selection');
+  const plane=f.rendered.workspace.planes[0],p=require('../src/three-workspace').project(plane.matrix,[-2,-2,0]);
+  f.send(f.graph.container,'down',p[0],p[1]);f.send(f.w.document,'up',p[0],p[1]);
+  assert.equal(f.graph.getSelectionCell().id,'cetz-edit-1','empty plane background can be selected away from any artwork');
+  assert.equal(panel.querySelectorAll('.cetzOutlineRow').length,1);
   assert.equal(panel.querySelector('.cetzOutlineGrip').draggable, false);
   const encoded = new f.w.mxCodec().encode(f.graph.model);
   const xml = f.w.mxUtils.getXml(encoded);
@@ -1848,28 +1879,291 @@ test('all native palette icons place shapes on the selected 3D plane after zoom 
   assert.ok(f.graph.view.getBackgroundPane().querySelector('[data-cetz-3d-workplane="true"]'));
 });
 
-test('native 3D orbit serializes live camera changes and retains the final drag while rendering', {skip}, async t => {
-  let source='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,y:30deg,z:5deg,{line((0,0,0),(1,2,3))})\n})';
+test('unsupported perspective scenes retain live source rendering and the final drag while rendering', {skip}, async t => {
+  let source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\nperspective(x:20deg,y:30deg,z:5deg,{line((0,0,0),(1,2,3))\ncircle((4,4,2),radius:1)})\n})';
   const f=await fixture(t,source);
-  const event=(target,type,x,y)=>target.dispatchEvent(new f.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,buttons:type==='mouseup'?0:1,altKey:true,clientX:x,clientY:y}));
+  const event=(target,type,x,y)=>target.dispatchEvent(new f.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,buttons:type==='mouseup'?0:1,clientX:x,clientY:y}));
   event(f.graph.container,'mousedown',100,100); event(f.w.document,'mousemove',120,110);
   await waitForInspector(()=>inspectorCommands(f).length===1);
   const first=JSON.parse(decodeURIComponent(f.graph.getCellStyle(inspectorCommands(f)[0]).cetzValue));
-  assert.equal(first.values.x,'25deg'); assert.equal(first.values.y,'40deg'); assert.ok(first.historyGroup);
+  assert.equal(first.values.x,'25deg'); assert.equal(first.values.y,'20deg'); assert.ok(first.historyGroup);
   event(f.w.document,'mousemove',180,160); event(f.w.document,'mouseup',180,160);
   assert.equal(inspectorCommands(f).length,1);
   source=await acceptInspectorCommand(f,source);
   await waitForInspector(()=>inspectorCommands(f).length===1);
   const last=JSON.parse(decodeURIComponent(f.graph.getCellStyle(inspectorCommands(f)[0]).cetzValue));
-  assert.equal(last.values.x,'50deg'); assert.equal(last.values.y,'70deg'); assert.equal(last.values.z,undefined,'unchanged roll is preserved in source');
+  assert.equal(last.values.x,'50deg'); assert.equal(last.values.y,'-10deg'); assert.equal(last.values.z,undefined,'unchanged roll is preserved in source');
   assert.equal(last.historyGroup,first.historyGroup);
   source=await acceptInspectorCommand(f,source);
-  assert.match(source,/ortho\(x:50deg,y:70deg,z:5deg/);
+  assert.match(source,/perspective\(x:50deg,y:-10deg,z:5deg/);
   const before=f.graph.view.translate.clone();
   const pan=[...f.ui.sidebar.wrapper.querySelectorAll('.cetz3DWorkspace button')].find(button=>button.textContent==='Pan');pan.click();
   event(f.graph.container,'mousedown',10,10);event(f.w.document,'mousemove',60,40);event(f.w.document,'mouseup',60,40);
   assert.equal(f.graph.view.translate.x,before.x+50); assert.equal(f.graph.view.translate.y,before.y+30);
   assert.equal(inspectorCommands(f).length,0,'pan never changes source coordinates');
+});
+
+test('3D pointer rotation previews locally without model writes and compiles once on release even with throttled animation frames', {skip}, async t => {
+  const source='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,y:30deg,z:5deg,{on-xy({rect((0,0),(2,1))})})\n})';
+  const f=await fixture(t,source,{pointerEvents:true}),g=f.graph;
+  const state={source,mode:'3d',key:f.rendered.workspace.planes[0].key,scene:{},liveMerge:true};
+  await loadWorkspaceScene(f,state,f.rendered);
+  g.view.setScale(1.5);g.view.setTranslate(17,-9);
+  f.w.requestAnimationFrame=()=>123;f.w.cancelAnimationFrame=()=>{};
+  const send=(target,type,x,y)=>target.dispatchEvent(new f.w.PointerEvent(type,{bubbles:true,cancelable:true,button:0,buttons:type==='pointerup'?0:1,pointerId:7,clientX:x,clientY:y}));
+  const image=()=>g.view.getState(g.model.getCell('cetz-preview-image')).shape.node.querySelector('image').getAttributeNS('http://www.w3.org/1999/xlink','href');
+  const before=image(),xml=f.w.mxUtils.getXml(new f.w.mxCodec().encode(g.model));
+  let changes=0;g.model.addListener('change',()=>changes++);
+  send(g.container,'pointerdown',100,100);send(f.w.document,'pointermove',120,110);
+  const preview=()=>g.view.getOverlayPane().querySelector('[data-cetz-orbit-preview]');
+  await waitForInspector(()=>!!preview());
+  assert.equal(preview().getAttribute('data-cetz-orbit-angles'),'25,20,5');
+  const artwork=preview().querySelector('[data-cetz-live-preview]'),firstTransform=artwork.getAttribute('transform');
+  assert.ok(artwork.querySelector('path'),'reuse actual plane artwork');
+  assert.equal(g.view.getState(g.model.getCell('cetz-preview-image')).shape.node.style.visibility,'hidden');
+  send(f.w.document,'pointermove',80,110);
+  await waitForInspector(()=>preview().getAttribute('data-cetz-orbit-angles')==='25,40,5');
+  send(f.w.document,'pointermove',80,80);
+  await waitForInspector(()=>preview().getAttribute('data-cetz-orbit-angles')==='10,40,5');
+  send(f.w.document,'pointermove',160,140);
+  await waitForInspector(()=>preview().getAttribute('data-cetz-orbit-angles')==='40,0,5');
+  assert.equal(preview().querySelector('[data-cetz-live-preview]'),artwork,'pointer moves reuse the same SVG paths');
+  assert.notEqual(artwork.getAttribute('transform'),firstTransform);
+  await new Promise(resolve=>setTimeout(resolve,350));
+  assert.equal(inspectorCommands(f).length,0,'no Typst compile requests during local rotation');
+  assert.equal(changes,0,'no Draw.io model, source or inspector redraw per frame');
+  assert.equal(f.w.mxUtils.getXml(new f.w.mxCodec().encode(g.model)),xml);
+  const expected=await renderEditable(source.replace('x:20deg,y:30deg','x:40deg,y:0deg'),parseCanvas(source.replace('x:20deg,y:30deg','x:40deg,y:0deg')).canvas,path.resolve('examples/native.typ'));
+  const {project}=require('../src/three-workspace'),oldPoint=project(f.rendered.workspace.planes[0].matrix,[1,1,0]),newPoint=project(expected.workspace.planes[0].matrix,[1,1,0]);
+  const transform=artwork.getAttribute('transform').slice(7,-1).split(' ').map(Number),x=(oldPoint[0]+17)*1.5,y=(oldPoint[1]-9)*1.5;
+  assert.ok(Math.hypot(transform[0]*x+transform[2]*y+transform[4]-(newPoint[0]+17)*1.5,transform[1]*x+transform[3]*y+transform[5]-(newPoint[1]-9)*1.5)<0.002,'local plane projection agrees with a fresh CeTZ render');
+  send(f.w.document,'pointerup',180,160);
+  assert.equal(inspectorCommands(f).length,1);
+  const final=JSON.parse(decodeURIComponent(g.getCellStyle(inspectorCommands(f)[0]).cetzValue));
+  assert.equal(final.values.x,'50deg');assert.equal(final.values.y,'-10deg');assert.ok(final.historyGroup);
+  await acceptWorkspaceUI(f,state);
+  assert.match(state.source,/ortho\(x:50deg,y:-10deg,z:5deg/);
+  assert.equal(preview(),null);assert.notEqual(image(),before);
+  assert.notEqual(g.view.getState(g.model.getCell('cetz-preview-image')).shape.node.style.visibility,'hidden');
+});
+
+test('local orbit moves raw XYZ lines and labels alongside planes and commits the latest frame on blur',{skip},async t=>{
+  const source='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,y:30deg,z:5deg,{on-xy({rect((0,0),(2,1))})\nline((0,0,0),(3,2,2),stroke:1.5pt+red)\ncontent((3,2,2),[XYZ])})\n})';
+  const f=await fixture(t,source),g=f.graph,state={source,mode:'3d',key:f.rendered.workspace.planes[0].key,scene:{},liveMerge:true};
+  await loadWorkspaceScene(f,state,f.rendered);
+  f.send(g.container,'down',100,100);f.send(f.w.document,'move',140,120);
+  const preview=()=>g.view.getOverlayPane().querySelector('[data-cetz-orbit-preview]');
+  await waitForInspector(()=>!!preview());
+  const line=preview().querySelector('[data-cetz-orbit-kind="line"] [data-cetz-live-preview]'),label=preview().querySelector('[data-cetz-orbit-kind="point"] [data-cetz-live-preview]');
+  assert.ok(line&&label);assert.ok(label.querySelector('use'),'keep Typst glyph definitions in the preview');
+  const target=source.replace('x:20deg,y:30deg','x:30deg,y:10deg'),rendered=await renderEditable(target,parseCanvas(target).canvas,path.resolve('examples/native.typ')),{project}=require('../src/three-workspace');
+  for(const shape of [line,label]){
+    const m=shape.getAttribute('transform').slice(7,-1).split(' ').map(Number);
+    const old=project(f.rendered.workspace.views[0].matrix,[3,2,2]),next=project(rendered.workspace.views[0].matrix,[3,2,2]);
+    assert.ok(Math.hypot(m[0]*old[0]+m[2]*old[1]+m[4]-next[0],m[1]*old[0]+m[3]*old[1]+m[5]-next[1])<0.002);
+  }
+  assert.equal(inspectorCommands(f).length,0);
+  f.w.dispatchEvent(new f.w.Event('blur'));assert.equal(inspectorCommands(f).length,1);
+  f.send(f.w.document,'up',200,200);assert.equal(inspectorCommands(f).length,1,'release after blur cannot commit again');
+  await acceptWorkspaceUI(f,state);assert.equal(preview(),null);assert.match(state.source,/ortho\(x:30deg,y:10deg,z:5deg/);
+  assert.ok(state.source.includes('line((0,0,0),(3,2,2),stroke:1.5pt+red)'));
+});
+
+for(const version of ['0.4.2','0.5.2']) test(`local orbit matches CeTZ ${version} for tilted XY/XZ/ZY planes and a translated camera`,{skip},async t=>{
+  const {planeCode}=require('../src/plane-editor'),{project}=require('../src/three-workspace');
+  const header=`#import "@preview/cetz:${version}"\n`;
+  const poses=[{kind:'xy',position:[2,3,4],angles:[15,-25,35]},{kind:'xz',position:[-1,2,0],angles:[5,15,20]},{kind:'zy',position:[2,-2,1],angles:[-10,20,15]}];
+  const source=header+'#cetz.canvas({cetz.draw.ortho(x:20deg,y:30deg,z:5deg,{\n// GUI-CeTZ camera-position: [3,4,5]\ncetz.draw.translate(x:-3,y:-4,z:-5)\n'+poses.map((pose,i)=>planeCode(header,'gui-plane-'+(i+1),pose,'cetz.draw.rect((0,0),(2,1),fill:blue)')).join('\n')+'})})';
+  const f=await fixture(t,source),g=f.graph;
+  g.view.setScale(1.25);g.view.setTranslate(-9,11);
+  f.send(g.container,'down',100,100);f.send(f.w.document,'move',140,120);
+  const preview=()=>g.view.getOverlayPane().querySelector('[data-cetz-orbit-preview]');
+  await waitForInspector(()=>!!preview());
+  assert.equal(inspectorCommands(f).length,0);
+  const target=source.replace('x:20deg,y:30deg','x:30deg,y:10deg'),rendered=await renderEditable(target,parseCanvas(target).canvas,path.resolve('examples/native.typ'));
+  for(const plane of f.rendered.workspace.planes){
+    const shape=preview().querySelector('[data-cetz-orbit-plane="'+plane.key+'"] [data-cetz-live-preview]');
+    assert.ok(shape,plane.key);
+    const m=shape.getAttribute('transform').slice(7,-1).split(' ').map(Number);
+    const old=project(plane.matrix,[0.4,0.8,0]),next=project(rendered.workspace.planes.find(p=>p.key===plane.key).matrix,[0.4,0.8,0]);
+    const x=(old[0]-9)*1.25,y=(old[1]+11)*1.25;
+    assert.ok(Math.hypot(m[0]*x+m[2]*y+m[4]-(next[0]-9)*1.25,m[1]*x+m[3]*y+m[5]-(next[1]+11)*1.25)<0.003,plane.kind+' matches calibrated projection');
+  }
+  // Returning to the starting camera needs no compilation and restores the exact image.
+  f.send(f.w.document,'move',100,100);f.send(f.w.document,'up',100,100);
+  assert.equal(inspectorCommands(f).length,0);assert.equal(preview(),null);
+  assert.notEqual(g.view.getState(g.model.getCell('cetz-preview-image')).shape.node.style.visibility,'hidden');
+});
+
+for(const distance of ['auto','8','0.1']) test(`perspective orbit reuses projective textures and matches CeTZ with distance ${distance}`,{skip},async t=>{
+  const {planeCode}=require('../src/plane-editor'),{project}=require('../src/three-workspace');
+  const header='#import "@preview/cetz:0.5.3"\n';
+  const poses=[{kind:'xy',position:[1,1,0],angles:[15,-10,20]},{kind:'xz',position:[-1,2,1],angles:[5,10,-10]},{kind:'zy',position:[2,-1,0],angles:[-10,20,5]}];
+  const source=header+'#cetz.canvas({import cetz.draw: *\nperspective(x:20deg,y:30deg,z:5deg,distance:'+distance+',{\n// GUI-CeTZ camera-position: [0.5,-0.2,0.3]\ncetz.draw.translate(x:-0.5,y:0.2,z:-0.3)\n'+poses.map((pose,i)=>planeCode(header,'gui-plane-'+(i+1),pose,'cetz.draw.rect((0,0),(2,1),fill:blue)')).join('\n')+'\nline((0,0,0),(3,2,2),stroke:red)\ncontent((3,2,2),[XYZ])\n})})';
+  const f=await fixture(t,source),g=f.graph,state={source,mode:'3d',key:'gui-plane-1',scene:{},liveMerge:true};
+  await loadWorkspaceScene(f,state,f.rendered);g.view.setScale(1.4);g.view.setTranslate(12,-7);
+  const before=f.w.mxUtils.getXml(new f.w.mxCodec().encode(g.model));let changes=0;g.model.addListener('change',()=>changes++);
+  f.send(g.container,'down',100,100);f.send(f.w.document,'move',140,120);
+  const preview=()=>g.view.getOverlayPane().querySelector('[data-cetz-orbit-preview]');
+  await waitForInspector(()=>!!preview());
+  assert.equal(preview().getAttribute('data-cetz-orbit-projection'),'perspective');
+  assert.equal(preview().getAttribute('data-cetz-orbit-adaptive-lens'),'true');
+  assert.equal(preview().querySelectorAll('foreignObject [data-cetz-perspective-warp]').length,3);
+  assert.equal(inspectorCommands(f).length,0);assert.equal(changes,0);
+  assert.equal(f.w.mxUtils.getXml(new f.w.mxCodec().encode(g.model)),before);
+  const target=source.replace('x:20deg,y:30deg,z:5deg','x:30deg,y:10deg,z:5deg'),rendered=await renderEditable(target,parseCanvas(target).canvas,path.resolve('examples/native.typ'));
+  for(const plane of f.rendered.workspace.planes){
+    const warp=preview().querySelector('[data-cetz-orbit-plane="'+plane.key+'"] [data-cetz-perspective-warp]'),m=warp.style.transform.slice(9,-1).split(',').map(Number);
+    const old=project(plane.matrix,[0.4,0.6,0]),next=project(rendered.workspace.planes.find(p=>p.key===plane.key).matrix,[0.4,0.6,0]);
+    const x=(old[0]+12)*1.4,y=(old[1]-7)*1.4,w=m[3]*x+m[7]*y+m[15];
+    assert.ok(m.every(Number.isFinite));
+    assert.ok(Math.hypot((m[0]*x+m[4]*y+m[12])/w-(next[0]+12)*1.4,(m[1]*x+m[5]*y+m[13])/w-(next[1]-7)*1.4)<0.03,plane.kind+' perspective divide agrees with freshly compiled CeTZ');
+  }
+  const first=preview().querySelector('[data-cetz-perspective-warp]'),transform=first.style.transform;
+  f.send(f.w.document,'move',160,140);
+  await waitForInspector(()=>preview().getAttribute('data-cetz-orbit-angles')==='40,0,5');
+  assert.equal(preview().querySelector('[data-cetz-perspective-warp]'),first);assert.notEqual(first.style.transform,transform);
+  await new Promise(resolve=>setTimeout(resolve,350));assert.equal(inspectorCommands(f).length,0);assert.equal(changes,0);
+  f.send(f.w.document,'up',180,160);assert.equal(inspectorCommands(f).length,1);
+  await acceptWorkspaceUI(f,state);assert.equal(preview(),null);assert.match(state.source,/perspective\(x:50deg,y:-10deg,z:5deg,distance:/);
+  assert.ok(state.source.includes('distance:'+distance));
+  assert.notEqual(g.view.getState(g.model.getCell('cetz-preview-image')).shape.node.style.visibility,'hidden');
+});
+
+test('perspective orbit safely resumes exact rendering when fixed calibrated depth crosses the camera',{skip},async t=>{
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\nperspective(x:20deg,y:-60deg,z:5deg,distance:8,{on-xy({circle((20,0),radius:0.5)})})\n})';
+  const f=await fixture(t,source),g=f.graph,state={source,mode:'3d',key:f.rendered.workspace.planes[0].key,scene:{},liveMerge:true};
+  await loadWorkspaceScene(f,state,f.rendered);
+  f.send(g.container,'down',100,100);f.send(f.w.document,'move',120,100);
+  const preview=()=>g.view.getOverlayPane().querySelector('[data-cetz-orbit-preview]');await waitForInspector(()=>!!preview());
+  assert.equal(preview().getAttribute('data-cetz-orbit-adaptive-lens'),'false');
+  f.send(f.w.document,'move',520,100);
+  await waitForInspector(()=>!preview());
+  assert.notEqual(g.view.getState(g.model.getCell('cetz-preview-image')).shape.node.style.visibility,'hidden');
+  await waitForInspector(()=>inspectorCommands(f).length===1);
+  const values=JSON.parse(decodeURIComponent(g.getCellStyle(inspectorCommands(f)[0]).cetzValue)).values;assert.equal(values.y,'-270deg');
+  await acceptWorkspaceUI(f,state);f.send(f.w.document,'up',520,100);assert.match(state.source,/perspective\(x:20deg,y:-270deg,z:5deg,distance:8/);
+  assert.ok(g.view.getOverlayPane().querySelectorAll('[style*="NaN"]').length===0);
+});
+
+test('older CeTZ perspective follows its measured affine output during local orbit',{skip},async t=>{
+  const source='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\nperspective(x:20deg,y:30deg,z:5deg,{on-xy({rect((0,0),(2,1))})})\n})';
+  const f=await fixture(t,source);f.send(f.graph.container,'down',100,100);f.send(f.w.document,'move',140,120);
+  const preview=()=>f.graph.view.getOverlayPane().querySelector('[data-cetz-orbit-preview]');await waitForInspector(()=>!!preview());
+  assert.equal(preview().getAttribute('data-cetz-orbit-projection'),'ortho');assert.equal(inspectorCommands(f).length,0);
+  f.send(f.w.document,'up',140,120);assert.equal(inspectorCommands(f).length,1);
+});
+
+test('3D background guides cannot be selected and clicks select planes while drags orbit', {skip}, async t => {
+  const source='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({rect((0,0),(1,1))})\non-xz({rect((3,0),(4,1))})})\n})';
+  const f=await fixture(t,source),g=f.graph;
+  const guides=g.view.getBackgroundPane().querySelector('[data-cetz-3d-guides]');
+  assert.equal(guides.getAttribute('pointer-events'),'none');
+  assert.equal(guides.querySelectorAll('[data-cetz-3d-grid]').length,2);
+  assert.equal(guides.querySelectorAll('[data-cetz-3d-axis]').length,3);
+  assert.equal(Object.keys(g.model.cells).filter(id=>/^cetz-(grid3d|axis-3d)-/.test(id)).length,0);
+  assert.equal(g.isCellSelectable({id:'cetz-grid3d-0-0',style:''}),false,'legacy guides also remain unselectable');
+  const rubberband=new f.w.mxRubberband(g);t.after(()=>rubberband.destroy());
+  function pointer(target,type,x,y,shiftKey=false){target.dispatchEvent(new f.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,buttons:type==='mouseup'?0:1,clientX:x,clientY:y,shiftKey}));}
+  function click(id,shiftKey){
+    const s=g.view.getState(g.model.getCell(id)),x=s.x+s.width/2,y=s.y+s.height/2;
+    pointer(g.container,'mousedown',x,y,shiftKey);pointer(f.w.document,'mouseup',x+1,y+1,shiftKey);
+  }
+  click('cetz-edit-0');assert.equal(g.getSelectionCell().id,'cetz-edit-1');
+  click('cetz-edit-2',true);assert.deepEqual(Array.from(g.getSelectionCells(),c=>c.id),['cetz-edit-3']);
+  assert.equal(f.ui.sidebar.wrapper.querySelector('[aria-label="描画面"]').value,f.rendered.workspace.planes[1].key);
+  assert.equal(g.view.getBackgroundPane().querySelectorAll('[data-cetz-plane-surface]').length,2);
+  assert.equal(g.isCellSelectable(g.model.getCell('cetz-edit-0')),false);
+  assert.equal(inspectorCommands(f).length,0,'clicks and small pointer jitter never update the camera');
+  const s=g.view.getState(g.model.getCell('cetz-edit-0')),before=g.model.getCell('cetz-edit-0').geometry.clone();
+  pointer(s.shape.node,'mousedown',s.x+10,s.y+10);
+  pointer(f.w.document,'mousemove',s.x+60,s.y+30,true);
+  pointer(f.w.document,'mouseup',s.x+60,s.y+30,true);
+  assert.equal(inspectorCommands(f).length,1,'dragging over an object or with Shift still orbits');
+  assert.equal(g.getSelectionCell().id,'cetz-edit-3');
+  assert.ok(g.model.getCell('cetz-edit-0').geometry.equals(before));
+  assert.ok(rubberband.first==null,'no marquee selection starts');
+  assert.ok(g.graphHandler.first==null,'no shape movement starts');
+});
+
+test('3D canvas and Outline hover highlight the plane surface at every zoom without changing the scene', {skip}, async t => {
+  const source='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({rect((0,0),(1,1),fill:red)\ncircle((3,0),radius:0.5)})\nline((100,100,50),(110,110,60))})\n})';
+  const f=await fixture(t,source),g=f.graph;
+  const overlays=()=>g.view.getOverlayPane().querySelectorAll('[data-cetz-highlight-owner]');
+  const hover=(x,y)=>{
+    const event=new f.w.MouseEvent('mousemove',{bubbles:true,clientX:x,clientY:y});
+    Object.defineProperty(event,'target',{value:g.container});
+    g.fireMouseEvent(f.w.mxEvent.MOUSE_MOVE,new f.w.mxMouseEvent(event));
+  };
+  const before=f.w.mxUtils.getXml(new f.w.mxCodec().encode(g.model));
+  for(const scale of [1,2,0.5]){
+    g.view.setScale(scale);g.view.setTranslate(17,-9);
+    const s=g.view.getState(g.model.getCell('cetz-edit-0'));
+    hover(s.x-4,s.y+s.height/2);
+    assert.ok(overlays().length);const overlay=overlays()[0];
+    assert.equal(overlay.getAttribute('data-cetz-highlight-owner'),'cetz-edit-2');
+    assert.equal(overlay.getAttribute('data-cetz-highlight-plane'),encodeURIComponent(f.rendered.workspace.planes[0].key));
+    assert.equal(overlay.localName,'polygon');assert.equal(overlay.getAttribute('fill-opacity'),'0.14');
+    assert.equal(overlay.querySelector('path'),null,'the whole plane is highlighted without parsing per-object SVGs');
+    const surface=g.view.getBackgroundPane().querySelector('[data-cetz-plane-surface]');
+    const projected=surface.getAttribute('points').split(' ').map(p=>p.split(',').map(Number)).map(p=>[(p[0]+17)*scale,(p[1]-9)*scale].join(',')).join(' ');
+    assert.equal(overlay.getAttribute('points'),projected);
+    hover(s.x-3,s.y+s.height/2);assert.equal(overlays()[0],overlay);
+    const other=g.view.getState(g.model.getCell('cetz-edit-1'));
+    hover(other.x+other.width/2,other.y+other.height/2);assert.equal(overlays()[0],overlay,'moving between elements on the same plane reuses one surface highlight');
+    f.graph.container.dispatchEvent(new f.w.MouseEvent('mouseleave'));assert.equal(overlays().length,0);
+    const row=f.ui.sidebar.wrapper.querySelector('.cetzOutlineRow');row.dispatchEvent(new f.w.MouseEvent('mouseenter'));
+    assert.equal(overlays()[0].getAttribute('data-cetz-highlight-plane'),encodeURIComponent(f.rendered.workspace.planes[0].key));
+    row.dispatchEvent(new f.w.MouseEvent('mouseleave'));assert.equal(overlays().length,0);
+    const separate=g.view.getState(g.model.getCell('cetz-edit-3'));hover(separate.x+separate.width/2,separate.y+separate.height/2);
+    assert.equal(overlays().length,1,'a standalone 3D line gets its own editable object highlight');assert.equal(overlays()[0].getAttribute('data-cetz-highlight-object'),'3');
+  }
+  assert.equal(g.getSelectionCount(),0);
+  assert.equal(f.w.mxUtils.getXml(new f.w.mxCodec().encode(g.model)),before);
+  assert.deepEqual(patchesFromEditable(source,f.rendered,before,readAllCells),[]);
+});
+
+test('3D pan coalesces pointer moves per frame and reuses background paths through translation', {skip}, async t => {
+  const f=await fixture(t,'#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({rect((0,0),(1,1))})})\n})');
+  const g=f.graph,pane=g.view.getBackgroundPane(),grid=pane.querySelector('[data-cetz-3d-grid]'),plane=pane.querySelector('[data-cetz-plane-surface]');
+  const before=f.w.mxUtils.getXml(new f.w.mxCodec().encode(g.model));
+  const pan=[...f.ui.sidebar.wrapper.querySelectorAll('.cetz3DWorkspace button')].find(b=>b.textContent==='Pan');pan.click();
+  let translations=0;const translate=g.view.setTranslate;
+  g.view.setTranslate=function(){translations++;return translate.apply(this,arguments);};
+  const send=(target,type,x,y)=>target.dispatchEvent(new f.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,buttons:1,clientX:x,clientY:y}));
+  const tx=g.view.translate.x,ty=g.view.translate.y;
+  send(g.container,'mousedown',10,10);
+  for(let i=1;i<=100;i++)send(f.w.document,'mousemove',10+i,10+i/2);
+  assert.equal(translations,0);
+  await new Promise(resolve=>f.w.requestAnimationFrame(resolve));
+  assert.equal(translations,1);
+  send(f.w.document,'mouseup',130,80);
+  assert.equal(g.view.translate.x,tx+120);assert.equal(g.view.translate.y,ty+70);
+  assert.equal(pane.querySelector('[data-cetz-3d-grid]'),grid);
+  assert.equal(pane.querySelector('[data-cetz-plane-surface]'),plane);
+  assert.equal(inspectorCommands(f).length,0);
+  assert.equal(f.w.mxUtils.getXml(new f.w.mxCodec().encode(g.model)),before);
+  // Focus loss flushes an outstanding frame and releases the gesture.
+  send(g.container,'mousedown',0,0);send(f.w.document,'mousemove',20,30);
+  f.w.dispatchEvent(new f.w.Event('blur'));
+  assert.equal(g.view.translate.x,tx+140);assert.equal(g.view.translate.y,ty+100);
+  send(f.w.document,'mousemove',80,90);
+  await new Promise(resolve=>f.w.requestAnimationFrame(resolve));
+  assert.equal(g.view.translate.x,tx+140);
+});
+
+test('3D workspace status updates do not create an idle sidebar redraw loop', {skip}, async t => {
+  const f=await fixture(t,'#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({rect((0,0),(1,1))})\n})');
+  // Match Draw.io's real sidebar hierarchy so the plugin's subtree observer
+  // sees its own 2D/3D panels, which the lightweight fixture keeps separate.
+  f.ui.sidebar.container.appendChild(f.ui.sidebar.wrapper);
+  await new Promise(resolve=>setTimeout(resolve,30));
+  let changes=0;
+  const observer=new f.w.MutationObserver(records=>{changes+=records.length;});
+  observer.observe(f.ui.sidebar.wrapper,{childList:true,subtree:true});
+  await new Promise(resolve=>setTimeout(resolve,40));
+  observer.disconnect();
+  assert.equal(changes,0,'idle panels never schedule themselves for another redraw');
 });
 
 test('3D native tools explain edge-on planes, switch to a visible plane and toggle source-neutral guides', {skip}, async t => {
@@ -1887,7 +2181,8 @@ test('3D native tools explain edge-on planes, switch to a visible plane and togg
   for(const label of ['3D grid','3D axes']){
     const toggle=panel.querySelector('[aria-label="'+label+'"]');toggle.checked=false;toggle.dispatchEvent(new f.w.Event('change'));
   }
-  assert.ok(Object.values(f.graph.model.cells).filter(cell=>/^cetz-(grid3d|axis-3d)-/.test(cell.id||'')).every(cell=>cell.visible===false));
+  const guides=f.graph.view.getBackgroundPane().querySelector('[data-cetz-3d-guides]');
+  assert.ok(guides);assert.equal(guides.children.length,0);
   const xml=f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model));
   assert.deepEqual(patchesFromEditable(source,f.rendered,xml,readAllCells),[]);
 });
@@ -1901,8 +2196,23 @@ async function loadWorkspaceScene(f,state,rendered){
   rendered.xml=bindScene(state.scene,state.source,rendered.xml,rendered);
   const doc=f.w.mxUtils.parseXml(rendered.xml),incoming=new f.w.mxGraphModel();
   new f.w.mxCodec(doc).decode(doc.getElementsByTagName('mxGraphModel')[0],incoming);
-  f.graph.clearSelection();f.graph.model.beginUpdate();
-  try{f.rendered=rendered;f.graph.model.setRoot(incoming.getRoot());}finally{f.graph.model.endUpdate();}
+  if(!state.liveMerge)f.graph.clearSelection();f.graph.model.beginUpdate();
+  try{
+    f.rendered=rendered;
+    if(!state.liveMerge)f.graph.model.setRoot(incoming.getRoot());
+    else{
+      for(const cell of Object.values(f.graph.model.cells))if(!['0','1'].includes(cell.id)&&!incoming.getCell(cell.id))f.graph.model.remove(cell);
+      for(const wanted of Object.values(incoming.cells)){
+        if(['0','1'].includes(wanted.id))continue;
+        const cell=f.graph.model.getCell(wanted.id);
+        if(!cell)f.graph.model.add(f.graph.model.getCell(wanted.parent.id),wanted);
+        else{
+          f.graph.model.setGeometry(cell,wanted.geometry&&wanted.geometry.clone());
+          f.graph.model.setStyle(cell,wanted.style);f.graph.model.setVisible(cell,wanted.visible);
+        }
+      }
+    }
+  }finally{f.graph.model.endUpdate();}
   f.graph.view.validate();await new Promise(resolve=>setTimeout(resolve,20));
 }
 async function acceptWorkspaceUI(f,state){
@@ -1919,7 +2229,7 @@ async function acceptWorkspaceUI(f,state){
       const conversion=editor.convertTo3D(state.source,parseCanvas(state.source).canvas);apply(conversion);state.key=conversion.activePlaneKey;
     }
   }else if(action&&action.action!=='select'){
-    const patches=sourceActionPatches(state.source,f.rendered,action);apply(patches);if(patches.activePlaneKey)state.key=patches.activePlaneKey;
+    const patches=sourceActionPatches(state.source,f.rendered,action);apply(patches);if(Object.hasOwn(patches,'activePlaneKey'))state.key=patches.activePlaneKey;
   }else apply(patchesFromEditable(state.source,f.rendered,xml,readAllCells));
   const canvas=parseCanvas(state.source).canvas,full=await renderEditable(state.source,canvas,path.resolve('examples/native.typ'));
   const rendered=state.mode==='2d'?await editor.renderPlane2D(state.source,canvas,state.key,path.resolve('examples/native.typ'),full):full;
@@ -1932,14 +2242,17 @@ test('dimension tabs, plane icons, camera/plane panels and native 2D gestures sh
     {kind:'xy',position:[2,3,4],angles:[25,15,-30]},'\nimport cetz.draw: *\nrect((0,0),(2,1))\n')+'})\n})';
   const f=await fixture(t,source),state={source,mode:'3d',key:'gui-plane-1',scene:{}};
   await loadWorkspaceScene(f,state,f.rendered);
-  const tabs=()=>f.ui.menubarContainer.querySelectorAll('[role="tab"]'),panel=f.ui.sidebar.wrapper;
+  const tabs=()=>f.ui.container.querySelectorAll('[role="tab"]'),panel=f.ui.sidebar.wrapper;
   assert.equal(tabs()[1].textContent,'3D描画');assert.equal(tabs()[1].getAttribute('aria-selected'),'true');
+  assert.equal(f.graph.getSelectionModel().isSingleSelection(),true);
   assert.equal(panel.querySelector('.cetz3DWorkspace').style.display,'');assert.equal(panel.querySelector('.cetz2DWorkspace').style.display,'none');
   const rail=f.ui.formatContainer.querySelector('.cetzPlaneRail');assert.equal(rail.style.display,'flex');
   assert.ok(f.graph.view.getBackgroundPane().querySelector('[data-cetz-plane-surface="true"]'));
   const open=[...panel.querySelectorAll('.cetz3DWorkspace button')].find(button=>button.textContent==='この面を2D描画');open.click();
   await acceptWorkspaceUI(f,state);
   assert.equal(state.source,source);assert.equal(f.rendered.mode,'plane-2d');
+  assert.equal(f.graph.getSelectionModel().isSingleSelection(),false,'2D retains multiple selection');
+  assert.equal(f.graph.view.getBackgroundPane().querySelector('[data-cetz-3d-guides]').children.length,0,'3D guides are cleared in 2D');
   assert.equal(tabs()[0].getAttribute('aria-selected'),'true');assert.equal(panel.querySelector('.cetz3DWorkspace').style.display,'none');
   assert.equal(panel.querySelector('.cetz2DWorkspace').style.display,'');assert.equal(rail.style.display,'none');assert.equal(f.graph.gridEnabled,true);
   const owner='cetz-edit-'+f.rendered.cellIds[0],drag=f.drag(owner,f.rendered.calibration.unitX*2.5,0);
@@ -1999,14 +2312,35 @@ test('3D view and plane selection remain independent across multiple projections
   assert.equal(created.view,f.rendered.workspace.views[1].index);assert.equal(select.value,String(created.view));
 });
 
+test('workspace projection selector changes the chosen view, restores distance and keeps plane editing available', {skip},async t=>{
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\nperspective(distance:12,x:20deg,y:30deg,{on-xy({rect((0,0),(2,1))})})\northo({circle((5,5),radius:1)})\n})';
+  const f=await fixture(t,source),state={source,mode:'3d',key:f.rendered.workspace.planes[0].key,scene:{}};
+  await loadWorkspaceScene(f,state,f.rendered);
+  const select=f.ui.sidebar.wrapper.querySelector('[aria-label="投影方式"]');
+  const body=f.rendered.calls.find(c=>c.name==='on-xy').call;
+  assert.equal(select.value,'perspective');
+  select.value='ortho';select.dispatchEvent(new f.w.Event('change'));
+  assert.equal(select.disabled,true);assert.equal(select.value,'perspective','wait for validated source acknowledgement');
+  let action=await acceptWorkspaceUI(f,state);assert.equal(action.action,'projection-kind');
+  assert.equal(select.value,'ortho');assert.equal(select.disabled,false);assert.ok(!state.source.includes('distance:'));
+  assert.equal(f.rendered.workspace.views[1].kind,'ortho');assert.ok(state.source.includes(body));
+  assert.equal(f.ui.sidebar.wrapper.querySelector('[aria-label="3D view"]').value,String(f.rendered.workspace.views[0].index));
+  select.value='perspective';select.dispatchEvent(new f.w.Event('change'));await acceptWorkspaceUI(f,state);
+  assert.equal(select.value,'perspective');assert.match(state.source,/distance: 12/);assert.match(state.source,/x:20deg,y:30deg/);
+  const tabs=f.ui.container.querySelector('.cetzDimensionTabs');assert.equal(tabs.parentNode,f.ui.container);
+  assert.equal(f.ui.menubarContainer.querySelector('[role="tab"]'),null,'tabs occupy the canvas header, outside the menu');
+  tabs.querySelector('[aria-label="2D描画"]').click();await acceptWorkspaceUI(f,state);
+  assert.equal(f.rendered.mode,'plane-2d');assert.equal(f.rendered.calls[0].name,'rect');
+});
+
 test('tab switching retains unfinished coordinates and resumes automatically after their validated update', {skip},async t=>{
   let source='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\nrect((0,0),(2,1))\n})';
   const f=await fixture(t,source);f.select('cetz-edit-0');
   const x=f.ui.sidebar.wrapper.querySelector('[aria-label="Corner 1 X"]');assert.ok(x);
   x.value='';x.dispatchEvent(new f.w.Event('input',{bubbles:true}));
-  const tab=f.ui.menubarContainer.querySelectorAll('[role="tab"]')[1];tab.click();
+  const tab=f.ui.container.querySelectorAll('[role="tab"]')[1];tab.click();
   assert.equal(Object.values(f.graph.model.cells).filter(cell=>/cetzAction=workspace-mode;/.test(cell.style||'')).length,0);
-  assert.match(f.ui.menubarContainer.querySelector('[role="status"]').textContent,/完成/);
+  assert.match(f.ui.container.querySelector('.cetzDimensionNotice').textContent,/完成/);
   x.value='1';x.dispatchEvent(new f.w.Event('change',{bubbles:true}));
   await waitForInspector(()=>inspectorCommands(f).length===1);source=await acceptInspectorCommand(f,source);
   await waitForInspector(()=>Object.values(f.graph.model.cells).some(cell=>/cetzAction=workspace-mode;/.test(cell.style||'')));
@@ -2019,11 +2353,148 @@ test('a queued 2D tab follows the selected legacy plane across camera header edi
   await loadWorkspaceScene(f,state,f.rendered);
   const select=f.ui.sidebar.wrapper.querySelector('[aria-label="描画面"]');select.value=f.rendered.workspace.planes[1].key;select.dispatchEvent(new f.w.Event('change'));
   const camera=f.ui.sidebar.wrapper.querySelector('[aria-label="カメラ位置 X"]');camera.value='2';camera.dispatchEvent(new f.w.Event('change'));
-  f.ui.menubarContainer.querySelectorAll('[role="tab"]')[0].click();
+  f.ui.container.querySelectorAll('[role="tab"]')[0].click();
   await acceptWorkspaceUI(f,state);
   await waitForInspector(()=>Object.values(f.graph.model.cells).some(cell=>/cetzAction=workspace-mode;/.test(cell.style||'')));
   const cmd=Object.values(f.graph.model.cells).find(cell=>/cetzAction=workspace-mode;/.test(cell.style||''));
   const payload=JSON.parse(decodeURIComponent(f.graph.getCellStyle(cmd).cetzValue));
   assert.equal(payload.planeKey,f.rendered.workspace.planes[1].key);
   await acceptWorkspaceUI(f,state);assert.equal(f.rendered.calls.length,1);assert.equal(f.rendered.calls[0].name,'circle');
+});
+
+for(const nativeCanvas of [false,true])test(`dimension switching restores center, zoom and scroll with ${nativeCanvas?'native infinite canvas':'bare mxGraph'}`, {skip},async t=>{
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({rect((30,40),(34,43))})\non-xz({circle((2,2),radius:1)})})\n})';
+  const f=await fixture(t,source,{nativeCanvas}),state={source,mode:'3d',key:f.rendered.workspace.planes[0].key,scene:{}};
+  const g=f.graph;if(!nativeCanvas)Object.defineProperties(g.container,{clientWidth:{value:800},clientHeight:{value:600}});
+  f.w.document.body.appendChild(f.ui.container);
+  await loadWorkspaceScene(f,state,f.rendered);
+  const tabs=()=>f.ui.container.querySelectorAll('[role="tab"]');
+  const center=()=>[(g.container.scrollLeft+400)/g.view.scale-g.view.translate.x,(g.container.scrollTop+300)/g.view.scale-g.view.translate.y];
+  const centered=()=>{const b=g.model.getGeometry(g.model.getCell('cetz-preview-background')),c=center();assert.ok(Math.abs(c[0]-b.x-b.width/2)<1e-5);assert.ok(Math.abs(c[1]-b.y-b.height/2)<1e-5);};
+  g.view.scaleAndTranslate(.8,-350,125);g.container.scrollLeft=53;g.container.scrollTop=71;
+  const original3D={center:center(),scale:g.view.scale};
+  tabs()[0].click();await acceptWorkspaceUI(f,state);await new Promise(resolve=>f.w.requestAnimationFrame(resolve));g.view.validate();g.sizeDidChange();centered();
+  const nativeGet=f.ui.actions.get;let nativeFits=0;
+  f.ui.actions.get=function(name){return name==='fitWindow'?{funct(){nativeFits++;g.view.scaleAndTranslate(3,0,0);}}:nativeGet.call(this,name);};
+  g.view.scaleAndTranslate(3,0,0);f.ui.fileLoaded();await new Promise(resolve=>f.w.requestAnimationFrame(resolve));g.view.validate();g.sizeDidChange();
+  centered();assert.equal(nativeFits,0,'a later native fileLoaded must not overwrite the restored viewport');
+  g.view.scaleAndTranslate(1.2,-1000,-1300);g.container.scrollLeft=27;g.container.scrollTop=39;
+  const original2D={center:center(),scale:g.view.scale};
+  tabs()[1].click();await acceptWorkspaceUI(f,state);await new Promise(resolve=>f.w.requestAnimationFrame(resolve));g.view.validate();g.sizeDidChange();
+  assert.equal(g.view.scale,original3D.scale);center().forEach((n,i)=>assert.ok(Math.abs(n-original3D.center[i])<1e-5));
+  tabs()[0].click();await acceptWorkspaceUI(f,state);await new Promise(resolve=>f.w.requestAnimationFrame(resolve));g.view.validate();g.sizeDidChange();
+  assert.equal(g.view.scale,original2D.scale);center().forEach((n,i)=>assert.ok(Math.abs(n-original2D.center[i])<1e-5));
+  tabs()[1].click();await acceptWorkspaceUI(f,state);
+  const planes=f.ui.sidebar.wrapper.querySelector('[aria-label="描画面"]');planes.value=f.rendered.workspace.planes[1].key;planes.dispatchEvent(new f.w.Event('change'));
+  tabs()[0].click();await acceptWorkspaceUI(f,state);await new Promise(resolve=>f.w.requestAnimationFrame(resolve));g.view.validate();g.sizeDidChange();centered();
+});
+
+test('3D plane deletion handles Delete, list selection and native removeCells without deleting text input', {skip},async t=>{
+  const {planeCode}=require('../src/plane-editor');
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({rect((0,0),(2,1))})\n'+planeCode('','gui-plane-1',{kind:'xz',position:[1,2,3],angles:[10,20,30]},'\nlet r=2\ncetz.draw.circle((1,1),radius:r)\n')+'\non-xz({circle((4,4),radius:1)})})\n})';
+  const f=await fixture(t,source),state={source,mode:'3d',key:'gui-plane-1',scene:{}};
+  await loadWorkspaceScene(f,state,f.rendered);f.w.document.body.appendChild(f.ui.sidebar.wrapper);
+  const list=f.ui.sidebar.wrapper.querySelector('[aria-label="描画面"]');list.value='gui-plane-1';list.dispatchEvent(new f.w.Event('change'));
+  const input=f.ui.sidebar.wrapper.querySelector('[aria-label="カメラ位置 X"]');
+  input.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Delete',bubbles:true,cancelable:true}));
+  assert.equal(Object.values(f.graph.model.cells).some(c=>/cetzAction=plane-delete;/.test(c.style||'')),false);
+  list.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Delete',bubbles:true,cancelable:true}));
+  assert.ok(state.source.includes('let r=2'),'wait for validated source deletion');
+  let action=await acceptWorkspaceUI(f,state);assert.equal(action.action,'plane-delete');
+  assert.ok(!state.source.includes('let r=2'));assert.ok(!state.source.includes('radius:r'));assert.equal(f.rendered.workspace.planes.length,2);
+  const plane=f.rendered.workspace.planes[0],cell=Object.values(f.graph.model.cells).find(c=>/^cetz-edit-/.test(c.id)&&Number(f.graph.getCellStyle(c).cetzSourceIndex)===plane.wrapperIndex);
+  f.graph.setSelectionCell(cell);f.graph.removeCells(f.graph.getSelectionCells());
+  action=await acceptWorkspaceUI(f,state);assert.equal(action.action,'plane-delete');assert.ok(!state.source.includes('rect('));assert.equal(f.rendered.workspace.planes.length,1);
+  list.value=f.rendered.workspace.planes[0].key;list.dispatchEvent(new f.w.Event('change'));
+  list.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Backspace',bubbles:true,cancelable:true}));
+  await acceptWorkspaceUI(f,state);assert.equal(f.rendered.workspace.planes.length,0);assert.equal(f.rendered.mode,'3d');assert.ok(!state.source.includes('circle('));
+});
+
+for(const kind of ['ortho','perspective'])test(`3D ${kind} line tool guides six XYZ coordinates, snaps existing points and creates source geometry`,{skip},async t=>{
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\n'+kind+'(x:20deg,y:30deg,{line((1,2,3),(4,5,6))\non-xy({rect((0,0),(2,1))})})\n})';
+  const f=await fixture(t,source),state={source,mode:'3d',scene:{}};await loadWorkspaceScene(f,state,f.rendered);
+  f.w.document.body.appendChild(f.ui.container);f.w.document.body.appendChild(f.ui.formatContainer);
+  const rail=f.ui.formatContainer.querySelector('.cetzPlaneRail');assert.equal(rail.querySelector('[aria-label="描画面 自由"]'),null);
+  rail.querySelector('[aria-label="3D line"]').click();
+  const hint=()=>f.graph.container.querySelector('.cetzSpatialHint'),preview=()=>f.graph.view.getOverlayPane().querySelector('[data-cetz-placement="3d-line"]');
+  assert.ok(hint());assert.match(hint().textContent,/始点 · X/);assert.ok(preview().querySelector('[data-cetz-spatial-axis="X"]'));
+  assert.equal(Object.values(f.graph.model.cells).some(c=>/cetzPlacement3D=/.test(c.style||'')),false,'live guides do not change the model');
+  const matrix=f.rendered.workspace.views[0].matrix,project=require('../src/three-workspace').project;
+  function pointer(point,type='mousemove'){
+    const p=project(matrix,point),v=f.graph.view;
+    f.graph.container.dispatchEvent(new f.w.MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientX:(p[0]+v.translate.x)*v.scale-f.graph.container.scrollLeft,clientY:(p[1]+v.translate.y)*v.scale-f.graph.container.scrollTop}));
+  }
+  const targets=[[1,0,0],[1,2,0],[1,2,3],[4,2,3],[4,5,3],[4,5,6]];
+  f.graph.view.setScale(2);f.graph.view.setTranslate(12,-8);f.graph.container.scrollLeft=17;f.graph.container.scrollTop=23;
+  pointer([2.34,0,0]);assert.equal(Number(hint().querySelector('[aria-label="3D座標値"]').value),2.375,'grid snapping follows the zoom step');
+  pointer([1.001,0,0]);assert.equal(Number(hint().querySelector('[aria-label="3D座標値"]').value),1,'nearby coordinates snap to an existing point');
+  for(let stage=0;stage<6;stage++){
+    assert.match(hint().querySelector('.cetzSpatialStage').textContent,new RegExp('XYZ'[stage%3]+'を指定'));
+    pointer(targets[stage]);assert.equal(Number(hint().querySelector('[aria-label="3D座標値"]').value),targets[stage][stage%3]);
+    assert.ok(preview().querySelector('[data-cetz-spatial-snap="true"]'),'snap guides are visible');
+    assert.ok(preview().querySelector('[data-cetz-spatial-guide]'),'XYZ construction guides are visible');
+    pointer(targets[stage],'click');
+  }
+  assert.equal(hint(),null);assert.equal(preview(),null);
+  const cells=Object.values(f.graph.model.cells).filter(c=>/cetzPlacement3D=/.test(c.style||''));assert.equal(cells.length,1);
+  const payload=JSON.parse(decodeURIComponent(/cetzPlacement3D=([^;]+);/.exec(cells[0].style)[1]));
+  assert.equal(payload.space,'xyz');assert.deepEqual(payload.points,[[1,2,3],[4,5,6]]);
+  await acceptWorkspaceUI(f,state);assert.ok(state.source.includes('cetz.draw.line((1, 2, 3), (4, 5, 6))'));assert.equal(f.rendered.workspace.planes.length,1);
+});
+
+for(const projection of ['ortho(x:0deg,y:0deg,z:0deg','perspective(x:20deg,y:30deg'])test(`3D numeric input handles backtracking, cancellation and text in an empty ${projection.split('(')[0]} view`,{skip},async t=>{
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({cetz.draw.'+projection+',{ })})';
+  const f=await fixture(t,source),state={source,mode:'3d',scene:{}};await loadWorkspaceScene(f,state,f.rendered);f.w.document.body.appendChild(f.ui.formatContainer);
+  const rail=f.ui.formatContainer.querySelector('.cetzPlaneRail');rail.querySelector('[aria-label="3D line"]').click();
+  const hint=()=>f.graph.container.querySelector('.cetzSpatialHint');
+  function enter(value){const input=hint().querySelector('[aria-label="3D座標値"]');input.value=value;input.dispatchEvent(new f.w.Event('input',{bubbles:true}));input.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));}
+  enter('1');enter('2');assert.match(hint().querySelector('.cetzSpatialStage').textContent,/Zを指定/);
+  if(projection.startsWith('ortho'))assert.equal(f.graph.view.getOverlayPane().querySelector('[data-cetz-spatial-axis="Z"]'),null,'depth uses numeric input when edge-on');
+  hint().querySelector('[data-action="back"]').click();assert.match(hint().querySelector('.cetzSpatialStage').textContent,/Yを指定/);
+  enter('3');enter('4');enter('2');enter('5');enter('6');await acceptWorkspaceUI(f,state);assert.ok(state.source.includes('cetz.draw.line((1, 3, 4), (2, 5, 6))'));assert.equal(f.rendered.workspace.planes.length,0);
+  rail.querySelector('[aria-label="3D line"]').click();enter('NaN');assert.ok(hint());assert.equal(hint().querySelector('[aria-label="3D座標値"]').getAttribute('aria-invalid'),'true');
+  hint().querySelector('[aria-label="3D座標値"]').dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));assert.equal(hint(),null);
+  rail.querySelector('[aria-label="3D content"]').click();hint().querySelector('[aria-label="3D文字"]').value='3D label';enter('2');enter('3');enter('4');await acceptWorkspaceUI(f,state);assert.ok(state.source.includes('cetz.draw.content((2, 3, 4), "3D label")'));
+});
+
+for(const projection of ['ortho','perspective'])test(`3D ${projection} objects can be selected and edited with endpoint handles, Properties and text`,{skip},async t=>{
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\n'+projection+'(x:20deg,y:30deg,{line((1,2,3),(4,5,6),stroke:red)\ncontent((2,1,3),"Label",anchor:"south")\non-xy({rect((0,0),(2,1))})})\n})';
+  const f=await fixture(t,source),state={source,mode:'3d',scene:{}};await loadWorkspaceScene(f,state,f.rendered);
+  f.w.document.body.appendChild(f.ui.sidebar.wrapper);
+  const cellFor=object=>Object.values(f.graph.model.cells).find(cell=>/^cetz-edit-/.test(cell.id)&&Number(f.graph.getCellStyle(cell).cetzSourceIndex)===object.index);
+  let object=f.rendered.workspace.objects.find(o=>o.kind==='line');const originalEnd=object.points[1].slice();
+  const matrix=f.rendered.workspace.views[0].matrix,project=require('../src/three-workspace').project;
+  const midpoint=project(matrix,object.points[0].map((n,i)=>(n+object.points[1][i])/2)),v=f.graph.view;
+  const x=(midpoint[0]+v.translate.x)*v.scale,y=(midpoint[1]+v.translate.y)*v.scale;
+  f.graph.container.dispatchEvent(new f.w.MouseEvent('mousemove',{bubbles:true,clientX:x,clientY:y}));
+  assert.ok(f.graph.view.getOverlayPane().querySelector('[data-cetz-highlight-object]'));
+  f.send(f.graph.container,'down',x,y);f.send(f.w.document,'up',x,y);
+  assert.equal(f.graph.getSelectionCell(),cellFor(object));
+  assert.equal(f.graph.isCellMovable(cellFor(object)),false,'body drag keeps orbiting; endpoint handles edit XYZ');
+  const outline=f.ui.sidebar.wrapper.querySelector('.cetzOutline');assert.ok(outline.textContent.includes('line'));assert.ok(outline.textContent.includes('content'));
+  let handles=f.graph.view.getOverlayPane().querySelectorAll('[data-cetz-spatial-handle]');assert.equal(handles.length,2);
+  const hx=Number(handles[0].getAttribute('cx')),hy=Number(handles[0].getAttribute('cy'));
+  f.send(handles[0],'down',hx,hy);assert.equal(f.graph.container.querySelector('.cetzSpatialHint'),null,'mousedown does not orbit or prematurely advance a coordinate');
+  handles[0].dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  const hint=()=>f.graph.container.querySelector('.cetzSpatialHint');assert.match(hint().textContent,/編集 · 始点 · X/);
+  function enter(value){const input=hint().querySelector('[aria-label="3D座標値"]');input.value=String(value);input.dispatchEvent(new f.w.Event('input',{bubbles:true}));input.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));}
+  enter(2);enter(3);enter(4);assert.equal(hint(),null);
+  let action=await acceptWorkspaceUI(f,state);assert.equal(action.action,'spatial-edit');
+  object=f.rendered.workspace.objects.find(o=>o.kind==='line');assert.deepEqual(object.points,[[2,3,4],originalEnd]);assert.ok(state.source.includes('stroke:red'));
+  f.graph.setSelectionCell(cellFor(object));
+  const input=f.ui.sidebar.wrapper.querySelector('[aria-label="End Z"]');assert.ok(input);input.value='7';input.dispatchEvent(new f.w.Event('input',{bubbles:true}));input.dispatchEvent(new f.w.Event('change',{bubbles:true}));
+  action=await acceptWorkspaceUI(f,state);assert.equal(action.action,'properties');assert.equal(f.rendered.workspace.objects.find(o=>o.kind==='line').points[1][2],7);
+  object=f.rendered.workspace.objects.find(o=>o.kind==='line');f.graph.setSelectionCell(cellFor(object));
+  f.ui.sidebar.wrapper.querySelector('[aria-label="3D 終点を移動"]').click();assert.match(hint().textContent,/編集 · 終点 · X/);assert.equal(hint().querySelector('[data-action="back"]').disabled,true);
+  enter(4.5);enter(5.5);enter(7.5);await acceptWorkspaceUI(f,state);
+  assert.deepEqual(f.rendered.workspace.objects.find(o=>o.kind==='line').points,[[2,3,4],[4.5,5.5,7.5]]);
+  object=f.rendered.workspace.objects.find(o=>o.kind==='content');f.graph.setSelectionCell(cellFor(object));assert.equal(f.graph.view.getOverlayPane().querySelectorAll('[data-cetz-spatial-handle]').length,1);
+  const textState=f.graph.view.getState(cellFor(object));f.graph.container.dispatchEvent(new f.w.MouseEvent('dblclick',{bubbles:true,cancelable:true,clientX:textState.getCenterX(),clientY:textState.getCenterY()}));
+  assert.equal(f.w.document.activeElement,f.ui.sidebar.wrapper.querySelector('[aria-label="Text"]'));
+  const text=f.ui.sidebar.wrapper.querySelector('[aria-label="Text"]');assert.ok(text);text.value='Edited XYZ';text.dispatchEvent(new f.w.Event('change',{bubbles:true}));
+  await acceptWorkspaceUI(f,state);assert.equal(f.rendered.workspace.objects.find(o=>o.kind==='content').text,'Edited XYZ');assert.ok(state.source.includes('anchor:"south"'));
+  object=f.rendered.workspace.objects.find(o=>o.kind==='content');f.graph.setSelectionCell(cellFor(object));
+  f.graph.view.getOverlayPane().querySelector('[data-cetz-spatial-handle]').dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+  assert.match(hint().textContent,/編集 · 文字の位置 · X/);enter(4);enter(2);enter(3);await acceptWorkspaceUI(f,state);
+  object=f.rendered.workspace.objects.find(o=>o.kind==='content');assert.deepEqual(object.points,[[4,2,3]]);assert.equal(object.text,'Edited XYZ');assert.equal(f.rendered.workspace.planes.length,1);
 });

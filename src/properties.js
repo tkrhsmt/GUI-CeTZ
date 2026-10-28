@@ -162,4 +162,4 @@ function propertyPatches(rendered, action) {
   if (call.rotation) text = `scope({ rotate(${call.rotation.angle}deg, origin: (${call.rotation.cx}, ${call.rotation.cy})); ${text} })`;
   return [{ start: call.start, end: call.end, text }];
 }
-module.exports = { propertyModel, propertyPatches, argumentsOf, plainContentText, SCHEMAS };
+module.exports = { propertyModel, propertyPatches, argumentsOf, plainContentText, expression, SCHEMAS };

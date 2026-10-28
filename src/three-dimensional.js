@@ -137,6 +137,21 @@ function union(boxes) {
   return { x, y, width: Math.max(...boxes.map(b => b.x + b.width)) - x,
     height: Math.max(...boxes.map(b => b.y + b.height)) - y };
 }
+function projectionTransforms(source,call){
+  const transforms=[];
+  for(let i=require('./plane-editor').cameraInfo(source,call).end;i<call.bodyEnd;){
+    i=skipTrivia(source,i);if(i>=call.bodyEnd)break;
+    if(source[i]==='"'){for(i++;i<call.bodyEnd;i++){if(source[i]==='\\')i++;else if(source[i]==='"'){i++;break;}}continue;}
+    const name=/^(?:cetz\.draw\.)?([\w-]+)\s*\(/.exec(source.slice(i,call.bodyEnd));
+    if(name){
+      if(['translate','rotate','scale','transform','set-transform','set-origin','reset-transform'].includes(name[1]))transforms.push(i);
+      const end=closing(source,i+name[0].length-1,'(',')');if(end>=0){i=end+1;continue;}
+    }
+    if('([{'.includes(source[i])){const end=closing(source,i,source[i],{'(':')','[':']','{':'}'}[source[i]]);if(end>=0){i=end+1;continue;}}
+    i++;
+  }
+  return transforms;
+}
 async function render3D(source, canvas, filePath) {
   const calls = locate3DCalls(source, canvas);
   let stem = '__gui_cetz_3d';
@@ -152,6 +167,8 @@ async function render3D(source, canvas, filePath) {
   planes.forEach(plane=>{
     const boxes=calls.filter(call=>!call.container&&call.start>=plane.bodyStart&&call.end<=plane.bodyEnd).map(call=>{try{return require('./advanced').boundsFor(call);}catch{return null;}}).filter(Boolean);
     plane.localBounds=union(boxes)||{x:-2.5,y:-2.5,width:5,height:5};
+    plane.snapPoints=calls.filter(call=>call.group===calls[plane.index]).flatMap(call=>(propertyModel(call)?.fields||[])
+      .filter(field=>field.key.startsWith('$')&&field.point&&field.point.length===2).map(field=>field.point)).slice(0,256);
   });
   const probes = probesFor(calls, tag, planes, source);
   edits.push(...probes.edits);
@@ -202,6 +219,17 @@ async function render3D(source, canvas, filePath) {
     view.matrix[1].map((value, i) => value * scale + shift[1] * view.matrix[2][i]),
     view.matrix[2]
   ] })) };
+  const transforms=new Map(workspace.views.map(view=>[view.index,projectionTransforms(source,calls[view.index])]));
+  workspace.objects=calls.flatMap((call,index)=>{
+    if(!['line','content'].includes(call.name)||!['ortho','perspective'].includes(call.group?.name))return [];
+    const view=workspace.views.find(view=>view.index===calls.indexOf(call.group));
+    if(!view)return [];
+    const fields=propertyModel(call).fields,count=call.name==='line'?2:1;
+    const points=Array.from({length:count},(_,i)=>fields.find(field=>field.key==='$'+i)?.point);
+    const guidable=!!view.matrix&&points.every(Boolean)&&!transforms.get(view.index).some(at=>at<call.start);
+    return [{index,view:view.index,kind:call.name,base:call.call,guidable,points:points.every(Boolean)?points.map(p=>[p[0],p[1],p[2]||0]):null,
+      text:call.name==='content'?fields.find(field=>field.key==='$1')?.text??null:null}];
+  });
   function geometry(box) {
     return { x: px(shift[0] + box.x * scale), y: px(shift[1] + box.y * scale),
       width: px(box.width * scale), height: px(box.height * scale) };
@@ -222,7 +250,8 @@ async function render3D(source, canvas, filePath) {
     const label = planeLabel?.label || args.args.find(arg => arg.key === 'name')?.value || call.name;
     const box = call.projectedBounds;
     // Hidden hit boxes still participate in Outline and source selection.
-    const g = box ? geometry(box) : { x: margin, y: margin, width: 1, height: 1 };
+    const object=workspace.objects.find(object=>object.index===index),point=object?.guidable&&project(workspace.views.find(view=>view.index===object.view).matrix,object.points[0]);
+    const g = box ? geometry(box) : point?{x:point[0]-4,y:point[1]-4,width:8,height:8}:{ x: margin, y: margin, width: 1, height: 1 };
     call.geometry = g;
     return vertex(`cetz-edit-${index}`, `${fixed}fillColor=none;strokeColor=none;pointerEvents=${call.container ? 0 : 1};cetzMode=3d;cetzSourceIndex=${index};cetzKind=${call.name};cetzLabel=${encodeURIComponent(label)};cetzStart=${call.start};cetzGroup=${call.group ? calls.indexOf(call.group) : ''};cetzProperties=${encodeURIComponent(JSON.stringify(model))};`, g,
       box && !call.container ? '' : 'visible="0"');
@@ -237,22 +266,72 @@ async function render3D(source, canvas, filePath) {
     const unit=origin?Math.max(...[0,1,2].map(axis=>{const p=[0,0,0];p[axis]=1;const q=project(view.matrix,p);return q?Math.hypot(q[0]-origin[0],q[1]-origin[1]):0;})):0;
     const span=origin?Math.max(Math.abs(view.bounds.x-origin[0]),Math.abs(view.bounds.x+view.bounds.width-origin[0]),Math.abs(view.bounds.y-origin[1]),Math.abs(view.bounds.y+view.bounds.height-origin[1])):0;
     view.gridRange=unit>1e-7?Math.min(10000,Math.max(2,Math.ceil(span/unit)+2)):5;
+    view.guides = grid3D(view);
   });
   // Bounds are attached after handle geometry has been computed.
-  const finalBackground=background.replace(/cetzWorkspace=[^;]*;/,`cetzWorkspace=${encodeURIComponent(JSON.stringify(workspace))};`);
-  const guides = workspace.views.map(view => grid3D(view, vertex, fixed)).join('');
+  // Keep transient orbit textures outside workspace metadata: ordinary UI and
+  // hit testing must not parse/stringify SVGs. One texture per plane also shares
+  // its definitions, instead of duplicating them for every hoverable object.
+  const orbit = { geometry:size, views:workspace.views.map(view => {
+    if(!['ortho','perspective'].includes(view.kind))return {index:view.index,parts:null};
+    const owner=calls[view.index], args=argumentsOf(owner.call).args;
+    if(args.some(arg=>arg.key==='cull-face'&&arg.value.trim()!=='none'||arg.key==='flatten'&&arg.value.trim()!=='false'))return {index:view.index,parts:null};
+    const belongs=call=>{for(let parent=call.group;parent;parent=parent.group)if(parent===owner)return true;return false;};
+    const planeParts=new Map(workspace.planes.filter(plane=>plane.view===view.index).map(plane=>[plane.key,{type:'plane',key:plane.key,order:plane.wrapperStart,owners:new Set(),depthPoints:[]}]));
+    const parts=[],visible=calls.map((call,index)=>({call,index})).filter(({call,index})=>!call.container&&belongs(call)&&split.layers.some(layer=>layer.owner===index&&layer.bounds));
+    let supported=!calls.some((call,index)=>!call.container&&!belongs(call)&&split.layers.some(layer=>layer.owner===index&&layer.bounds));
+    let adaptiveDepth=true;
+    const point=value=>{
+      const match=/^\(\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:\s*,\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)))?\s*,?\s*\)$/.exec(value.trim());
+      return match?[Number(match[1]),Number(match[2]),Number(match[3]||0)]:null;
+    };
+    for(const {call,index} of visible){
+      const planes=workspace.planes.filter(plane=>plane.view===view.index&&call.start>=plane.bodyStart&&call.end<=plane.bodyEnd).sort((a,b)=>b.bodyStart-a.bodyStart);
+      const callArgs=argumentsOf(call.call).args,coordinates=callArgs.filter(arg=>!arg.named).map(arg=>point(arg.value));
+      if(callArgs.some(arg=>arg.key==='no-bounds'&&arg.value.trim()!=='false'))adaptiveDepth=false;
+      if(planes.length){
+        const plane=planes[0],part=planeParts.get(plane.key);part.owners.add(index);
+        const prior=codeOnly(source.slice(plane.bodyStart,call.start));
+        if(call.group!==calls[plane.index]||/\b(?:translate|rotate|scale|set-transform|set-origin)\s*\(/.test(prior))adaptiveDepth=false;
+        if(call.name==='rect'&&coordinates.length===2&&coordinates.every(p=>p&&p[2]===0)&&!callArgs.some(arg=>arg.key==='radius'&&Number(arg.value)!==0)){
+          const [a,b]=coordinates;part.depthPoints.push(a,[a[0],b[1],0],b,[b[0],a[1],0]);
+        }else if(call.name==='line'&&coordinates.length===2&&coordinates.every(p=>p&&p[2]===0))part.depthPoints.push(...coordinates);
+        else if(call.name==='content'&&coordinates[0]&&coordinates[0][2]===0)part.depthPoints.push(coordinates[0]);
+        else adaptiveDepth=false;
+        continue;
+      }
+      if(call.group===owner&&call.name==='line'&&coordinates.length===2&&coordinates.every(Boolean))
+        parts.push({type:'line',order:call.start,points:coordinates,svg:split.compose(new Set([index]))});
+      else if(call.group===owner&&call.name==='content'&&coordinates[0])
+        parts.push({type:'point',order:call.start,points:[coordinates[0]],svg:split.compose(new Set([index]))});
+      else supported=false;
+    }
+    if(split.layers.some(layer=>layer.owner==null&&/<(?:path|use|image|text)\b/.test(layer.svg.replace(/<defs\b[\s\S]*?<\/defs>/g,''))))supported=false;
+    for(const part of planeParts.values())parts.push({...part,owners:undefined,svg:part.owners.size?split.compose(part.owners):null});
+    parts.sort((a,b)=>a.order-b.order);
+    // Small, numeric snap metadata stays independent of orbit textures.
+    view.snapPoints=parts.filter(part=>['line','point'].includes(part.type)&&!transforms.get(view.index).some(at=>at<part.order)).flatMap(part=>part.points).slice(0,512);
+    const angles=['x','y','z'].map(axis=>{
+      const value=args.find(arg=>arg.key===axis)?.value||SCHEMAS.ortho[axis];
+      return /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)deg\s*$/.test(value)?Number(value.trim().slice(0,-3)):null;
+    });
+    const rawDistance=args.find(arg=>arg.key==='distance')?.value||'auto';
+    const distance=rawDistance.trim()==='auto'?'auto':/^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*$/.test(rawDistance)?Number(rawDistance):null;
+    return {index:view.index,kind:view.kind,angles,distance,adaptiveDepth,sorted:!args.some(arg=>arg.key==='sorted'&&arg.value.trim()==='false'),parts:supported&&parts.length?parts:null};
+  }) };
+  const finalBackground=background.replace(/cetzWorkspace=[^;]*;/,`cetzWorkspace=${encodeURIComponent(JSON.stringify(workspace))};cetzOrbit=${encodeURIComponent(JSON.stringify(orbit))};`);
   return { mode: '3d', calls, canvas, source, calibration: null, workspace,
-    xml: `<?xml version="1.0" encoding="UTF-8"?><mxfile host="GUI-CeTZ"><diagram id="cetz-canvas" name="CeTZ 3D"><mxGraphModel grid="0" page="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/>${finalBackground}${guides}${image}${handles}</root></mxGraphModel></diagram></mxfile>` };
+    xml: `<?xml version="1.0" encoding="UTF-8"?><mxfile host="GUI-CeTZ"><diagram id="cetz-canvas" name="CeTZ 3D"><mxGraphModel grid="0" page="0"><root><mxCell id="0"/><mxCell id="1" parent="0"/>${finalBackground}${image}${handles}</root></mxGraphModel></diagram></mxfile>` };
 }
 
-function grid3D(view, vertex, fixed) {
-  if (!view.matrix) return '';
-  let result = '', index = 0;
+function grid3D(view) {
+  const result = { minor: [], major: [], axes: [] };
+  if (!view.matrix) return result;
   const limit=Math.max(100000,...Object.values(view.bounds||{}).map(value=>Math.abs(value)*20));
-  function edge(id, a, b, color, width, opacity, arrow = 'none') {
+  function edge(a, b) {
     const p = project(view.matrix, a), q = project(view.matrix, b);
-    if (!p || !q || [...p,...q].some(v => Math.abs(v) > limit)) return;
-    result += `<mxCell id="${id}" value="" style="${fixed}edgeStyle=none;selectable=0;pointerEvents=0;strokeColor=${color};strokeWidth=${width};strokeOpacity=${opacity};endArrow=${arrow};" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="${px(p[0])}" y="${px(p[1])}" as="sourcePoint"/><mxPoint x="${px(q[0])}" y="${px(q[1])}" as="targetPoint"/></mxGeometry></mxCell>`;
+    if (!p || !q || [...p,...q].some(v => Math.abs(v) > limit)) return null;
+    return [...p,...q].map(px);
   }
   const extent=view.gridRange||5;
   let step=0.25;while(extent/step>40)step*=2;
@@ -260,16 +339,16 @@ function grid3D(view, vertex, fixed) {
   for (const plane of ['xy','xz','zy']) for (let i = -count; i <= count; i++) {
     if (i === 0) continue;
     const t = i * step, major = Math.abs(t-Math.round(t))<1e-8;
-    edge(`cetz-grid3d-${view.index}-${index++}`, planePoint(plane,0,t,-extent), planePoint(plane,0,t,extent), '#8594a8', major ? 0.8 : 0.5, major ? 32 : 14);
-    edge(`cetz-grid3d-${view.index}-${index++}`, planePoint(plane,0,-extent,t), planePoint(plane,0,extent,t), '#8594a8', major ? 0.8 : 0.5, major ? 32 : 14);
+    for (const line of [edge(planePoint(plane,0,t,-extent), planePoint(plane,0,t,extent)),
+      edge(planePoint(plane,0,-extent,t), planePoint(plane,0,extent,t))]) {
+      if (line) result[major ? 'major' : 'minor'].push(line);
+    }
   }
   [['X','#d64b4b',0],['Y','#309b56',1],['Z','#397bd5',2]].forEach(([name,color,axis]) => {
     const ranges=view.axisRanges?.[axis]||[-5,5];
     const start=[0,0,0],end=[0,0,0];start[axis]=ranges[0];end[axis]=ranges[1];
-    edge(`cetz-axis-3d-${view.index}-${name}`, start, end, color, 2, 85, 'classic');
-    const p = project(view.matrix, end);
-    if (p) result += vertex(`cetz-axis-3d-${view.index}-${name}-label`, `${fixed}text;selectable=0;pointerEvents=0;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;fontColor=${color};fontSize=13;html=0;`,
-      {x:px(p[0]+4),y:px(p[1]-18),width:30,height:20}).replace('value=""', `value="${name}"`);
+    const line = edge(start, end);
+    if (line) result.axes.push({name, color, line});
   });
   return result;
 }

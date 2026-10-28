@@ -110,7 +110,7 @@ async function applySourcePatches(session, source, patches, deferInvalid = false
   if(session.editable?.planeContext && patches.some(patch=>patch.start<session.editable.planeContext.bodyStart||patch.end>session.editable.planeContext.bodyEnd))
     throw new Error('This edit would affect another drawing plane. Edit it in the 3D view.');
   const expected = sourceWithPatches(before, patches);
-  const nextKey=patches.activePlaneKey||require('./plane-editor').rebasePlaneKey(session.activePlaneKey,before,expected);
+  const nextKey=Object.hasOwn(patches,'activePlaneKey')?patches.activePlaneKey:require('./plane-editor').rebasePlaneKey(session.activePlaneKey,before,expected);
   // A GUI edit must preserve an editable preview. Otherwise renderDiagram's
   // fallback would replace all handles with a locked image after the write.
   let prepared;
@@ -262,7 +262,7 @@ async function syncToSource(session) {
     }
     if (!session.editable) throw new Error('This canvas has no editable CeTZ shapes.');
     try {
-      if (session.editable.mode === '3d' && !['properties', 'focus', 'select', 'export', 'create-view', 'plane-create', 'plane-settings', 'camera-position'].includes(sourceCommand.action))
+      if (session.editable.mode === '3d' && !['properties', 'focus', 'select', 'export', 'create-view', 'plane-create', 'plane-settings', 'plane-delete', 'camera-position', 'projection-kind', 'spatial-edit'].includes(sourceCommand.action))
         throw new Error(require('./three-dimensional').MESSAGE);
       if (sourceCommand.action === 'copy') {
         await vscode.env.clipboard.writeText(copyShapes(source.getText(), session.editable, sourceCommand.indices));

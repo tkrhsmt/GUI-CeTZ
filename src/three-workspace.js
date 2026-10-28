@@ -113,6 +113,7 @@ function planePoint(plane, offset, u, v) {
   return [offset,v,u];
 }
 function insertion3D(source, rendered, payload, trustedCall) {
+  if(payload?.space==='xyz')return spatialInsertion3D(source,rendered,payload);
   if (!payload || !Number.isInteger(payload.view) || !['xy','xz','zy'].includes(payload.plane) ||
       !Number.isFinite(payload.offset) || Math.abs(payload.offset) > 1000000)
     throw new Error('Choose a valid 3D view, drawing plane and offset.');
@@ -123,8 +124,40 @@ function insertion3D(source, rendered, payload, trustedCall) {
   const legacy = /@preview\/cetz:0\.4\./.test(source);
   const func = payload.plane === 'zy' ? (legacy ? 'on-yz' : 'on-zy') : 'on-' + payload.plane;
   const axis = {xy:'z',xz:'y',zy:'x'}[payload.plane];
-  const text = `\ncetz.draw.${func}(${axis}: ${coordinate(payload.offset)}, {\n  import cetz.draw: *\n  ${call}\n})\n`;
   const at=require('./plane-editor').cameraInfo(source,target).end;
+  const localCall=require('./templates').hasDrawImport(source,at)?call:'cetz.draw.'+call;
+  const text = `\ncetz.draw.${func}(${axis}: ${coordinate(payload.offset)}, {\n  ${localCall}\n})\n`;
   return {start:at, end:at, text};
 }
-module.exports = { probesFor, calibratedViews, calibratedPlanes, axisRanges, project, fitCamera, planePoint, insertion3D, solve };
+function spatialInsertion3D(source,rendered,payload){
+  const count={line:2,content:1}[payload.name],points=payload.points;
+  if(!count||!Array.isArray(points)||points.length!==count||points.some(p=>!Array.isArray(p)||p.length!==3||p.some(n=>!Number.isFinite(n)||Math.abs(n)>1e6)))
+    throw new Error('Enter finite XYZ coordinates for the 3D points.');
+  if(count===2&&Math.hypot(...points[0].map((n,i)=>n-points[1][i]))<1e-6)throw new Error('Choose distinct 3D start and end points.');
+  const view=rendered.workspace?.views.find(v=>v.index===payload.view),target=view&&rendered.calls[view.index];
+  if(!target||!view.matrix||payload.base!==target.call||source.slice(target.start,target.end)!==target.call)
+    throw new Error('The 3D view changed. Choose the tool again.');
+  const coordinates=points.map(p=>'('+p.map(coordinate).join(', ')+')');
+  if(payload.name==='content'&&(typeof payload.text!=='string'||payload.text.length>10000))throw new Error('Enter text for the 3D label.');
+  const call=payload.name==='line'?'line('+coordinates.join(', ')+')':'content('+coordinates[0]+', '+JSON.stringify(payload.text)+')';
+  const at=require('./plane-editor').cameraInfo(source,target).end;
+  return {start:at,end:at,text:'\ncetz.draw.'+call+'\n'};
+}
+function spatialEditPatches(source,rendered,payload){
+  const object=rendered.workspace?.objects?.find(object=>object.index===payload?.index),call=object&&rendered.calls[object.index];
+  const view=object&&rendered.workspace.views.find(view=>view.index===object.view),points=payload?.points,count=object?.kind==='line'?2:1;
+  if(!object||!object.guidable||!call||payload.base!==call.call||payload.viewBase!==view.base||source.slice(call.start,call.end)!==call.call)
+    throw new Error('The 3D object changed. Select it again before editing.');
+  if(!Array.isArray(points)||points.length!==count||points.some(p=>!Array.isArray(p)||p.length!==3||p.some(n=>!Number.isFinite(n)||Math.abs(n)>1e6)))
+    throw new Error('Enter finite XYZ coordinates for the 3D points.');
+  if(count===2&&Math.hypot(...points[0].map((n,i)=>n-points[1][i]))<1e-6)throw new Error('Choose distinct 3D start and end points.');
+  const values=Object.fromEntries(points.flatMap((p,i)=>p.every((n,j)=>n===object.points[i][j])?[]:[['$'+i,'('+p.map(coordinate).join(', ')+')']]));
+  if(Object.hasOwn(payload,'text')){
+    if(object.kind!=='content'||typeof payload.text!=='string'||payload.text.length>10000)throw new Error('Enter text for the 3D label.');
+    if(payload.text!==object.text)values.$1=JSON.stringify(payload.text);
+  }
+  if(!Object.keys(values).length)return [];
+  const patches=require('./properties').propertyPatches(rendered,{indices:[object.index],value:encodeURIComponent(JSON.stringify({base:call.call,values}))});
+  patches.selectStart=call.start;return patches;
+}
+module.exports = { probesFor, calibratedViews, calibratedPlanes, axisRanges, project, fitCamera, planePoint, insertion3D, spatialEditPatches, solve };

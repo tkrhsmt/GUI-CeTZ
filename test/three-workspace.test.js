@@ -23,11 +23,13 @@ test('measured world axes and grid match CeTZ physical units and never become ed
   assert.ok(Math.abs(p[0]-570.8661417)<0.00001);
   assert.ok(Math.abs(p[1]-429.1338583)<0.00001);
   const cells = readAllCells(rendered.xml);
-  const grids = [...cells].filter(([id])=>id.startsWith('cetz-grid3d-'));
-  assert.equal(grids.length,240);
-  const axes = [...cells].filter(([id])=>/^cetz-axis-3d-.*-[XYZ]$/.test(id));
-  assert.equal(axes.length,3);
-  for (const [,item] of grids.concat(axes)) assert.match(item.cell.style,/selectable=0/);
+  assert.equal([...cells.keys()].filter(id=>/^cetz-(grid3d|axis-3d)-/.test(id)).length,0,
+    'guides have no Draw.io cells to select, hit test, serialize or validate');
+  const guides=rendered.workspace.views[0].guides;
+  assert.equal(guides.minor.length+guides.major.length,240);
+  assert.deepEqual(guides.axes.map(axis=>axis.name),['X','Y','Z']);
+  const x=guides.axes[0].line;
+  assert.ok(x[0]<500&&x[2]>600);assert.equal(x[1],500);assert.equal(x[3],500);
   assert.deepEqual(patchesFromEditable(source,rendered,rendered.xml,readAllCells),[]);
 });
 
@@ -103,4 +105,54 @@ test('plane click mapping agrees with actual CeTZ projected line origins, includ
     const expected=project(rendered.workspace.views[0].matrix,planePoint(plane,2,3,4));
     assert.ok(Math.hypot(actual[0]-expected[0],actual[1]-expected[1])<0.00002,version+'/'+plane);
   }
+});
+
+test('3D placement uses visible imports or a qualified call without adding a plane-local import',async()=>{
+  for(const imported of [true,false]){
+    const source=sourceFor('cetz.draw.ortho({cetz.draw.line((0,0,0),(1,1,1))})').replace('import cetz.draw: *',imported?'import cetz.draw: *':'');
+    const rendered=await renderEditable(source,locateCanvases(source)[0],file);
+    const patch=insertion3D(source,rendered,{view:rendered.workspace.views[0].index,plane:'xy',offset:0,name:'circle',points:[[0,0],[1,0]]});
+    assert.ok(!patch.text.includes('import'));assert.ok(patch.text.includes(imported?'  circle(':'  cetz.draw.circle('));
+    const updated=source.slice(0,patch.start)+patch.text+source.slice(patch.end);
+    await renderEditable(updated,locateCanvases(updated)[0],file);
+  }
+});
+
+for(const kind of ['ortho','perspective'])test(`raw XYZ line and label placement validate and render directly in ${kind} without a plane`,async()=>{
+  let source=sourceFor(kind+'(x:20deg,y:30deg,{})','0.5.3'),full=await render(source);
+  const insert=(name,points,extra={})=>insertion3D(source,full,{space:'xyz',view:full.workspace.views[0].index,base:full.workspace.views[0].base,name,points,...extra});
+  const patch=insert('line',[[1,2,3],[-2,4,1]]);source=apply(source,[patch]);full=await render(source);
+  assert.ok(source.includes('cetz.draw.line((1, 2, 3), (-2, 4, 1))'));assert.equal(full.workspace.planes.length,0);assert.ok(full.workspace.views[0].snapPoints.some(p=>p.join(',')==='1,2,3'));
+  const text='XYZ "label"\n#[]';source=apply(source,[insert('content',[[2,1,3]],{text})]);full=await render(source);
+  assert.ok(source.includes(JSON.stringify(text)));assert.equal(full.workspace.planes.length,0);
+  assert.throws(()=>insert('line',[[0,0,0],[0,0,0]]),/distinct/);
+  assert.throws(()=>insert('line',[[0,0,NaN],[1,1,1]]),/finite/);
+  assert.throws(()=>insert('rect',[[0,0,0],[1,1,1]]),/finite/);
+  assert.throws(()=>insert('line',[[0,0,0],[1,1,1]],{base:'stale'}),/changed/);
+  assert.throws(()=>insert('content',[[0,0,0]],{text:{unsafe:true}}),/text/);
+  const marker='<mxCell id="xyz" style="cetzTemplate=line;cetzPlacement3D='+encodeURIComponent(JSON.stringify({space:'xyz',view:full.workspace.views[0].index,base:full.workspace.views[0].base,points:[[2,2,2],[3,3,3]]}))+';" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell>';
+  source=apply(source,patchesFromEditable(source,full,full.xml.replace('</root>',marker+'</root>'),readAllCells));await render(source);
+  assert.ok(source.includes('cetz.draw.line((2, 2, 2), (3, 3, 3))'));
+});
+
+for(const projection of ['ortho','perspective'])test(`existing ${projection} XYZ objects edit coordinates and text while preserving comments and style`,async()=>{
+  let source=sourceFor(projection+'(x:20deg,y:30deg,{line(/* start */ (1,2,3), (4,5,6), stroke:red, mark:(end:">"))\ncontent((2,1,3), [Label], anchor:"south", angle:20deg)\non-xy({line((0,0),(2,1))})})','0.5.3'),full=await render(source);
+  const {spatialEditPatches}=require('../src/three-workspace');
+  assert.equal(full.workspace.objects.length,2);let object=full.workspace.objects.find(o=>o.kind==='line');
+  const payload={index:object.index,base:object.base,viewBase:full.workspace.views[0].base,points:[[2,3,4],[4,5,6]]};
+  assert.throws(()=>spatialEditPatches(source,full,{...payload,base:'stale'}),/changed/);
+  assert.throws(()=>spatialEditPatches(source,full,{...payload,viewBase:'stale'}),/changed/);
+  assert.throws(()=>spatialEditPatches(source,full,{...payload,points:[[1,1,1],[1,1,1]]}),/distinct/);
+  source=apply(source,spatialEditPatches(source,full,payload));full=await render(source);
+  assert.ok(source.includes('line(/* start */ (2, 3, 4), (4,5,6), stroke:red, mark:(end:">"))'));assert.ok(source.includes('on-xy({line((0,0),(2,1))})'));
+  object=full.workspace.objects.find(o=>o.kind==='content');
+  source=apply(source,spatialEditPatches(source,full,{index:object.index,base:object.base,viewBase:full.workspace.views[0].base,points:[[3,4,5]],text:'Edited "XYZ"'}));full=await render(source);
+  assert.ok(source.includes('content((3, 4, 5), "Edited \\"XYZ\\"", anchor:"south", angle:20deg)'));assert.equal(full.workspace.objects.find(o=>o.kind==='content').text,'Edited "XYZ"');
+});
+
+test('expression text survives XYZ position editing and transformed coordinates retain property editing',async()=>{
+  let source=sourceFor('let text=[*Expression*]\northo({content((1,2,3),text)\ntranslate(x:2)\nline((1,2,3),(3,4,5))})','0.5.3'),full=await render(source);
+  const {spatialEditPatches}=require('../src/three-workspace'),object=full.workspace.objects.find(o=>o.kind==='content');
+  assert.equal(object.text,null);source=apply(source,spatialEditPatches(source,full,{index:object.index,base:object.base,viewBase:full.workspace.views[0].base,points:[[2,3,4]]}));full=await render(source);
+  assert.ok(source.includes('content((2, 3, 4),text)'));assert.equal(full.workspace.objects.find(o=>o.kind==='line').guidable,false);
 });

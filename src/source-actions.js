@@ -7,7 +7,7 @@ const { propertyPatches } = require('./properties');
 const { ACTIONS: PATH_ACTIONS, pathOperationPatches } = require('./path-operations');
 const planePathPatches=(source,rendered,action)=>require('./plane-boolean').localBooleanPatches(source,rendered,action,pathOperationPatches);
 
-const ACTIONS = new Set([...PATH_ACTIONS, 'workspace-mode', 'plane-create', 'plane-settings', 'camera-position', 'create-view', 'properties', 'copy', 'paste', 'duplicate', 'forward', 'backward', 'focus', 'select', 'export',
+const ACTIONS = new Set([...PATH_ACTIONS, 'workspace-mode', 'plane-create', 'plane-settings', 'plane-delete', 'camera-position', 'projection-kind', 'spatial-edit', 'create-view', 'properties', 'copy', 'paste', 'duplicate', 'forward', 'backward', 'focus', 'select', 'export',
   'connect-straight', 'connect-elbow', 'reconnect', 'group', 'ungroup',
   'share-point', 'auto-share', 'detach-point', 'rename-anchor',
   'rotate', 'scale', 'move-before', 'move-after', 'front', 'back']);
@@ -80,7 +80,7 @@ function sourceAction(cells, originalCells, handledIds = new Set()) {
     const key = token || id;
     if (handledIds.has(key)) continue;
     const targets = /(?:^|;)cetzTargets=([\d,]+)(?:;|$)/.exec(style)?.[1];
-    if (!targets && action !== 'export' && action !== 'paste' && action !== 'create-view' && action !== 'workspace-mode' && action !== 'plane-create' && action !== 'plane-settings' && action !== 'camera-position') throw new Error('Select a CeTZ shape first.');
+    if (!targets && action !== 'export' && action !== 'paste' && action !== 'create-view' && action !== 'workspace-mode' && action !== 'plane-create' && action !== 'plane-settings' && action !== 'plane-delete' && action !== 'camera-position' && action !== 'projection-kind' && action !== 'spatial-edit') throw new Error('Select a CeTZ shape first.');
     const indices = targets ? [...new Set(targets.split(',').map(Number))] : [];
     if (indices.some(index => !Number.isSafeInteger(index) || index < 0))
       throw new Error('Invalid CeTZ shape selection.');
@@ -578,10 +578,11 @@ function sourceActionPatches(source, rendered, action, pending = []) {
       if(referenced)throw new Error('A name is referenced outside this drawing plane. Update that reference in Typst before changing its structure.');
     }
   }
-  if(rendered.mode==='3d' && ['plane-create','plane-settings','camera-position'].includes(action.action)){
+  if(rendered.mode==='3d'&&action.action==='spatial-edit')return require('./three-workspace').spatialEditPatches(source,rendered,JSON.parse(decodeURIComponent(action.value||'')));
+  if(rendered.mode==='3d' && ['plane-create','plane-settings','plane-delete','camera-position','projection-kind'].includes(action.action)){
     const payload=JSON.parse(decodeURIComponent(action.value||''));
     const editor=require('./plane-editor');
-    return action.action==='plane-create'?editor.createPlanePatches(source,rendered,payload):action.action==='camera-position'?editor.cameraPositionPatches(source,rendered,payload):editor.planeSettingsPatches(source,rendered,payload);
+    return action.action==='plane-delete'?editor.deletePlanePatches(source,rendered,payload):action.action==='projection-kind'?editor.projectionPatches(source,rendered,payload):action.action==='plane-create'?editor.createPlanePatches(source,rendered,payload):action.action==='camera-position'?editor.cameraPositionPatches(source,rendered,payload):editor.planeSettingsPatches(source,rendered,payload);
   }
   if (rendered.mode === '3d' && action.action === 'create-view') {
     if (rendered.workspace?.views.length) throw new Error('This canvas already has a 3D view.');

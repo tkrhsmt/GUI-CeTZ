@@ -114,6 +114,8 @@ function splitSvgLayers(svg, count, excludedOwners = new Set()) {
     return open + body + defs + document.close;
   };
   return {
+    compose: owners => wrap([...fragments].filter(([key]) => owners.has(layers[key].owner) && !excludedOwners.has(layers[key].owner))
+      .map(([, value]) => value).join('')),
     svg: wrap([...fragments].filter(([key]) => !excludedOwners.has(layers[key].owner)).map(([, value]) => value).join('')),
     layers: layers.flatMap((layer, key) => {
       const body = fragments.get(key);

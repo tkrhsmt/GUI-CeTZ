@@ -4,13 +4,57 @@ const {locateCanvases}=require('../src/scanner');
 const {renderEditable,patchesFromEditable}=require('../src/advanced');
 const {readAllCells}=require('../src/drawio');
 const {sourceActionPatches}=require('../src/source-actions');
-const {createPlanePatches,planeSettingsPatches,cameraPositionPatches,renderPlane2D,convertTo3D,resolvePlane}=require('../src/plane-editor');
+const {createPlanePatches,deletePlanePatches,planeSettingsPatches,cameraPositionPatches,renderPlane2D,convertTo3D,resolvePlane}=require('../src/plane-editor');
 const file=path.resolve('examples/three-dimensional.typ');
 const doc=(body,v='0.5.2')=>`#import "@preview/cetz:${v}"\n#cetz.canvas({import cetz.draw: *\n${body}\n})`;
 const canvas=s=>locateCanvases(s)[0];
 const render=s=>renderEditable(s,canvas(s),file);
 const apply=(s,patches)=>patches.sort((a,b)=>b.start-a.start).reduce((s,p)=>s.slice(0,p.start)+p.text+s.slice(p.end),s);
 const pose={kind:'xy',position:[2,-3,4],angles:[25,-15,80]};
+
+test('new planes append in source/list order and deleting a plane removes its entire managed body',async()=>{
+  const {planeCode}=require('../src/plane-editor');
+  let source=doc('ortho({on-xy({rect((0,0),(2,1))})\non-xz({circle((3,1),radius:1)})\n'+
+    planeCode('','gui-plane-1',pose,'\nlet r=2\ncetz.draw.circle((1,1),radius:r)\ncetz.draw.rect((0,0),(2,1))\n')+'\n})');
+  let full=await render(source),before=full.workspace.planes.map(p=>p.base);
+  const added=createPlanePatches(source,full,{...pose,view:full.workspace.views[0].index});
+  source=apply(source,added);full=await render(source);
+  assert.deepEqual(full.workspace.planes.slice(0,-1).map(p=>p.base),before);assert.equal(full.workspace.planes.at(-1).key,added.activePlaneKey);
+  const plane=full.workspace.planes.find(p=>p.key==='gui-plane-1');
+  assert.throws(()=>deletePlanePatches(source,full,{key:plane.key,base:'stale'}),/changed/);
+  const patches=deletePlanePatches(source,full,{key:plane.key,base:plane.base});source=apply(source,patches);full=await render(source);
+  assert.ok(!source.includes('let r=2'));assert.ok(!source.includes('radius:r'));assert.ok(!source.includes('// GUI-CeTZ plane: "gui-plane-1"'));
+  assert.deepEqual(full.workspace.planes.map(p=>p.base),[...before.slice(0,2),full.workspace.planes.at(-1).base]);
+  assert.equal(full.workspace.planes.at(-1).key,patches.activePlaneKey);
+});
+
+test('deleting an inline legacy plane consumes its separator and preserves adjacent planes',async()=>{
+  let source=doc('ortho({on-xy({rect((0,0),(1,1))});on-xz({circle((2,2),radius:1)})})'),full=await render(source);
+  const plane=full.workspace.planes[0],patches=deletePlanePatches(source,full,{key:plane.key,base:plane.base});
+  source=apply(source,patches);full=await render(source);
+  assert.ok(!source.includes('rect('));assert.equal(full.workspace.planes[0].key,patches.activePlaneKey);
+  const last=full.workspace.planes[0],deleted=deletePlanePatches(source,full,{key:last.key,base:last.base});
+  source=apply(source,deleted);full=await render(source);assert.equal(full.workspace.planes.length,0);assert.equal(deleted.activePlaneKey,null);
+});
+
+test('projection switching preserves body, common options and comments, and only changes the chosen view',async()=>{
+  let source=doc('let a=20deg\ncetz.draw.ortho(\n x:a,y:30deg,\n // keep option comment\n flatten:false, /* keep trailing comment */\n {on-xy({rect((0,0),(2,1))})})\northo({circle((5,5),radius:1)})','0.5.3');
+  let full=await render(source),view=full.workspace.views[0];
+  const body=source.slice(full.calls[view.index].bodyStart,full.calls[view.index].bodyEnd);
+  const switchTo=(kind,setting)=>sourceActionPatches(source,full,{action:'projection-kind',value:encodeURIComponent(JSON.stringify({view:view.index,base:view.base,kind,setting})),indices:[]});
+  source=apply(source,switchTo('perspective','12'));full=await render(source);view=full.workspace.views[0];
+  assert.equal(view.kind,'perspective');assert.match(source,/cetz.draw.perspective\(/);assert.match(source,/distance: 12/);
+  assert.ok(!source.includes('flatten:'));assert.ok(source.includes('// keep option comment'));assert.ok(source.includes('/* keep trailing comment */'));
+  assert.ok(source.includes('x:a,y:30deg'));assert.ok(source.includes('ortho({circle((5,5),radius:1)})'));
+  assert.equal(source.slice(full.calls[view.index].bodyStart,full.calls[view.index].bodyEnd),body);
+  source=apply(source,switchTo('ortho','false'));full=await render(source);view=full.workspace.views[0];
+  assert.equal(view.kind,'ortho');assert.ok(!source.includes('distance:'));assert.ok(source.includes('flatten: false'));
+  assert.deepEqual(switchTo('ortho'),[]);
+  const {projectionPatches}=require('../src/plane-editor');
+  assert.throws(()=>projectionPatches(source,full,{view:view.index,base:'stale',kind:'perspective'}),/changed/);
+  assert.throws(()=>projectionPatches(source,full,{view:view.index,base:view.base,kind:'oblique'}),/Choose/);
+  assert.throws(()=>projectionPatches(source,full,{view:view.index,base:view.base,kind:'perspective',setting:'1, x:0deg'}),/one property/);
+});
 
 for(const version of ['0.4.2','0.5.2'])test(`arbitrary plane transforms and local 2D edits round-trip in CeTZ ${version}`,async()=>{
   let source=doc('ortho({on-xz({circle((8,8),radius:1)})})',version), full=await render(source);
@@ -107,4 +151,15 @@ test('plane-local grouping avoids names in other planes and refuses external anc
   const external=original.replace('group(name:"group-1",{rect((5,5),(6,6))})','line("a.start",(5,5))');
   const scene=await render(external),plane=await renderPlane2D(external,canvas(external),'gui-plane-1',file,scene);
   assert.throws(()=>sourceActionPatches(external,plane,{action:'group',indices:[0,1]}),/outside this drawing plane/);
+});
+
+test('plane-local placement and duplication inherit outer draw imports without writing another import',async()=>{
+  let source=doc('ortho({on-xy({rect((0,0),(2,1))})\non-xz({circle((4,4),radius:1)})})','0.5.3');
+  let full=await render(source),local=await renderPlane2D(source,canvas(source),full.workspace.planes[0].key,file,full);
+  const marker='<mxCell id="new" style="cetzTemplate=circle;cetzPoints=%5B%5B1%2C1%5D%2C%5B2%2C1%5D%5D;" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell>';
+  const patches=patchesFromEditable(source,local,local.xml.replace('</root>',marker+'</root>'),readAllCells);
+  source=apply(source,patches);full=await render(source);local=await renderPlane2D(source,canvas(source),full.workspace.planes[0].key,file,full);
+  assert.equal((source.match(/import cetz\.draw: \*/g)||[]).length,1);assert.equal(local.calls.length,2);
+  source=apply(source,sourceActionPatches(source,local,{action:'duplicate',indices:[0]}));full=await render(source);
+  assert.equal((source.match(/import cetz\.draw: \*/g)||[]).length,1);assert.equal(full.workspace.planes.length,2);
 });

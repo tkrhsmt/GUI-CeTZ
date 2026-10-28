@@ -1,7 +1,7 @@
 'use strict';
 
-const { skipTrivia, closing, locateCanvases } = require('./scanner');
-const { argumentsOf } = require('./properties');
+const { skipTrivia, closing, locateCanvases, deletionRange } = require('./scanner');
+const { argumentsOf, expression } = require('./properties');
 const { coordinate } = require('./snapping');
 
 const PLANE_NAMES = new Set(['on-xy','on-xz','on-zy','on-yz']);
@@ -88,6 +88,27 @@ function cameraPositionPatches(source,rendered,payload) {
   return [{start:call.bodyStart,end:info.end,text:'\n// GUI-CeTZ camera-position: '+JSON.stringify(position)+'\n'+
     'cetz.draw.translate('+['x','y','z'].map((axis,i)=>axis+': '+coordinate(-position[i])).join(', ')+')\n'}];
 }
+function projectionPatches(source,rendered,payload) {
+  if (!payload || !['ortho','perspective'].includes(payload.kind)) throw new Error('Choose ortho or perspective.');
+  const view=rendered.workspace.views.find(view=>view.index===payload.view),call=view&&rendered.calls[view.index];
+  if (!call || !['ortho','perspective'].includes(call.name) || payload.base!==call.call || source.slice(call.start,call.end)!==call.call)
+    throw new Error('The projection changed. Choose its view again.');
+  if (call.name===payload.kind) return [];
+  const parsed=argumentsOf(call.call),unsupported=payload.kind==='ortho'?'distance':'flatten',parts=[];
+  let trivia='';
+  for (const arg of parsed.args) {
+    if (arg.empty) { trivia+=call.call.slice(arg.start,arg.end); continue; }
+    if (arg.key===unsupported) {
+      // Keep comments surrounding a removed, projection-specific option.
+      trivia+=call.call.slice(arg.start,skipTrivia(call.call,arg.start))+call.call.slice(arg.valueEnd,arg.end);
+    } else { parts.push(trivia+call.call.slice(arg.start,arg.end)); trivia=''; }
+  }
+  const option=payload.kind==='ortho'?'flatten':'distance';
+  if (payload.setting) parts.unshift(option+': '+expression(payload.setting));
+  const prefix=call.call.startsWith('cetz.draw.')?'cetz.draw.':'';
+  return [{start:call.start,end:call.end,text:prefix+payload.kind+call.call.slice(prefix.length+call.name.length,parsed.open+1)+
+    parts.join(',')+trivia+call.call.slice(parsed.end)}];
+}
 function validatePose(payload) {
   if (!payload || !['xy','xz','zy'].includes(payload.kind) ||
       ![payload.position,payload.angles].every(v => Array.isArray(v) && v.length === 3 && v.every(n => Number.isFinite(n) && Math.abs(n) <= VECTOR_LIMIT)))
@@ -114,9 +135,23 @@ function createPlanePatches(source, rendered, payload) {
   const target = view && rendered.calls[view.index];
   if (!target || target.bodyStart == null) throw new Error('Choose a current 3D view.');
   const key = nextPlaneName(source);
-  const at=cameraInfo(source,target).end;
+  const at=target.bodyEnd;
   const patches = [{start:at,end:at,text:'\n'+planeCode(source,key,payload)+'\n'}];
   patches.activePlaneKey = key;
+  return patches;
+}
+function deletePlanePatches(source,rendered,payload) {
+  const planes=rendered.workspace.planes,plane=planes.find(plane=>plane.key===payload?.key);
+  if (!plane || plane.base!==payload.base || source.slice(plane.wrapperStart,plane.wrapperEnd)!==plane.base)
+    throw new Error('The plane changed. Select it again before deleting it.');
+  const range=deletionRange(source,plane.wrapperStart,plane.wrapperEnd);
+  if(range.end===plane.wrapperEnd){
+    const separator=/^[ \t]*;/.exec(source.slice(range.end));
+    if(separator)range.end+=separator[0].length;
+  }
+  const patches=[{...range,text:''}],remaining=planes.filter(p=>p.wrapperStart<plane.wrapperStart||p.wrapperEnd>plane.wrapperEnd);
+  const next=remaining.find(p=>p.view===plane.view&&p.wrapperStart>plane.wrapperStart)||[...remaining].reverse().find(p=>p.view===plane.view)||remaining[0];
+  patches.activePlaneKey=next?(next.managed?next.key:'source-plane-'+(next.start-(next.start>=range.end?range.end-range.start:0))):null;
   return patches;
 }
 function planeSettingsPatches(source, rendered, payload) {
@@ -204,6 +239,8 @@ function planeCanvas(source, canvas, plane) {
   if(!selected) throw new Error('The drawing plane no longer exists.');
   const ancestors=[];
   for(let current=selected;current;current=current.group) ancestors.unshift(current);
+  // Calibration probes use unqualified drawing calls. This import belongs
+  // only to the temporary preview document and is never written to the plane.
   let start=canvas.bodyStart, prelude='import cetz.draw: *\n';
   for(const ancestor of ancestors) {
     prelude+=localPrelude(source.slice(start,ancestor.start));
@@ -234,4 +271,4 @@ async function renderPlane2D(source, canvas, key, filePath, full) {
   local.xml=local.xml.replace(/(<mxCell id="cetz-preview-background"[^>]*style=")/,`$1cetzMode=plane-2d;cetzWorkspace=${encodeURIComponent(JSON.stringify(workspace))};cetzPlaneContext=${encodeURIComponent(JSON.stringify(local.planeContext))};`);
   return local;
 }
-module.exports={cameraInfo,cameraPositionPatches,PLANE_NAMES,planesFor,planeCode,createPlanePatches,planeSettingsPatches,convertTo3D,resolvePlane,rebasePlaneKey,planeCanvas,renderPlane2D};
+module.exports={cameraInfo,cameraPositionPatches,projectionPatches,deletePlanePatches,PLANE_NAMES,planesFor,planeCode,createPlanePatches,planeSettingsPatches,convertTo3D,resolvePlane,rebasePlaneKey,planeCanvas,renderPlane2D};

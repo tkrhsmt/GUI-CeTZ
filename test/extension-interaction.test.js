@@ -466,3 +466,67 @@ test('3D plane settings and camera position actions remain source-validated and 
   await until(()=>source.text.includes('camera-position: [4,5,6]')&&workspace().views[0].position[0]===4);
   assert.equal(workspace().activePlaneKey,'gui-plane-1');
 });
+
+test('workspace projection actions update Typst and rebase the active legacy plane',async t=>{
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,{on-xy({rect((0,0),(2,1))})})\n})';
+  const {source,gui,action,save,until}=await extensionFixture(t,initial);
+  const workspace=()=>JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  function send(name,payload){
+    const value=encodeURIComponent(JSON.stringify(payload)).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));
+    save(gui.text.replace('</root>',action(name).replace('cetzAction='+name+';','cetzAction='+name+';cetzValue='+value+';')+'</root>'));
+  }
+  send('workspace-mode',{mode:'2d',planeKey:workspace().planes[0].key});
+  await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  send('workspace-mode',{mode:'3d'});await until(()=>gui.text.includes('cetzMode=3d;'));
+  for(const kind of ['perspective','ortho']){
+    const view=workspace().views[0];send('projection-kind',{view:view.index,base:view.base,kind});
+    await until(()=>workspace().views[0].kind===kind&&source.text.includes(kind+'(x:20deg'));
+    assert.ok(source.text.includes('on-xy({rect((0,0),(2,1))})'));
+    assert.ok(workspace().planes.some(p=>p.key===workspace().activePlaneKey));
+  }
+});
+
+test('plane deletion removes its body, keeps other planes and supports source history through the bridge',async t=>{
+  const {planeCode}=require('../src/plane-editor');
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo({'+planeCode('','gui-plane-1',{kind:'xy',position:[1,2,3],angles:[10,20,30]},'\nlet r=2\ncetz.draw.circle((1,1),radius:r)\n')+'\non-xz({rect((3,3),(4,4))})})\n})';
+  const {source,gui,action,save,until}=await extensionFixture(t,initial);
+  const workspace=()=>JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  function remove(plane){const value=encodeURIComponent(JSON.stringify({key:plane.key,base:plane.base})).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));save(gui.text.replace('</root>',action('plane-delete').replace('cetzAction=plane-delete;','cetzAction=plane-delete;cetzValue='+value+';')+'</root>'));}
+  remove(workspace().planes.find(p=>p.key==='gui-plane-1'));
+  await until(()=>!source.text.includes('let r=2')&&workspace().planes.length===1);
+  assert.ok(!source.text.includes('radius:r'));assert.ok(source.text.includes('rect((3,3),(4,4))'));assert.equal(workspace().planes[0].key,workspace().activePlaneKey);
+  const deleted=source.text;
+  save(gui.text.replace('</root>',action('undo')+'</root>'));await until(()=>source.text===initial&&workspace().planes.length===2);
+  save(gui.text.replace('</root>',action('redo')+'</root>'));await until(()=>source.text===deleted&&workspace().planes.length===1);
+  remove(workspace().planes[0]);await until(()=>workspace().planes.length===0&&!source.text.includes('rect('));assert.equal(workspace().activePlaneKey,null);
+});
+
+test('direct XYZ tools insert into the selected projection without a plane and undo as one source change',async t=>{
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({cetz.draw.ortho({})\ncetz.draw.perspective(x:20deg,y:30deg,{})})';
+  const {source,gui,save,action,until}=await extensionFixture(t,initial);
+  const workspace=()=>JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  const view=workspace().views[1],payload=encodeURIComponent(JSON.stringify({space:'xyz',view:view.index,base:view.base,points:[[1,2,3],[4,5,6]]}));
+  const marker='<mxCell id="direct-xyz" style="cetzTemplate=line;cetzPlacement3D='+payload+';" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell>';
+  save(gui.text.replace('</root>',marker+'</root>'));
+  await until(()=>source.text.includes('cetz.draw.line((1, 2, 3), (4, 5, 6))')&&workspace().views[1].snapPoints.length===2);
+  assert.equal(workspace().planes.length,0);assert.ok(source.text.includes('cetz.draw.ortho({})'));
+  const final=source.text;
+  save(gui.text.replace('</root>',action('undo')+'</root>'));await until(()=>source.text===initial&&workspace().views[1].snapPoints.length===0);
+  save(gui.text.replace('</root>',action('redo')+'</root>'));await until(()=>source.text===final&&workspace().views[1].snapPoints.length===2);
+});
+
+test('guided 3D object edits preserve style and other elements and undo in one source transaction',async t=>{
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,y:30deg,{line(/* start */ (1,2,3),(4,5,6),stroke:red,mark:(end:">"))\ncontent((2,1,3),[Label],anchor:"south")\non-xy({rect((0,0),(2,1))})})})';
+  const {source,gui,save,action,until}=await extensionFixture(t,initial);
+  const workspace=()=>JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  function send(payload){const value=encodeURIComponent(JSON.stringify(payload)).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));save(gui.text.replace('</root>',action('spatial-edit').replace('cetzAction=spatial-edit;','cetzAction=spatial-edit;cetzValue='+value+';')+'</root>'));}
+  let object=workspace().objects.find(o=>o.kind==='line');
+  send({index:object.index,base:object.base,viewBase:workspace().views[0].base,points:[[2,3,4],[4,5,6]]});
+  await until(()=>source.text.includes('line(/* start */ (2, 3, 4),(4,5,6)')&&workspace().objects.find(o=>o.kind==='line').points[0][0]===2);
+  assert.ok(source.text.includes('stroke:red,mark:(end:">")'));assert.ok(source.text.includes('content((2,1,3),[Label],anchor:"south")'));assert.ok(source.text.includes('on-xy({rect((0,0),(2,1))})'));
+  const edited=source.text;
+  save(gui.text.replace('</root>',action('undo')+'</root>'));await until(()=>source.text===initial&&workspace().objects.find(o=>o.kind==='line').points[0][0]===1);
+  save(gui.text.replace('</root>',action('redo')+'</root>'));await until(()=>source.text===edited&&workspace().objects.find(o=>o.kind==='line').points[0][0]===2);
+  object=workspace().objects.find(o=>o.kind==='content');send({index:object.index,base:object.base,viewBase:workspace().views[0].base,points:[[3,2,1]],text:'Label'});
+  await until(()=>source.text.includes('content((3, 2, 1),[Label],anchor:"south")')&&workspace().objects.find(o=>o.kind==='content').points[0][0]===3);
+});
