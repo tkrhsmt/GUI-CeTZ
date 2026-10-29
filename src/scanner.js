@@ -34,9 +34,27 @@ function closing(text, open, left, right) {
   if (text[open] !== left) return -1;
   let depth = 0;
   for (let i = open; i < text.length; i++) {
-    if (text[i] === '"') { i = skipString(text, i) - 1; continue; }
+    if (left === '[' && text[i] === '\\') { i++; continue; }
+    if (left !== '[' && text[i] === '"') { i = skipString(text, i) - 1; continue; }
     if (text.startsWith('//', i)) { i = text.indexOf('\n', i + 2); if (i < 0) return -1; continue; }
     if (text.startsWith('/*', i)) { i = skipTrivia(text, i) - 1; continue; }
+    // Parentheses and braces in markup are text, including unmatched ones.
+    // Embedded Typst code still owns its strings and nested content blocks.
+    if (left === '[' && text[i] === '#') {
+      const name = /^#[A-Za-z_][\w.-]*/.exec(text.slice(i));
+      let code = name ? i + name[0].length : i + 1;
+      while ('([{'.includes(text[code] || '\0')) {
+        const end = closing(text, code, text[code], { '(': ')', '[': ']', '{': '}' }[text[code]]);
+        if (end < 0) return -1;
+        code = end + 1;
+      }
+      if (code > i + 1) { i = code - 1; continue; }
+    }
+    if (left !== '[' && text[i] === '[') {
+      i = closing(text, i, '[', ']');
+      if (i < 0) return -1;
+      continue;
+    }
     if (text[i] === left) depth++;
     if (text[i] === right && --depth === 0) return i;
   }
@@ -60,6 +78,26 @@ function splitArgs(text, start, end) {
   }
   parts.push({ start: part, end });
   return parts;
+}
+
+// Typst appends adjacent content blocks to a call's positional arguments.
+// Whitespace (including comments) ends the call: f() [text] is separate content.
+function callArguments(text, open, limit = text.length) {
+  const parenEnd = closing(text, open, '(', ')');
+  if (parenEnd < 0 || parenEnd >= limit) return null;
+  const args = splitArgs(text, open + 1, parenEnd);
+  let end = parenEnd + 1;
+  while (text[end] === '[') {
+    const close = closing(text, end, '[', ']');
+    if (close < 0 || close >= limit) return null;
+    if (end === parenEnd + 1) {
+      // An empty argument list or a final comma adds no positional argument.
+      while (args.length && skipTrivia(text, args.at(-1).start) >= args.at(-1).end) args.pop();
+    }
+    args.push({ start: end, end: close + 1, trailing: true });
+    end = close + 1;
+  }
+  return { parenEnd, end, args };
 }
 
 function locateCanvases(text) {
@@ -100,4 +138,4 @@ function deletionRange(source, start, end) {
     : { start, end };
 }
 
-module.exports = { skipTrivia, closing, splitArgs, locateCanvases, deletionRange };
+module.exports = { skipTrivia, closing, splitArgs, callArguments, locateCanvases, deletionRange };

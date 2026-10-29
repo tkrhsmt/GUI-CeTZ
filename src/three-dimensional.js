@@ -1,6 +1,6 @@
 'use strict';
 
-const { closing, skipTrivia, splitArgs, deletionRange } = require('./scanner');
+const { closing, skipTrivia, splitArgs, callArguments, deletionRange } = require('./scanner');
 const { renderCanvas } = require('./preview');
 const { layerInstrumentation, splitSvgLayers } = require('./svg-layers');
 const { propertyModel, SCHEMAS, argumentsOf } = require('./properties');
@@ -80,13 +80,14 @@ function locate3DCalls(source, canvas) {
       if (!match || /[\w.]/.test(source[i - 1] || '')) { i++; continue; }
       const name = match[1], open = skipTrivia(source, i + match[0].length);
       if (source[open] !== '(') { i += name.length; continue; }
-      const end = closing(source, open, '(', ')');
-      if (end < 0 || end >= limit) { i += name.length; continue; }
+      const parsed = callArguments(source, open, limit);
+      if (!parsed) { i += name.length; continue; }
+      const end = parsed.end - 1;
       const call = { name, start: i, end: end + 1, call: source.slice(i, end + 1), group,
         mode: '3d', points: [], transform: { tx: 0, ty: 0, sx: 1, sy: 1 } };
       if (CONTAINERS.has(name)) {
         call.container = true;
-        for (const arg of splitArgs(source, open + 1, end)) {
+        for (const arg of parsed.args) {
           let brace = skipTrivia(source, arg.start);
           const bodyKey = /^body\s*:\s*/.exec(source.slice(brace, arg.end));
           if (bodyKey) brace = skipTrivia(source, brace + bodyKey[0].length);

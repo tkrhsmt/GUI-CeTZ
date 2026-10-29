@@ -17,6 +17,7 @@ test('typing in Typst does not register cursor-driven virtual document edits', (
     languages: { registerCodeLensProvider() { return disposable; } },
     commands: { registerCommand(name, callback) { commands.set(name, callback); return disposable; } },
     window: {
+      tabGroups: { onDidChangeTabs() { return disposable; } },
       onDidChangeTextEditorSelection() {
         throw new Error('Ordinary Typst cursor movement must not edit the virtual diagram.');
       }
@@ -34,15 +35,18 @@ test('typing in Typst does not register cursor-driven virtual document edits', (
   assert.ok(commands.has('cetzEditor.selectInGui'));
 });
 
-async function extensionFixture(t, initialText) {
+async function extensionFixture(t, initialText, options = {}) {
   const docs = new Map(), errors = [], subscriptions = [];
   const disposable = { dispose() {} };
   const extensionPath = path.resolve(__dirname, '..');
-  let provider, changed, clipboard = '';
+  let provider, changed, tabsChanged, clipboard = '';
+  const commands = new Map(), executedCommands = [], diagramOpens = [];
+  const group = { tabs: [], activeTab: null };
   const uri = parts => ({ authority: '', ...parts, fsPath: parts.path,
     toString() { return this.scheme + ':' + this.path; } });
   function document(uri, text) {
-    const doc = { uri, text, version: 1, getText() { return this.text; }, positionAt(offset) { return offset; } };
+    const doc = { uri, text, version: 1, fileName: uri.path, languageId: 'typst',
+      getText() { return this.text; }, positionAt(offset) { return offset; } };
     docs.set(uri.toString(), doc);
     return doc;
   }
@@ -63,6 +67,7 @@ async function extensionFixture(t, initialText) {
       getConfiguration() { return { get() { return [{ file: path.join(extensionPath, 'src/cetz-drawio-plugin.js') }]; } }; },
       getWorkspaceFolder() {},
       async openTextDocument(uri) {
+        if (uri.scheme === 'gui-cetz') diagramOpens.push(uri);
         return docs.get(uri.toString()) || document(uri, Buffer.from(await provider.readFile(uri)).toString());
       },
       async applyEdit(edit) {
@@ -83,13 +88,27 @@ async function extensionFixture(t, initialText) {
       }
     },
     languages: { registerCodeLensProvider() { return disposable; } },
-    commands: { registerCommand() { return disposable; }, async executeCommand() {} },
-    window: { showErrorMessage(message) { errors.push(message); } }
+    commands: {
+      registerCommand(name, callback) { commands.set(name, callback); return disposable; },
+      async executeCommand(...args) { executedCommands.push(args); }
+    },
+    window: {
+      tabGroups: { all: [group], activeTabGroup: group,
+        onDidChangeTabs(callback) { tabsChanged = callback; return disposable; } },
+      showErrorMessage(message) { errors.push(message); }
+    }
   };
   const originalLoad = Module._load;
   let extension;
   try {
     Module._load = function (name, parent, isMain) {
+      if (name === './render-diagram' && options.beforeRender) {
+        const renderer = originalLoad.call(this, name, parent, isMain);
+        return { async renderDiagram(...args) {
+          await options.beforeRender();
+          return renderer.renderDiagram(...args);
+        } };
+      }
       return name === 'vscode' ? vscode : originalLoad.call(this, name, parent, isMain);
     };
     delete require.cache[require.resolve('../src/extension')];
@@ -101,6 +120,8 @@ async function extensionFixture(t, initialText) {
     '#import "@preview/cetz:0.5.2"\n#cetz.canvas({\n  import cetz.draw: *\n' +
     '  rect((0, 0), (2, 1), name: "a")\n  content("a.center", [Text])\n})');
   const gui = await vscode.workspace.openTextDocument(extension.diagramUri(source.uri, 0));
+  const tab = { input: { uri: gui.uri } };
+  group.tabs.push(tab); group.activeTab = tab;
   let serial = 0;
   function ownerIds(xml = gui.text) {
     return [...readAllCells(xml).keys()].filter(id => /^cetz-edit-\d+$/.test(id));
@@ -128,8 +149,75 @@ async function extensionFixture(t, initialText) {
     assert.ok(predicate(), 'GUI synchronization completes');
   }
   return { source, gui, save, action, until, ownerIds, selectedIndices, removeShapes,
+    diagramOpens, executedCommands, runCommand: name => commands.get(name)(),
+    closeGui() { group.tabs = []; group.activeTab = null; tabsChanged({ closed: [tab], opened: [] }); },
+    reopenGui() { group.tabs = [tab]; group.activeTab = tab; tabsChanged({ closed: [], opened: [tab] }); },
+    activateOtherTab() { group.activeTab = { input: { uri: source.uri } }; },
     editSource(text) { source.text = text; source.version++; changed({ document: source }); }, getClipboard: () => clipboard };
 }
+
+test('closing a Draw.io tab cancels pending sync and source edits stay quiet until it is reopened', async t => {
+  const fixture = await extensionFixture(t);
+  const { source, gui, diagramOpens, executedCommands, editSource, closeGui, reopenGui, until } = fixture;
+  const originalXml = gui.text, opens = diagramOpens.length;
+  editSource(source.text.replace('[Text]', '[Pending]'));
+  closeGui();
+  await new Promise(resolve => setTimeout(resolve, 240));
+  editSource(source.text.replace('[Pending]', '[Reopened]'));
+  await fixture.runCommand('cetzEditor.syncFromSource');
+  await new Promise(resolve => setTimeout(resolve, 240));
+  assert.equal(diagramOpens.length, opens);
+  assert.equal(gui.text, originalXml);
+  assert.deepEqual(executedCommands, []);
+  reopenGui();
+  await until(() => gui.text.includes('cetzText=Reopened;'));
+});
+
+test('closing a Draw.io tab during rendering discards the late result', async t => {
+  let release, started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const rendering = new Promise(resolve => { started = resolve; });
+  let renders = 0;
+  const fixture = await extensionFixture(t, undefined, { async beforeRender() {
+    if (++renders > 1) { started(); await gate; }
+  } });
+  const originalXml = fixture.gui.text, opens = fixture.diagramOpens.length;
+  fixture.editSource(fixture.source.text.replace('[Text]', '[Late]'));
+  const sync = fixture.runCommand('cetzEditor.syncFromSource');
+  await rendering;
+  fixture.closeGui();
+  release();
+  await sync;
+  assert.equal(fixture.gui.text, originalXml);
+  assert.equal(fixture.diagramOpens.length, opens);
+  assert.deepEqual(fixture.executedCommands, []);
+});
+
+test('closing immediately after a GUI edit saves the last snapshot without reopening the diagram', async t => {
+  const fixture = await extensionFixture(t);
+  const opens = fixture.diagramOpens.length;
+  fixture.save(fixture.gui.text.replace('cetzText=Text;', 'cetzText=Saved;'));
+  fixture.closeGui();
+  await fixture.until(() => fixture.source.text.includes('[Saved]'));
+  assert.equal(fixture.diagramOpens.length, opens);
+  assert.deepEqual(fixture.executedCommands, []);
+  const closedXml = fixture.gui.text;
+  fixture.reopenGui();
+  await fixture.until(() => fixture.gui.text !== closedXml && fixture.gui.text.includes('cetzText=Saved;'));
+});
+
+test('late render errors do not reload a closed or unrelated webview', async t => {
+  const fixture = await extensionFixture(t);
+  fixture.activateOtherTab();
+  fixture.editSource(fixture.source.text.replace('[Text]', '[Broken'));
+  await fixture.until(() => fixture.gui.text.includes('cetzStatus='));
+  assert.deepEqual(fixture.executedCommands, []);
+  const opens = fixture.diagramOpens.length;
+  fixture.closeGui();
+  fixture.editSource(fixture.source.text + '\n');
+  await new Promise(resolve => setTimeout(resolve, 240));
+  assert.equal(fixture.diagramOpens.length, opens);
+});
 
 test('clipboard bridge handles rapid copy-paste, deletion and paste after the originals are gone', async t => {
   const { source, gui, save, action, until, selectedIndices, removeShapes, getClipboard } = await extensionFixture(t);

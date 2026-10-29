@@ -72,6 +72,18 @@ test('clearing optional arguments, including adjacent and final arguments, yield
   await render(next);
 });
 
+test('trailing content appears in the inspector and preserves bracket syntax through property edits', async () => {
+  const source = document('content((0, 0), padding: 1pt)[Hello]');
+  const model = propertyModel(setup(source).calls[0]);
+  assert.equal(model.fields.find(field => field.key === '$1').text, 'Hello');
+  const next = edit(source, 0, { '$0': '(1, 2)', '$1': '[World (]', padding: '', angle: '15deg' });
+  assert.ok(next.includes('content((1, 2), angle: 15deg)[World (]'));
+  await render(next);
+  const expression = edit(source, 0, { '$1': 'text(red)[World]' });
+  assert.ok(expression.includes('content((0, 0), padding: 1pt, text(red)[World])'));
+  await render(expression);
+});
+
 test('rotated shape properties retain their rotation wrapper', async () => {
   const source = document('scope({ rotate(30deg, origin: (1, 1)); rect((0, 0), (2, 2), fill: red) })');
   const next = edit(source, 0, { radius: '0.2', fill: 'aqua' });

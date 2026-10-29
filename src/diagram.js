@@ -1,5 +1,5 @@
 'use strict';
-const { skipTrivia, closing, splitArgs, locateCanvases } = require('./scanner');
+const { skipTrivia, closing, splitArgs, callArguments, locateCanvases } = require('./scanner');
 
 const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 function numberArg(text, range) {
@@ -162,9 +162,10 @@ function parseCanvas(text, canvasIndex = 0) {
         unsupported.push(name + ' at ' + i);
       i += name.length - 1; continue;
     }
-    const end = closing(text, open, '(', ')');
-    if (end < 0 || end > canvas.bodyEnd) { unsupported.push(name + ' at ' + i); continue; }
-    const args = splitArgs(text, open + 1, end), positional = positionalArgs(text, args);
+    const parsed = callArguments(text, open, canvas.bodyEnd);
+    if (!parsed) { unsupported.push(name + ' at ' + i); continue; }
+    const end = parsed.end - 1;
+    const args = parsed.args, positional = positionalArgs(text, args);
     let points = [], radius, corner, label, sides, angle, close = false, mark;
     if (name === 'rect') {
       points = [coordinateArg(text, positional[0])];

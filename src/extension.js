@@ -21,6 +21,21 @@ const { SCHEME, diagramUri: virtualDiagramUri, sourceForDiagramUri, DiagramFiles
 const sessions = new Map();
 function key(uri) { return uri.toString(); }
 function documentForSession(session) { return vscode.workspace.openTextDocument(session.sourceUri); }
+function closeSession(session, dispose = false) {
+  session.closed = true;
+  session.syncGeneration = (session.syncGeneration || 0) + 1;
+  clearTimeout(session.timer);
+  session.timer = null;
+  session.preparedRender = null;
+  // Preserve a last debounced GUI edit without writing to the closed editor.
+  const flush = session.flushGui;
+  session.flushGui = null;
+  if (!dispose) flush?.();
+}
+function diagramIsOpen(uri) {
+  return vscode.window.tabGroups.all.some(group => group.tabs.some(tab =>
+    tab.input?.uri && key(tab.input.uri) === key(uri)));
+}
 function diagramUri(sourceUri, index) {
   return virtualDiagramUri(vscode, sourceUri, index);
 }
@@ -48,8 +63,11 @@ function usableDiagram(text, index) {
   return diagram;
 }
 async function updateDiagramDocument(session, xml, diagramFiles) {
+  if (session.closed) return;
+  const generation = session.syncGeneration;
   diagramFiles.initialize(session.diagramUri, Buffer.from(xml, 'utf8'));
   const doc = await vscode.workspace.openTextDocument(session.diagramUri);
+  if (session.closed || generation !== session.syncGeneration) return;
   if (doc.getText() === xml) { session.lastXml = xml; return; }
   session.writingDiagram = true;
   try {
@@ -60,6 +78,9 @@ async function updateDiagramDocument(session, xml, diagramFiles) {
   } finally { session.writingDiagram = false; }
 }
 async function refreshGuiView(session, force = false) {
+  if (session.closed) return;
+  const activeUri = vscode.window.tabGroups.activeTabGroup.activeTab?.input?.uri;
+  if (!activeUri || key(activeUri) !== key(session.diagramUri)) return;
   // Editable previews replace the SVG cell during Draw.io's live document merge.
   // Keep the full reload for locked previews, which have no editable image cell.
   if (force || !session.editable)
@@ -167,6 +188,7 @@ async function applyHistoryAction(session, action) {
   await refreshGuiView(session);
 }
 async function syncFromSource(session) {
+  if (session.closed) return;
   const generation = session.syncGeneration = (session.syncGeneration || 0) + 1;
   const doc = await documentForSession(session);
   const sourceVersion = doc.version;
@@ -182,6 +204,7 @@ async function syncFromSource(session) {
     .map(name => [name, session[name]]));
   const xml = bindScene(scene, text, renderedXml, editable);
   await updateDiagramDocument(session, xml, session.diagramFiles);
+  if (generation !== session.syncGeneration) return;
   Object.assign(session, scene);
   Object.assign(session,result.state);
   session.sourceVersion = sourceVersion;
@@ -193,10 +216,12 @@ async function acceptDiagramSnapshot(session, xml) {
   if (clean !== xml) await updateDiagramDocument(session, clean, session.diagramFiles);
   else session.lastXml = xml;
 }
-async function syncToSource(session) {
+async function syncToSource(session, xml) {
   if (session.writingDiagram || session.writingSource) return;
-  const gui = await vscode.workspace.openTextDocument(session.diagramUri);
-  const xml = gui.getText();
+  if (xml === undefined) {
+    if (session.closed) return;
+    xml = (await vscode.workspace.openTextDocument(session.diagramUri)).getText();
+  }
   if (xml === session.lastXml) return;
   const stale = session.sceneRevision !== undefined && sceneRevision(xml) !== session.sceneRevision;
   const command = historyAction(readAllCells(xml), readAllCells(session.lastXml), session.handledHistoryActions);
@@ -270,7 +295,7 @@ async function syncToSource(session) {
         session.pasteCount = 0;
         // Copy and paste can arrive within a single debounced Draw.io save.
         // Consume copy first so a following paste reads the captured snapshot.
-        return syncToSource(session);
+        return syncToSource(session, xml);
       }
       if (sourceCommand.action === 'paste') {
         const clipboard = await vscode.env.clipboard.readText();
@@ -388,7 +413,9 @@ async function openGui(sourceUri, canvasIndex, extensionPath, diagramFiles) {
   await ensureDrawioPlugin(vscode, extensionPath, doc.uri);
   const uri = diagramUri(doc.uri, index);
   const session = sessionFor(doc.uri, uri, index, diagramFiles);
+  session.closed = false;
   await syncFromSource(session);
+  if (session.closed) return;
   await vscode.commands.executeCommand('vscode.openWith', uri, 'hediet.vscode-drawio-text', vscode.ViewColumn.Beside);
   if (!session.editable || !session.editable.calls.length)
     vscode.window.showInformationMessage('CeTZ: This canvas has no directly editable literal shapes. The Typst preview is available; add shapes from the CeTZ palette or edit the source.');
@@ -432,6 +459,7 @@ async function insertShape() {
 }
 function report(error) { vscode.window.showErrorMessage('CeTZ: ' + (error instanceof Error ? error.message : String(error))); }
 async function showSyncError(session, error) {
+  if (session.closed) return;
   if (!session.lastXml) return report(error);
   const message = error instanceof Error ? error.message : String(error);
   await updateDiagramDocument(session, withDiagramStatus(session.lastXml, message), session.diagramFiles);
@@ -441,6 +469,7 @@ function activate(context) {
   const diagramFiles = new DiagramFiles(vscode, async uri => {
     const source = sourceForDiagramUri(vscode, uri);
     if (!source) throw vscode.FileSystemError.FileNotFound(uri);
+    const session = sessionFor(source.sourceUri, uri, source.index, diagramFiles);
     await ensureDrawioPlugin(vscode, context.extensionPath, source.sourceUri);
     for (let attempt = 0; attempt < 3; attempt++) {
       const doc = await vscode.workspace.openTextDocument(source.sourceUri);
@@ -448,7 +477,6 @@ function activate(context) {
       const diagram = usableDiagram(text, source.index);
       const { xml, editable } = await renderDiagram(text, diagram.canvas, doc.uri.fsPath);
       if ((await vscode.workspace.openTextDocument(source.sourceUri)).version !== version) continue;
-      const session = sessionFor(doc.uri, uri, source.index, diagramFiles);
       session.lastXml = bindScene(session, text, xml, editable);
       session.sourceVersion = version;
       session.diagram = diagram;
@@ -458,6 +486,21 @@ function activate(context) {
     throw new Error('Typst changed while the GUI was opening. Open the GUI again after editing.');
   });
   context.subscriptions.push(vscode.workspace.registerFileSystemProvider(SCHEME, diagramFiles), diagramFiles);
+  context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(event => {
+    for (const tab of event.closed) {
+      const uri = tab.input?.uri;
+      const session = uri && sessions.get(key(uri));
+      // The same diagram may still be open in another editor group.
+      if (session && !diagramIsOpen(uri)) closeSession(session);
+    }
+    for (const tab of event.opened) {
+      const session = tab.input?.uri && sessions.get(key(tab.input.uri));
+      if (session?.closed) {
+        session.closed = false;
+        syncFromSource(session).catch(error => showSyncError(session, error).catch(report));
+      }
+    }
+  }));
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.open', (uri, index) =>
     openGui(uri, index, context.extensionPath, diagramFiles).catch(report)));
   context.subscriptions.push(vscode.languages.registerCodeLensProvider(
@@ -474,6 +517,7 @@ function activate(context) {
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
     for (const session of sessions.values()) {
+      if (session.closed) continue;
       if (key(event.document.uri) === key(session.sourceUri) && !session.writingSource) {
         if (event.document.getText() === session.expectedSourceText) {
           session.expectedSourceText = null;
@@ -482,6 +526,7 @@ function activate(context) {
         session.expectedSourceText = null;
         session.history.clear();
         if (session.timer) clearTimeout(session.timer);
+        session.flushGui = null;
         const version = event.document.version;
         session.timer = setTimeout(async () => {
           try { await syncFromSource(session); await refreshGuiView(session); }
@@ -492,16 +537,19 @@ function activate(context) {
         }, 180);
       } else if (key(event.document.uri) === key(session.diagramUri) && !session.writingDiagram) {
         if (session.timer) clearTimeout(session.timer);
-        session.timer = setTimeout(() => {
+        const xml = event.document.getText();
+        const flush = session.flushGui = () => {
+          session.flushGui = null;
           // Draw.io may save again while Typst is rendering. Process each
           // snapshot in order so a later edit never races an earlier reset.
           session.guiQueue = (session.guiQueue || Promise.resolve()).catch(() => {})
-            .then(() => syncToSource(session))
+            .then(() => syncToSource(session, xml))
             .catch(async error => {
               await syncFromSource(session).catch(() => {});
               await showSyncError(session, error).catch(report);
             });
-        }, 180);
+        };
+        session.timer = setTimeout(flush, 180);
       }
     }
   }));
@@ -511,6 +559,7 @@ function activate(context) {
     const offset = editor.document.offsetAt(editor.selection.active);
     let session, index = -1;
     for (const item of sessions.values()) {
+      if (item.closed) continue;
       if (key(item.sourceUri) !== key(editor.document.uri)) continue;
       if (item.sourceVersion !== editor.document.version) await syncFromSource(item);
       index = item.editable?.calls.findIndex(call => offset >= call.start && offset <= call.end) ?? -1;
@@ -523,7 +572,7 @@ function activate(context) {
       session.diagramFiles);
   }));
   context.subscriptions.push({ dispose: () => { for (const s of sessions.values()) {
-    if (s.timer) clearTimeout(s.timer);
+    closeSession(s, true);
   } sessions.clear(); } });
 }
 module.exports = { activate, deactivate() {}, pickCanvas, diagramUri };
