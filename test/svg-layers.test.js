@@ -28,6 +28,39 @@ test('SVG layers retain transforms, definitions, text, and ordinary marker-color
   assert.match(result.svg, /fill="#c00000" stroke-width="8"/);
   assert.doesNotMatch(result.svg, /stroke="#010204"/);
   assert.doesNotMatch(result.layers[1].svg, /Hello/);
+  assert.doesNotMatch(result.layers[1].svg, /id="paint"/);
+});
+
+test('fragments retain referenced definitions and their dependencies without copying unrelated glyphs', () => {
+  const defs = '<defs>' +
+    '<symbol id="glyph"><path d="M0 0L1 1"/></symbol>' +
+    '<linearGradient id="paint" xlink:href="#base"/>' +
+    '<linearGradient id="base"><stop offset="0" stop-color="red"/></linearGradient>' +
+    '<clipPath id="clip"><use href="#outline"/></clipPath>' +
+    '<g><path id="outline" d="M0 0L10 10"/></g>' +
+    '<style>.label { fill: url(#style-paint); }</style>' +
+    '<linearGradient id="style-paint" href="#paint"/>' +
+    '<symbol id="unused"><path d="M0 0L99 99"/></symbol></defs>';
+  const svg = '<svg viewBox="0 0 100 100">' + defs + marker(0, 0, 0) +
+    '<g fill="url(\'#paint\')" clip-path="url(#clip)"><use xlink:href="#glyph"/></g>' +
+    marker(1, 10, 10) + '</svg>';
+  const result = splitSvgLayers(svg, 1);
+  for (const fragment of [result.layers[0].svg, result.compose(new Set([0]))]) {
+    for (const id of ['glyph', 'paint', 'base', 'clip', 'outline', 'style-paint'])
+      assert.ok(fragment.includes(`id="${id}"`), id);
+    assert.ok(fragment.includes('<style>'));
+    assert.doesNotMatch(fragment, /id="unused"/);
+  }
+  assert.ok(result.svg.includes(defs), 'the complete preview preserves the original definitions');
+});
+
+test('cyclic definition references terminate and keep both members of the cycle', () => {
+  const svg = '<svg viewBox="0 0 10 10"><defs>' +
+    '<linearGradient id="a" href="#b"/><linearGradient id="b" href="#a"/>' +
+    '</defs><path fill="url(#a)" d="M0 0L1 1"/></svg>';
+  const layer = splitSvgLayers(svg, 0).layers[0];
+  assert.ok(layer.svg.includes('id="a"'));
+  assert.ok(layer.svg.includes('id="b"'));
 });
 
 test('layer bounds remain positive with CeTZ 0.4 screen-coordinate marker ordering', () => {
