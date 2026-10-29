@@ -248,6 +248,49 @@ test('clipboard bridge handles rapid copy-paste, deletion and paste after the or
   assert.match(source.text, /rect\(\(2, -2\), \(4, -1\), name: "a-4"\)/);
 });
 
+test('3D planes, lines and content copy and paste through the source bridge, select the copies and undo together', async t => {
+  const { planeCode } = require('../src/plane-editor');
+  const initial = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\northo({\n' +
+    planeCode('', 'gui-plane-1', { kind: 'xz', position: [1, 2, 3], angles: [20, 30, 40] }, '\nrect((0,0),(2,1),name: "r")\ncontent("r.center")[Plane]\n') +
+    '\nline((0,0,0),(1,2,3),name: "edge")\ncontent("edge.mid")[Label]\n})\n})';
+  const { source, gui, save, action, until, selectedIndices, getClipboard } = await extensionFixture(t, initial);
+  const workspace = () => JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  const original = workspace(), plane = original.planes[0], objects = original.objects;
+  save(gui.text.replace('</root>', action('copy', [plane.wrapperIndex, ...objects.map(object => object.index)].join(',')) + action('paste') + '</root>'));
+  await until(() => workspace().planes.length === 2 && selectedIndices().split(',').length === 3);
+  assert.match(getClipboard(), /^\/\/ GUI-CeTZ 3D shapes v1/);
+  assert.ok(source.text.includes('content("edge-2.mid")[Label]'));
+  assert.ok(source.text.includes('content("r-2.center")[Plane]'));
+  assert.deepEqual(workspace().planes[1].position, [1.5, 1.5, 3]);
+  assert.deepEqual(workspace().planes[1].angles, [20, 30, 40]);
+  const firstPaste = source.text;
+  save(gui.text.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === initial && workspace().planes.length === 1 && !gui.text.includes('cetzAction=undo;'));
+  save(gui.text.replace('</root>', action('redo') + '</root>'));
+  await until(() => source.text === firstPaste && workspace().planes.length === 2 && !gui.text.includes('cetzAction=redo;'));
+  save(gui.text.replace('</root>', action('paste') + action('paste') + '</root>'));
+  await until(() => workspace().planes.length === 4 && selectedIndices().split(',').length === 6);
+  assert.ok(source.text.includes('name: "edge-4"'));
+  assert.ok(source.text.includes('content("edge-4.mid")[Label]'));
+  assert.equal(new Set(workspace().planes.map(plane => plane.key)).size, 4);
+  save(gui.text.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === firstPaste);
+});
+
+test('3D copy across multiple views handles repeated paste without moving objects between projections', async t => {
+  const initial = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
+    'ortho(x:20deg,{line((0,0,0),(1,2,3))})\nperspective(x:40deg,{content((2,2,2))[Other]})\n})';
+  const { source, gui, save, action, until, selectedIndices } = await extensionFixture(t, initial);
+  const workspace = () => JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  const indices = workspace().objects.map(object => object.index).join(',');
+  save(gui.text.replace('</root>', action('copy', indices) + action('paste') + action('paste') + '</root>'));
+  await until(() => workspace().objects.length === 6 && selectedIndices().split(',').length === 4);
+  const objects = workspace().objects;
+  for (const view of workspace().views) assert.equal(objects.filter(object => object.view === view.index).length, 3);
+  save(gui.text.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === initial);
+});
+
 test('move-delete-undo restores the moved shape, including undo before the deletion autosaves', async t => {
   const initial = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({\n  import cetz.draw: *\n  circle((0, 0), radius: 1)\n})';
   for (const rapid of [false, true]) {

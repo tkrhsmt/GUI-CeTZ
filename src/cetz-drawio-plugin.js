@@ -1374,10 +1374,10 @@ Draw.loadPlugin(function (ui) {
   }
   function updateThreeWorkspace() {
     var active = is3D(); threePanel.style.display = active ? '' : 'none';
-    graph.getSelectionModel().setSingleSelection(active || original.singleSelection);
+    graph.getSelectionModel().setSingleSelection(active ? false : original.singleSelection);
     if (active) {
       var selection=graph.getSelectionCells(),allowedSelection=selection.filter(function(cell){return !!threePlaneForCell(cell)||!!threeObjectForCell(cell)||!!threeProjectionForCell(cell);});
-      if (selection.length>1 || allowedSelection.length!==selection.length) graph.setSelectionCells(allowedSelection.slice(0,1));
+      if (allowedSelection.length!==selection.length) graph.setSelectionCells(allowedSelection);
     }
     if (!active) { threeOrbitMode = false; threePanMode = false; drawThreePlaneGrid(null); drawThreeGuides(null); return; }
     threeOrbitMode = !threePanMode;
@@ -2551,7 +2551,7 @@ Draw.loadPlugin(function (ui) {
   }
 
   function sendSourceAction(name, value, overrideIndices) {
-    if (is3D() && ['properties','focus','select','export','create-view','workspace-mode','plane-create','plane-settings','plane-delete','camera-position','projection-kind','spatial-edit','move-before','move-after'].indexOf(name) < 0) return;
+    if (is3D() && ['copy','paste','properties','focus','select','export','create-view','workspace-mode','plane-create','plane-settings','plane-delete','camera-position','projection-kind','spatial-edit','move-before','move-after'].indexOf(name) < 0) return;
     var cells = selectedEditableCells();
     if (name !== 'export' && ['create-view','workspace-mode','plane-create','plane-settings','plane-delete','camera-position','projection-kind','spatial-edit'].indexOf(name)<0 && (!isEditablePreview() || name !== 'paste' && !cells.length && !overrideIndices)) return;
     var indices = overrideIndices || cells.map(function (cell) { return Number(cell.id.slice('cetz-edit-'.length)); });
@@ -2601,6 +2601,9 @@ Draw.loadPlugin(function (ui) {
     } finally { model.endUpdate(); }
   }
   function add3DMenu(menu, parent) {
+    menu.addItem('Copy', null, function () { sendSourceAction('copy'); }, parent);
+    menu.addItem('Paste', null, function () { sendSourceAction('paste'); }, parent);
+    menu.addSeparator(parent);
     menu.addItem('3D line · Set XYZ coordinates',null,function(){beginSpatialPlacement('line');},parent);
     menu.addItem('3D content · Set XYZ coordinates',null,function(){beginSpatialPlacement('content');},parent);
     menu.addSeparator(parent);
@@ -4868,7 +4871,7 @@ Draw.loadPlugin(function (ui) {
         graph.popupMenuHandler.isEnabled = function () { return true; };
         graph.popupMenuHandler.factoryMethod = function (menu, cell) {
           if (is3D()) {
-            if (cell && /^cetz-edit-/.test(cell.id || '')) graph.setSelectionCell(cell);
+            if (cell && /^cetz-edit-/.test(cell.id || '') && graph.getSelectionCells().indexOf(cell) < 0) graph.setSelectionCell(cell);
             add3DMenu(menu, null); return;
           }
           if (cell && /^cetz-(?:edit|point)-\d+/.test(cell.id || '') &&

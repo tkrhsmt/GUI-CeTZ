@@ -92,6 +92,7 @@ function sourceWithPatches(text, patches) {
 }
 function planeScopedDiagram(text,session) {
   const diagram=usableDiagram(text,session.index);
+  if(session.editable?.mode==='3d')return {...diagram,mode:'3d'};
   if(session.workspaceMode==='2d'&&session.activePlaneKey){
     const plane=require('./plane-editor').resolvePlane(text,diagram.canvas,session.activePlaneKey);
     if(plane)return {...diagram,canvas:{...diagram.canvas,bodyStart:plane.bodyStart,bodyEnd:plane.bodyEnd},planeContext:{key:plane.key}};
@@ -287,7 +288,7 @@ async function syncToSource(session, xml) {
     }
     if (!session.editable) throw new Error('This canvas has no editable CeTZ shapes.');
     try {
-      if (session.editable.mode === '3d' && !['properties', 'focus', 'select', 'export', 'create-view', 'plane-create', 'plane-settings', 'plane-delete', 'camera-position', 'projection-kind', 'spatial-edit', 'move-before', 'move-after'].includes(sourceCommand.action))
+      if (session.editable.mode === '3d' && !['copy', 'paste', 'properties', 'focus', 'select', 'export', 'create-view', 'plane-create', 'plane-settings', 'plane-delete', 'camera-position', 'projection-kind', 'spatial-edit', 'move-before', 'move-after'].includes(sourceCommand.action))
         throw new Error(require('./three-dimensional').MESSAGE);
       if (sourceCommand.action === 'copy') {
         await vscode.env.clipboard.writeText(copyShapes(source.getText(), session.editable, sourceCommand.indices));
@@ -300,7 +301,7 @@ async function syncToSource(session, xml) {
       if (sourceCommand.action === 'paste') {
         const clipboard = await vscode.env.clipboard.readText();
         let pasteCount = session.pasteClipboard === clipboard ? session.pasteCount || 0 : 0;
-        const patches = pasteShapes(source.getText(), session.editable, clipboard, ++pasteCount);
+        let patches = pasteShapes(source.getText(), session.editable, clipboard, ++pasteCount, sourceCommand.indices);
         // Several paste shortcuts can be saved together by Draw.io. Keep each
         // requested paste, allocating names against the preceding copies.
         for (;;) {
@@ -309,7 +310,16 @@ async function syncToSource(session, xml) {
           session.handledHistoryActions.add(next.key);
           const pending = sourceWithPatches(source.getText(), patches);
           const extra = pasteShapes(pending, planeScopedDiagram(pending, session), clipboard, ++pasteCount);
-          patches[0].text += extra[0].text;
+          if (session.editable.mode === '3d') {
+            const selectStarts = (patches.selectStarts || []).map(start => start + extra.filter(patch => patch.start <= start).reduce((sum, patch) => sum + patch.text.length, 0))
+              .concat(extra.selectStarts || []);
+            const after = sourceWithPatches(pending, extra), before = source.getText();
+            let start = 0, end = before.length, afterEnd = after.length;
+            while (start < end && before[start] === after[start]) start++;
+            while (end > start && afterEnd > start && before[end - 1] === after[afterEnd - 1]) { end--; afterEnd--; }
+            patches = [{ start, end, text: after.slice(start, afterEnd) }];
+            patches.selectStarts = selectStarts;
+          } else patches[0].text += extra[0].text;
         }
         await applySourcePatches(session, source, patches);
         session.pasteClipboard = clipboard;
@@ -317,7 +327,7 @@ async function syncToSource(session, xml) {
         await syncFromSource(session);
         const insertion = patches[0];
         const indices = session.editable.calls.flatMap((call, index) =>
-          !call.group && call.start >= insertion.start && call.start < insertion.start + insertion.text.length
+          (patches.selectStarts ? patches.selectStarts.includes(call.start) : !call.group && call.start >= insertion.start && call.start < insertion.start + insertion.text.length)
             ? [session.editable.cellIds?.[index] ?? index] : []);
         if (indices.length) {
           session.selectionSerial = (session.selectionSerial || 0) + 1;

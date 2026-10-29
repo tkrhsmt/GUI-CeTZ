@@ -639,6 +639,45 @@ test('native clipboard actions and shortcuts send CeTZ commands without cloning 
   assert.equal(Object.keys(f.graph.model.cells).filter(id => /^cetz-edit-/.test(id)).length, 4);
 });
 
+test('3D clipboard menus, native actions and shortcuts copy planes/XYZ objects without cloning preview cells', { skip }, async t => {
+  const { planeCode } = require('../src/plane-editor');
+  const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\northo({\n' +
+    planeCode('', 'gui-plane-1', { kind: 'xy', position: [0, 0, 0], angles: [0, 0, 0] }, '\nrect((0,0),(1,1))\n') +
+    '\nline((0,0,0),(1,2,3))\ncontent((1,1,1))[3D]\n})\n})';
+  const f = await fixture(t, source, { nativeClipboard: true });
+  const ids = [f.rendered.workspace.planes[0].wrapperIndex, ...f.rendered.workspace.objects.map(object => object.index)];
+  const commands = () => Object.values(f.graph.model.cells).filter(cell => /cetzAction=(copy|paste);/.test(cell.style || ''));
+  for (const index of ids) {
+    f.graph.setSelectionCell(f.graph.model.getCell('cetz-edit-' + index));
+    assert.equal(f.ui.actions.get('copy').isEnabled(), true);
+    f.ui.actions.get('copy').funct();
+    assert.match(commands().at(-1).style, new RegExp(`cetzAction=copy;cetzTargets=${index};`));
+  }
+  f.graph.clearSelection();
+  assert.equal(f.ui.actions.get('paste').isEnabled(), true);
+  f.ui.actions.get('paste').funct();
+  assert.match(commands().at(-1).style, /cetzAction=paste;/);
+  f.graph.setSelectionCells(ids.map(index => f.graph.model.getCell('cetz-edit-' + index)));
+  f.graph.container.focus();
+  f.graph.container.dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'Meta', keyCode: 91, metaKey: true, bubbles: true }));
+  const copy = new f.w.Event('copy', { bubbles: true, cancelable: true });
+  f.ui.clipboardElt.dispatchEvent(copy);
+  assert.equal(copy.defaultPrevented, true);
+  assert.ok(commands().at(-1).style.includes('cetzTargets=' + ids.join(',') + ';'));
+  const paste = new f.w.KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true, cancelable: true });
+  f.graph.container.dispatchEvent(paste);
+  assert.equal(paste.defaultPrevented, true);
+  assert.match(commands().at(-1).style, /cetzAction=paste;/);
+  const menuItems = new Map();
+  const menu = { addItem(label, icon, callback) { menuItems.set(label, callback); }, addSeparator() {} };
+  f.graph.popupMenuHandler.factoryMethod(menu, f.graph.model.getCell('cetz-edit-' + ids[0]));
+  assert.ok(menuItems.has('Copy') && menuItems.has('Paste'));
+  assert.equal(f.graph.getSelectionCells().length, ids.length, 'right click preserves the multiple selection');
+  menuItems.get('Copy')(); menuItems.get('Paste')();
+  assert.match(commands().at(-1).style, /cetzAction=paste;/);
+  assert.equal(Object.values(f.graph.model.cells).filter(cell => /^cetz-edit-/.test(cell.id || '')).length, f.rendered.calls.length);
+});
+
 test('macOS clipboard shortcuts work through Draw.io native hidden input', {
   skip: skip || (!fs.existsSync(editorUi) ? 'Set GUI_CETZ_EDITOR_UI to EditorUi.js for native clipboard tests' : false)
 }, async t => {
@@ -2286,7 +2325,7 @@ test('dimension tabs, plane icons, camera/plane panels and native 2D gestures sh
   await loadWorkspaceScene(f,state,f.rendered);
   const tabs=()=>f.ui.container.querySelectorAll('[role="tab"]'),panel=f.ui.sidebar.wrapper;
   assert.equal(tabs()[1].textContent,'3D drawing');assert.equal(tabs()[1].getAttribute('aria-selected'),'true');
-  assert.equal(f.graph.getSelectionModel().isSingleSelection(),true);
+  assert.equal(f.graph.getSelectionModel().isSingleSelection(),false,'3D supports multiple selection for copy/paste');
   assert.equal(panel.querySelector('.cetz3DWorkspace').style.display,'');assert.equal(panel.querySelector('.cetz2DWorkspace').style.display,'none');
   const rail=f.ui.formatContainer.querySelector('.cetzPlaneRail');assert.equal(rail.style.display,'flex');
   assert.ok(f.graph.view.getBackgroundPane().querySelector('[data-cetz-plane-surface="true"]'));

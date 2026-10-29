@@ -39,6 +39,8 @@
 
 Outlineの高さ調整境界にフォーカスがある場合、矢印キーは境界のサイズ調整に使います。3Dの通常ドラッグはOrbit、2Dの通常ドラッグは図形の移動です。
 
+3D drawingでも、平面・`line`・`content`をコピーして貼り付けできます。OutlineでShift／⌘／Ctrlを押しながら選ぶと、複数の要素をまとめてコピーできます。平面のコピーには中の図形と姿勢も含まれます。貼り付け先や座標の扱いは[3Dチュートリアル](tutorials/04-3d-workspace.md#5-ハンドルで平面を配置する)を参照してください。
+
 ![CeTZメニューの描画ツールとPath operations、Copy、Pasteなどの項目](images/screenshots/11-cetz-menu.jpg)
 
 **操作：** 左上のCeTZをクリックします。メニューは縦に長いため、下の項目はメニュー内をスクロールして探します。
