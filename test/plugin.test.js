@@ -74,6 +74,12 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   contains(cell) { return !!cell && this.cells[cell.id] === cell; },
   isEdge() { return false; }, addListener(name, callback) { if (name === 'change') modelChanged = callback; },
   beginUpdate() {}, endUpdate() {} };
+  const selectionModel = {
+    singleSelection: false,
+    isSingleSelection() { return this.singleSelection; },
+    setSingleSelection(value) { this.singleSelection = value; },
+    addListener(name, callback) { selectionChanged = callback; }
+  };
   const graph = {
     view: { scale: 1, translate: { x: 0, y: 0 }, getOverlayPane() { return {}; },
       invalidate() {}, validate() { viewValidations++; },
@@ -89,7 +95,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     getCellStyle(cell) { return Object.fromEntries(cell.style.split(';').filter(Boolean).map(part => part.split('='))); },
     setCellStyles(key, value, cells) { changedStyle = { key, value, cells }; },
     snapDelta(delta, bounds) { snappedBounds = bounds; return delta; },
-    getSelectionModel() { return { addListener(name, callback) { selectionChanged = callback; } }; },
+    getSelectionModel() { return selectionModel; },
     isCellDeletable() { return true; }, isCellSelectable() { return true; },
     isCellCloneable() { return true; },
     isCellVisible() { return true; },
@@ -389,7 +395,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   graphModel.cells['cetz-point-1-1'] = { id: 'cetz-point-1-1',
     geometry: { x: 933, y: 503, width: 14, height: 14 } };
   selectionChanged();
-  const outline = wrapper.children[1];
+  const outline = wrapper.children.find(child => child.className === 'cetzOutline');
   const rows = outline.children.filter(child => child.className === 'cetzOutlineList').at(-1).children.slice(-2);
   assert.match(outline.style.cssText, /border-bottom:1px solid/);
   assert.equal(rows[1].children[1].title, 'line pos: (0, -0.25) size: 11');

@@ -69,21 +69,53 @@ function sourceWithPatches(text, patches) {
   return [...patches].sort((a, b) => b.start - a.start)
     .reduce((value, patch) => value.slice(0, patch.start) + patch.text + value.slice(patch.end), text);
 }
-async function applySourcePatches(session, source, patches, deferInvalid = false) {
+function planeScopedDiagram(text,session) {
+  const diagram=usableDiagram(text,session.index);
+  if(session.workspaceMode==='2d'&&session.activePlaneKey){
+    const plane=require('./plane-editor').resolvePlane(text,diagram.canvas,session.activePlaneKey);
+    if(plane)return {...diagram,canvas:{...diagram.canvas,bodyStart:plane.bodyStart,bodyEnd:plane.bodyEnd},planeContext:{key:plane.key}};
+  }
+  return diagram;
+}
+function decorateWorkspace(editable,state) {
+  if(!editable?.workspace)return;
+  const planes=editable.workspace.planes||[];
+  const active=planes.some(plane=>plane.key===state.activePlaneKey)?state.activePlaneKey:planes[0]?.key||null;
+  editable.workspace.activePlaneKey=active;state.activePlaneKey=active;
+  editable.xml=editable.xml.replace(/cetzWorkspace=[^;]*;/,`cetzWorkspace=${encodeURIComponent(JSON.stringify(editable.workspace))};`);
+}
+async function sessionRender(session,text,strict=false,requestedKey=session.activePlaneKey) {
+  const canvas=usableDiagram(text,session.index).canvas;
+  const full=strict?{editable:await renderEditable(text,canvas,session.sourceUri.fsPath)}:
+    await renderDiagram(text,canvas,session.sourceUri.fsPath);
+  const state={workspaceMode:session.workspaceMode,activePlaneKey:requestedKey};
+  decorateWorkspace(full.editable,state);
+  if(state.workspaceMode==='2d'&&full.editable?.mode==='3d'){
+    if(!requestedKey||!require('./plane-editor').resolvePlane(text,canvas,requestedKey)){
+      if(strict)throw new Error('The drawing plane changed. Return to 3D and choose a plane.');
+      state.workspaceMode='3d';
+      return {editable:full.editable,xml:withDiagramStatus(full.editable.xml,'The selected plane no longer exists. Choose a drawing plane in 3D.'),state};
+    }
+    const editable=await require('./plane-editor').renderPlane2D(text,canvas,requestedKey,session.sourceUri.fsPath,full.editable);
+    return {editable,xml:editable.xml,state};
+  }
+  return {editable:full.editable,xml:full.editable?.xml||full.xml,state};
+}
+async function applySourcePatches(session, source, patches, deferInvalid = false, historyGroup) {
   if (!patches.length) return;
   const sourceVersion = source.version;
   const before = source.getText();
   if (session.sceneSource !== undefined && before !== session.sceneSource)
     throw new Error('Typst changed while the GUI was being edited.');
+  if(session.editable?.planeContext && patches.some(patch=>patch.start<session.editable.planeContext.bodyStart||patch.end>session.editable.planeContext.bodyEnd))
+    throw new Error('This edit would affect another drawing plane. Edit it in the 3D view.');
   const expected = sourceWithPatches(before, patches);
+  const nextKey=Object.hasOwn(patches,'activePlaneKey')?patches.activePlaneKey:require('./plane-editor').rebasePlaneKey(session.activePlaneKey,before,expected);
   // A GUI edit must preserve an editable preview. Otherwise renderDiagram's
   // fallback would replace all handles with a locked image after the write.
   let prepared;
   try {
-    prepared = session.editable
-      ? await renderEditable(expected, usableDiagram(expected, session.index).canvas,
-        session.sourceUri.fsPath)
-      : null;
+    prepared = session.editable?await sessionRender(session,expected,true,nextKey):null;
   } catch (error) {
     // Automatic inspector input is a draft until Typst accepts it. Keep the
     // last valid source and artwork while an expression is still incomplete.
@@ -102,9 +134,11 @@ async function applySourcePatches(session, source, patches, deferInvalid = false
     if (!await vscode.workspace.applyEdit(edit)) throw new Error('Could not apply the CeTZ edit.');
     applied = true;
     const updated = await documentForSession(session);
-    if (prepared && updated.getText() === expected)
-      session.preparedRender = { text: expected, editable: prepared };
-    session.history.record(before, updated.getText());
+    if (prepared && updated.getText() === expected) {
+      Object.assign(session,prepared.state);
+      session.preparedRender = { text: expected, editable: prepared.editable, xml:prepared.xml,state:prepared.state };
+    }
+    session.history.record(before, updated.getText(), historyGroup);
   } finally {
     if (!applied) session.expectedSourceText = null;
     session.writingSource = false;
@@ -140,15 +174,16 @@ async function syncFromSource(session) {
   const diagram = usableDiagram(text, session.index);
   const prepared = session.preparedRender;
   session.preparedRender = null;
-  const { xml: renderedXml, editable } = prepared && prepared.text === text
-    ? { xml: prepared.editable.xml, editable: prepared.editable }
-    : await renderDiagram(text, diagram.canvas, session.sourceUri.fsPath);
+  const requestedKey=require('./plane-editor').rebasePlaneKey(session.activePlaneKey,session.sceneSource||text,text);
+  const result=prepared&&prepared.text===text?prepared:await sessionRender(session,text,false,requestedKey);
+  const {xml:renderedXml,editable}=result;
   if (generation !== session.syncGeneration || (await documentForSession(session)).version !== sourceVersion) return;
   const scene = Object.fromEntries(['sceneBase', 'sceneSpan', 'sceneSignature', 'sceneRevision', 'sceneSource']
     .map(name => [name, session[name]]));
   const xml = bindScene(scene, text, renderedXml, editable);
   await updateDiagramDocument(session, xml, session.diagramFiles);
   Object.assign(session, scene);
+  Object.assign(session,result.state);
   session.sourceVersion = sourceVersion;
   session.diagram = diagram;
   session.editable = editable;
@@ -201,8 +236,34 @@ async function syncToSource(session) {
       await exportTypst(vscode, source);
       return;
     }
+    if(sourceCommand.action==='workspace-mode'){
+      const request=JSON.parse(decodeURIComponent(sourceCommand.value||''));
+      if(!['2d','3d'].includes(request.mode))throw new Error('Choose 2D or 3D drawing.');
+      const oldState={workspaceMode:session.workspaceMode,activePlaneKey:session.activePlaneKey};
+      try{
+        const before=source.getText();
+        const pending=session.editable?patchesFromEditable(before,session.editable,xml,readAllCells):[];
+        await applySourcePatches(session,source,pending);
+        const current=await documentForSession(session),text=current.getText(),canvas=usableDiagram(text,session.index).canvas;
+        if(request.mode==='3d'&&!require('./three-dimensional').is3DCanvas(text,canvas)){
+          session.workspaceMode='3d';
+          const conversion=require('./plane-editor').convertTo3D(text,canvas);
+          await applySourcePatches(session,current,conversion);
+        } else if(request.mode==='2d'&&require('./three-dimensional').is3DCanvas(text,canvas)){
+          const key=require('./plane-editor').rebasePlaneKey(request.planeKey||session.activePlaneKey,before,text);
+          const plane=require('./plane-editor').resolvePlane(text,canvas,key);
+          if(!plane)throw new Error('Select a drawing plane in the 3D settings before opening 2D drawing.');
+          session.workspaceMode='2d';session.activePlaneKey=plane.key;
+        }else{session.workspaceMode=request.mode;if(request.mode==='2d')session.activePlaneKey=null;}
+        session.preparedRender=null;
+        await syncFromSource(session);await refreshGuiView(session);
+      }catch(error){Object.assign(session,oldState);session.preparedRender=null;await syncFromSource(session);await refreshGuiView(session);throw error;}
+      return;
+    }
     if (!session.editable) throw new Error('This canvas has no editable CeTZ shapes.');
     try {
+      if (session.editable.mode === '3d' && !['properties', 'focus', 'select', 'export', 'create-view', 'plane-create', 'plane-settings', 'plane-delete', 'camera-position', 'projection-kind', 'spatial-edit', 'move-before', 'move-after'].includes(sourceCommand.action))
+        throw new Error(require('./three-dimensional').MESSAGE);
       if (sourceCommand.action === 'copy') {
         await vscode.env.clipboard.writeText(copyShapes(source.getText(), session.editable, sourceCommand.indices));
         session.pasteClipboard = null;
@@ -222,7 +283,7 @@ async function syncToSource(session) {
           if (next?.action !== 'paste') break;
           session.handledHistoryActions.add(next.key);
           const pending = sourceWithPatches(source.getText(), patches);
-          const extra = pasteShapes(pending, usableDiagram(pending, session.index), clipboard, ++pasteCount);
+          const extra = pasteShapes(pending, planeScopedDiagram(pending, session), clipboard, ++pasteCount);
           patches[0].text += extra[0].text;
         }
         await applySourcePatches(session, source, patches);
@@ -271,7 +332,14 @@ async function syncToSource(session) {
         await syncFromSource(session); await refreshGuiView(session);
         return;
       }
-      await applySourcePatches(session, source, patches, sourceCommand.action === 'properties');
+      let historyGroup;
+      if (session.editable.mode === '3d' && sourceCommand.action === 'properties') {
+        const draft = JSON.parse(decodeURIComponent(sourceCommand.value));
+        const call = session.editable.calls[sourceCommand.indices[0]];
+        if (['ortho','perspective'].includes(call?.name) && /^[\w-]{1,80}$/.test(draft.historyGroup || '') &&
+            Object.keys(draft.values).every(key => ['x','y','z'].includes(key))) historyGroup = draft.historyGroup;
+      }
+      await applySourcePatches(session, source, patches, sourceCommand.action === 'properties', historyGroup);
       await syncFromSource(session);
       if (patches.selectStart !== undefined) {
         const index = session.editable?.calls.findIndex(call => call.start === patches.selectStart);
@@ -343,7 +411,21 @@ async function insertShape() {
   });
   if (!selected) return;
   const shape = PLACEMENT_SHAPES.find(item => item.label === selected);
-  const insertion = insertionFor(source, canvas, shape.call);
+  let targetCanvas=canvas;
+  if(session?.editable?.planeContext){
+    const key=require('./plane-editor').rebasePlaneKey(session.activePlaneKey,session.sceneSource||source,source);
+    const plane=require('./plane-editor').resolvePlane(source,canvas,key);
+    if(!plane)throw new Error('The drawing plane changed. Choose it again in 3D.');
+    targetCanvas={...canvas,bodyStart:plane.bodyStart,bodyEnd:plane.bodyEnd};
+  }
+  let insertion = insertionFor(source,targetCanvas,shape.call);
+  if (!session?.editable?.planeContext && require('./three-dimensional').is3DCanvas(source, canvas)) {
+    const rendered = session?.editable?.mode === '3d' && document.version===session.sourceVersion ? session.editable : await renderEditable(source, canvas, document.uri.fsPath);
+    const view = rendered.workspace?.views.find(view => view.matrix);
+    if (!view) throw new Error('Enable a 3D view in Draw.io before adding shapes.');
+    const patch = require('./three-workspace').insertion3D(source, rendered, {view:view.index,plane:'xy',offset:0}, shape.call);
+    insertion = {offset:patch.start,text:patch.text};
+  }
   const edit = new vscode.WorkspaceEdit();
   edit.insert(document.uri, document.positionAt(insertion.offset), insertion.text);
   if (!await vscode.workspace.applyEdit(edit)) throw new Error('Could not insert the CeTZ call.');

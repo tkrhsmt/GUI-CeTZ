@@ -1,6 +1,7 @@
 'use strict';
 const { callFromPoints } = require('./placement');
 const { OPERATION_NAMES } = require('./path-operations');
+const { skipTrivia, closing } = require('./scanner');
 
 // These are source templates, not approximations of CeTZ geometry. Typst renders
 // the resulting canvas so marks, curves, paths, anchors and styles stay exact.
@@ -28,10 +29,27 @@ const ALL_SHAPES = PREVIEW_PRIMITIVES.concat(SHAPES);
 const PLACEMENT_SHAPES = ALL_SHAPES;
 const ALL_FUNCTIONS = ALL_SHAPES.concat(OPERATION_NAMES.map(label => ({ label, operation: true })));
 
+function hasDrawImport(source,offset) {
+  for(let i=0;i<offset;){
+    i=skipTrivia(source,i);if(i>=offset)break;
+    if(source[i]==='"'){
+      for(i++;i<offset;i++){if(source[i]==='\\')i++;else if(source[i]==='"'){i++;break;}}
+      continue;
+    }
+    if('([{'.includes(source[i])){
+      const end=closing(source,i,source[i],{'(':')','[':']','{':'}'}[source[i]]);
+      // Ignore sibling scopes, but descend through every enclosing scope.
+      if(end>=0&&end<offset){i=end+1;continue;}
+    }
+    if(!/[\w-]/.test(source[i-1]||'')&&/^import\s+cetz\.draw\s*:\s*\*/.test(source.slice(i,offset)))return true;
+    i++;
+  }
+  return false;
+}
 function insertionFor(source, canvas, call) {
   const body = source.slice(canvas.bodyStart, canvas.bodyEnd);
   const indent = /^([ \t]*)\S/m.exec(body)?.[1] || '  ';
-  const needsImport = !/\bimport\s+cetz\.draw\s*:\s*\*/.test(body);
+  const needsImport = !hasDrawImport(source,canvas.bodyEnd);
   const lines = call.split('\n').map(line => indent + line).join('\n');
   const before = body.endsWith('\n') ? '' : '\n';
   return { offset: canvas.bodyEnd, text: `${before}${needsImport ? indent + 'import cetz.draw: *\n' : ''}${lines}\n` };
@@ -79,8 +97,10 @@ function templateInsertions(source, canvas, cells, originalCells = new Map(), ca
     } else calls.push(callFromGeometry(name, item, calibration) || shape.call);
   }
   if (!calls.length) return [];
+  if (require('./three-dimensional').is3DCanvas(source, canvas))
+    throw new Error(require('./three-dimensional').MESSAGE);
   const insertion = insertionFor(source, canvas, calls.join('\n'));
   return [{ start: insertion.offset, end: insertion.offset, text: insertion.text }];
 }
 
-module.exports = { SHAPES, ALL_SHAPES, PLACEMENT_SHAPES, ALL_FUNCTIONS, insertionFor, templateInsertions };
+module.exports = { SHAPES, ALL_SHAPES, PLACEMENT_SHAPES, ALL_FUNCTIONS, hasDrawImport, insertionFor, templateInsertions };

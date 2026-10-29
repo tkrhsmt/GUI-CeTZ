@@ -40,7 +40,7 @@ let ${name}(body, index) = {
 `;
 }
 
-function splitSvgLayers(svg, count) {
+function splitSvgLayers(svg, count, excludedOwners = new Set()) {
   const root = { open: '', close: '', children: [] }, stack = [root];
   for (const token of svg.match(/<!--[\s\S]*?-->|<[^>]*>|[^<]+/g) || []) {
     if (/^<\//.test(token)) {
@@ -79,15 +79,18 @@ function splitSvgLayers(svg, count) {
     if (marker >= 0 && marker < count * 2) {
       const xy = /\btransform="translate\(([^)]+)\)"/.exec(node.open);
       const [x = 0, y = 0] = xy ? xy[1].trim().split(/[\s,]+/).map(Number) : [];
+      const move = /\bd="M\s+([\d.eE+-]+)[ ,]+([\d.eE+-]+)(?:\s*m\s+([\d.eE+-]+)[ ,]+([\d.eE+-]+))?/.exec(node.open);
+      const anchor = { x: x + Number(move?.[1] || 0) + Number(move?.[3] || 0),
+        y: y + Number(move?.[2] || 0) + Number(move?.[4] || 0) };
       // The marker rectangle extends 0.001 units above its anchor.
       if (marker % 2 === 0) {
-        active = { owner: marker / 2, low: { x, y }, high: null };
+        active = { owner: marker / 2, low: { x, y }, high: null, anchors: [anchor] };
         layers.push(active);
         current = layers.length - 1;
       } else {
         if (!active || active.owner !== Math.floor(marker / 2))
           throw new Error('Unmatched CeTZ SVG layer marker.');
-        active.high = { x, y };
+        active.high = { x, y }; active.anchors.push(anchor);
         active = null; current = null;
       }
       return new Map();
@@ -111,7 +114,9 @@ function splitSvgLayers(svg, count) {
     return open + body + defs + document.close;
   };
   return {
-    svg: wrap([...fragments.values()].join('')),
+    compose: owners => wrap([...fragments].filter(([key]) => owners.has(layers[key].owner) && !excludedOwners.has(layers[key].owner))
+      .map(([, value]) => value).join('')),
+    svg: wrap([...fragments].filter(([key]) => !excludedOwners.has(layers[key].owner)).map(([, value]) => value).join('')),
     layers: layers.flatMap((layer, key) => {
       const body = fragments.get(key);
       if (!body) return [];
@@ -127,7 +132,7 @@ function splitSvgLayers(svg, count) {
           Math.abs(layer.high.x - layer.low.x) + padding * 2,
           Math.abs(layer.low.y - layer.high.y) + padding * 2];
       }
-      return [{ owner: layer.owner, bounds, svg: wrap(body, bounds) }];
+      return [{ owner: layer.owner, bounds, anchors: layer.anchors, svg: wrap(body, bounds) }];
     })
   };
 }

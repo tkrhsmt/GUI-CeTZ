@@ -587,6 +587,8 @@ function calibration(svg) {
 }
 
 async function renderEditable(source, canvas, filePath) {
+  const three = require('./three-dimensional');
+  if (three.is3DCanvas(source, canvas)) return three.render3D(source, canvas, filePath);
   const calls = locateEditableCalls(source, canvas);
   const probes = [];
   const contentProbes = [];
@@ -851,6 +853,7 @@ async function renderEditable(source, canvas, filePath) {
 }
 
 function patchesFromEditable(source, rendered, xml, readCells) {
+  if (rendered.mode === '3d') return require('./three-dimensional').patchesFrom3D(rendered, xml, readCells);
   const cells = readCells(xml), original = readCells(rendered.xml), patches = [];
   for (const [id, item] of cells)
     if (!original.has(id) &&

@@ -33,3 +33,13 @@ test('finds a new draw.io history action cell', () => {
     { id: 'action', action: 'undo', key: 'new-command' });
   assert.equal(historyAction(original, original), null);
 });
+
+test('live updates from one camera gesture share a GUI undo step without merging other edits', () => {
+  const history = new EditHistory();
+  history.record('a','b','orbit-1'); history.record('b','c','orbit-1');
+  history.record('c','d'); history.record('d','e','orbit-2'); history.record('e','f','orbit-2');
+  assert.equal(history.step('undo','f'),'d');
+  assert.equal(history.step('undo','d'),'c');
+  assert.equal(history.step('undo','c'),'a');
+  assert.equal(history.step('redo','a'),'c');
+});
