@@ -555,10 +555,16 @@ Draw.loadPlugin(function (ui) {
   }
   function placementHint(message) {
     if (!placement) return;
+    positionPlacementHint();
     if(placement.spatial){spatialPlacementHint(message);return;}
     var steps = placementSteps[placement.name], count = placement.points.length;
     placement.hint.textContent = placement.name + ': ' + (message || steps[Math.min(count, steps.length - 1)]) +
-      (placement.workspace ? ' · ' + placement.workspace.plane.toUpperCase() + ' @ ' + placement.workspace.offset : '') + ' · ' + count + ' points · step ' + snapStep() + ' · ' + (variablePlacement(placement.name) ? 'Enter / double-click to finish · ' : '') + 'Esc to cancel';
+      (placement.workspace ? ' · ' + placement.workspace.plane.toUpperCase() + ' @ ' + placement.workspace.offset : '') + ' · ' + count + ' points · ' + (graph.gridEnabled?'step '+snapStep():'free coordinates') + ' · ' + (variablePlacement(placement.name) ? 'Enter / double-click to finish · ' : '') + 'Esc to cancel';
+  }
+  function positionPlacementHint(){
+    if(!placement)return;
+    placement.hint.style.left=(graph.container.scrollLeft+12)+'px';
+    placement.hint.style.top=(graph.container.scrollTop+12)+'px';
   }
   function beginPlacement(name, icon) {
     var workspace = is3D() ? threePlane() : null;
@@ -571,7 +577,7 @@ Draw.loadPlugin(function (ui) {
     hint.className = 'cetzPlacementHint';
     hint.setAttribute('role', 'status'); hint.setAttribute('aria-live', 'polite');
     hint.style.cssText = 'position:absolute;left:12px;top:12px;z-index:20;pointer-events:none;' +
-      'box-sizing:border-box;max-width:calc(100% - 24px);white-space:normal;overflow-wrap:anywhere;padding:7px 10px;border:1px solid #2563eb;border-radius:4px;background:#eff6ff;color:#1e3a8a;font:12px sans-serif;';
+      'box-sizing:border-box;width:max-content;max-width:calc(100% - 24px);white-space:normal;overflow-wrap:anywhere;padding:7px 10px;border:1px solid #2563eb;border-radius:4px;background:#eff6ff;color:#1e3a8a;font:12px sans-serif;';
     var preview = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     preview.setAttribute('data-cetz-placement', name); preview.setAttribute('pointer-events', 'none');
     graph.view.getOverlayPane().appendChild(preview);
@@ -627,6 +633,7 @@ Draw.loadPlugin(function (ui) {
   }
   function spatialPlacementHint(message){
     if(!placement||!placement.spatial)return;
+    positionPlacementHint();
     var p=placement,axis='XYZ'[p.stage%3],index=Math.floor(p.stage/3),point=p.points[index];
     p.hint.querySelector('.cetzSpatialStage').textContent=(p.edit?'Edit · ':'')+p.name+': '+placementSteps[p.name][index]+' · '+axis+' ('+(p.stage-p.firstStage+1)+' / '+(p.lastStage-p.firstStage+1)+')';
     p.hint.querySelector('.cetzSpatialCoordinates').textContent=p.points.map(function(point,i){return placementSteps[p.name][i]+': ('+point.map(function(v){return Number(v.toFixed(6));}).join(', ')+')';}).join(' / ');
@@ -716,15 +723,16 @@ Draw.loadPlugin(function (ui) {
   }
   function placementPoint(event) {
     var frame = cetzFrame(), view = graph.view, scale = view.scale || 1;
+    var snap=event.shiftKey||!graph.gridEnabled?function(value){return value;}:snapValue;
     var local = mxUtils.convertPoint(graph.container, event.clientX, event.clientY);
     if (placement && placement.workspace) {
       var point = applyThree(placement.workspace.inverse, [local.x/scale-view.translate.x,local.y/scale-view.translate.y]);
       var homogeneous = point && placement.workspace.matrix[2];
       if (point && homogeneous[0]*point[0]+homogeneous[1]*point[1]+homogeneous[2] <= 1e-7) return null;
-      return point && point.every(function (value) { return Number.isFinite(value) && Math.abs(value) < 1000000; }) ? point.map(snapValue) : null;
+      return point && point.every(function (value) { return Number.isFinite(value) && Math.abs(value) < 1000000; }) ? point.map(snap) : null;
     }
-    return [snapValue((local.x / scale - view.translate.x - frame.originX) / frame.unitX),
-      snapValue((frame.originY - local.y / scale + view.translate.y) / frame.unitY)];
+    return [snap((local.x / scale - view.translate.x - frame.originX) / frame.unitX),
+      snap((frame.originY - local.y / scale + view.translate.y) / frame.unitY)];
   }
   function previewPlacement(cursor) {
     if (!placement) return;
@@ -864,7 +872,7 @@ Draw.loadPlugin(function (ui) {
       if (!placement||placement.spatial&&placement.hint.contains(event.target)) return;
       event.preventDefault(); event.stopImmediatePropagation(); cancelPlacement();
     }, true);
-    graph.container.addEventListener('scroll',function(){if(placement&&placement.spatial)previewSpatialPlacement();},{passive:true});
+    graph.container.addEventListener('scroll',function(){positionPlacementHint();if(placement&&placement.spatial)previewSpatialPlacement();},{passive:true});
   }
   document.addEventListener('keydown', function (event) {
     if (!placement || isTextTarget(event.target)) return;
@@ -947,7 +955,7 @@ Draw.loadPlugin(function (ui) {
   }
   function inspectorState(cell, data) {
     var state = inspectorStates[cell.id];
-    if (!state) state = inspectorStates[cell.id] = { id: cell.id, model: data, values: {}, valid: true, composing: false, ready: false, timer: null, error: false };
+    if (!state) state = inspectorStates[cell.id] = { id: cell.id, model: data, values: {}, pointDrafts: {}, valid: true, composing: false, ready: false, timer: null, error: false };
     return state;
   }
   function updateInspectorStatus() {
@@ -2523,23 +2531,30 @@ Draw.loadPlugin(function (ui) {
           if (input.style.display !== 'none') input.focus();
         });
         input.addEventListener('input', function () {
+          if(inspectorUpdating&&state.pointDrafts[field.key])return;
           var values = input.value.trim().slice(1, -1).split(',').map(function (part) { return part.trim(); });
           if (values[values.length - 1] === '') values.pop();
           var valid = /^\([\s\S]*\)$/.test(input.value.trim()) && values.length === axes.length &&
             values.every(function (value) { return /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value); });
           axes.forEach(function (control, index) { control.disabled = !valid; if (valid) control.value = values[index]; });
+          delete state.pointDrafts[field.key];
           input.cetzInvalid = false;
         });
         function coordinateChange(event) {
           if (axes.some(function (control) { return control.value === '' || !isFinite(Number(control.value)); })) {
+            state.pointDrafts[field.key]=axes.map(function(control){return control.value;});
             input.cetzInvalid = true; propertyDraftChanged(); return;
           }
+          delete state.pointDrafts[field.key];
           input.cetzInvalid = false;
           input.value = '(' + axes.map(function (control) { return control.value; }).join(', ') + ')'; propertyDraftChanged(event);
         }
         axes.forEach(function (control) {
           control.addEventListener('input', coordinateChange); control.addEventListener('change', coordinateChange);
         });
+        if(state.pointDrafts[field.key]){
+          axes.forEach(function(control,index){control.value=state.pointDrafts[field.key][index];});input.cetzInvalid=true;
+        }
       } else if (field.choices && (!field.value || field.choices.indexOf(field.value) >= 0)) {
         input = document.createElement('select'); input.setAttribute('aria-label', field.label);
         [''].concat(field.choices).forEach(function (choice) {
@@ -4821,12 +4836,13 @@ Draw.loadPlugin(function (ui) {
           if (!cells.length || !cells.every(function (cell) { return /^cetz-(?:edit-\d+|point-\d+-\d+)$/.test(cell.id || ''); }))
             return original.moveCells.apply(this, arguments);
           var model = graph.getModel(), snap = this.cetzGuideSnap || {};
+          var free = this.cetzFreeDrag || this.cetzGridEnabled === false;
           model.beginUpdate();
           try {
             graph.setCellStyles('cetzSnapStep', String(snapStep()), cells);
             // These flags also preserve unsnapped point coordinates in source.
-            graph.setCellStyles('cetzGuideX', snap.x || this.cetzFreeDrag ? '1' : '0', cells);
-            graph.setCellStyles('cetzGuideY', snap.y || this.cetzFreeDrag ? '1' : '0', cells);
+            graph.setCellStyles('cetzGuideX', snap.x || free ? '1' : '0', cells);
+            graph.setCellStyles('cetzGuideY', snap.y || free ? '1' : '0', cells);
             var args = Array.prototype.slice.call(arguments);
             // Keep the grid/guide result through mxGraph's integer drop rounding.
             if (Number.isFinite(this.currentDx)) args[1] = this.currentDx / graph.view.scale;
@@ -4983,8 +4999,11 @@ Draw.loadPlugin(function (ui) {
                 if (Math.hypot(dx, dy) > 0.001) {
                   // One-degree steps keep the endpoint on the arc and its
                   // written stop angle free of long decimal fractions.
-                  var angularStep = snapStep() / 0.25;
-                  var angle = Math.round(Math.atan2(dy, dx) * 180 / Math.PI / angularStep) * angularStep * Math.PI / 180;
+                  var angle = Math.atan2(dy, dx);
+                  if(!ignoreGrid&&graph.gridEnabled){
+                    var angularStep = snapStep() / 0.25;
+                    angle = Math.round(angle * 180 / Math.PI / angularStep) * angularStep * Math.PI / 180;
+                  }
                   centerX = ellipse[0] + ellipse[2] * Math.cos(angle);
                   centerY = ellipse[1] + ellipse[3] * Math.sin(angle);
                   delta.x = (centerX + translate.x - handleOffset) * scale - bounds.x;
@@ -5002,7 +5021,7 @@ Draw.loadPlugin(function (ui) {
               Number.isFinite(rotationCy) && Number.isFinite(ownerAngle)) {
               var radians = ownerAngle * Math.PI / 180;
               var relativeX = worldX - rotationCx, relativeY = worldY - rotationCy;
-              var snapLocal = ignoreX || ignoreY ? function (value) { return value; } : snapValue;
+              var snapLocal = ignoreGrid || !graph.gridEnabled || ignoreX || ignoreY ? function (value) { return value; } : snapValue;
               var localX = snapLocal(rotationCx + relativeX * Math.cos(radians) +
                 relativeY * Math.sin(radians));
               var localY = snapLocal(rotationCy - relativeX * Math.sin(radians) +
@@ -5011,8 +5030,8 @@ Draw.loadPlugin(function (ui) {
               worldX = rotationCx + relativeX * Math.cos(radians) - relativeY * Math.sin(radians);
               worldY = rotationCy + relativeX * Math.sin(radians) + relativeY * Math.cos(radians);
             } else {
-              if (!ignoreX) worldX = snapValue(worldX);
-              if (!ignoreY) worldY = snapValue(worldY);
+              if (!ignoreGrid && graph.gridEnabled && !ignoreX) worldX = snapValue(worldX);
+              if (!ignoreGrid && graph.gridEnabled && !ignoreY) worldY = snapValue(worldY);
             }
             var x = frame.originX + worldX * frame.unitX;
             var y = frame.originY - worldY * frame.unitY;
@@ -5057,9 +5076,9 @@ Draw.loadPlugin(function (ui) {
         var modelY = (this.bounds.y + this.currentDy) / scale - translate.y + anchor.y;
         var arcCenter = cells.length === 1 && graph.getCellStyle(cells[0]).cetzArcHandle === 'center';
         var guided = this.cetzGuideSnap || {};
-        var x = guided.x || this.cetzFreeDrag ? Number(((modelX - frame.originX) / frame.unitX).toFixed(8)) :
+        var x = guided.x || this.cetzFreeDrag || this.cetzGridEnabled === false ? Number(((modelX - frame.originX) / frame.unitX).toFixed(8)) :
           snapValue((modelX - frame.originX) / frame.unitX);
-        var y = guided.y || this.cetzFreeDrag ? Number(((frame.originY - modelY) / frame.unitY).toFixed(8)) :
+        var y = guided.y || this.cetzFreeDrag || this.cetzGridEnabled === false ? Number(((frame.originY - modelY) / frame.unitY).toFixed(8)) :
           snapValue((frame.originY - modelY) / frame.unitY);
         this.hint.textContent = (arcCenter ? 'CeTZ arc center ' : 'CeTZ ') +
           '(' + x + ', ' + y + ')' + (arcCenter ? ' · start fixed' : '');

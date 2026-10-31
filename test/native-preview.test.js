@@ -552,6 +552,11 @@ test('every right palette icon places shapes at clicked points without native de
     assert.equal(templates().length, expectedCount, 'arming ' + name + ' does not insert a default shape');
     assert.equal(icon.getAttribute('aria-pressed'), 'true');
     assert.match(f.graph.container.querySelector('.cetzPlacementHint').textContent, /Esc/);
+    const hint=f.graph.container.querySelector('.cetzPlacementHint');
+    assert.equal(hint.style.left,'29px');assert.equal(hint.style.top,'35px');
+    f.graph.container.scrollLeft=101;f.graph.container.scrollTop=151;
+    f.graph.container.dispatchEvent(new f.w.Event('scroll'));
+    assert.equal(hint.style.left,'113px');assert.equal(hint.style.top,'163px','placement instructions follow the visible viewport');
     for (const [i, p] of points.entries()) {
       const view = f.graph.view, frame = f.rendered.calibration;
       const x = (frame.originX + p[0] * frame.unitX * 2.5 + view.translate.x) * view.scale - f.graph.container.scrollLeft;
@@ -610,6 +615,27 @@ test('placement supports cancellation, retrying invalid points and finishing a v
   arm('circle'); click(0, 0); f.ui.fileLoaded();
   assert.equal(count(), 2, 'reloading a file cancels unfinished placement');
   assert.equal(f.graph.view.getOverlayPane().querySelector('[data-cetz-placement]'), null);
+});
+
+test('new shape placement respects disabled snapping and Shift free coordinates', { skip }, async t => {
+  const f=await fixture(t);
+  const icon=f.paletteEntries['cetz-preview-primitives'].find(entry=>entry.getAttribute('aria-label')==='line');
+  for(const freeWithShift of [false,true]){
+    f.graph.gridEnabled=freeWithShift;
+    icon.dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
+    const hint=f.graph.container.querySelector('.cetzPlacementHint');
+    assert.equal(hint.style.width,'max-content','instructions retain readable width on the infinite canvas');
+    if(!freeWithShift)assert.match(hint.textContent,/free coordinates/);
+    const points=[[.37123456,.61234567],[1.41723456,2.17345678]];
+    for(const point of points){
+      const frame=f.rendered.calibration;
+      f.graph.container.dispatchEvent(new f.w.MouseEvent('click',{clientX:frame.originX+point[0]*frame.unitX*2.5,
+        clientY:frame.originY-point[1]*frame.unitY*2.5,bubbles:true,cancelable:true,shiftKey:freeWithShift}));
+    }
+    const marker=Object.values(f.graph.model.cells).filter(cell=>/cetzPoints=/.test(cell.style||'')).at(-1);
+    const actual=JSON.parse(decodeURIComponent(/cetzPoints=([^;]+)/.exec(marker.style)[1]));
+    actual.forEach((point,i)=>point.forEach((value,j)=>assert.ok(Math.abs(value-points[i][j])<1e-6,JSON.stringify({freeWithShift,actual,points}))));
+  }
 });
 
 test('native clipboard actions and shortcuts send CeTZ commands without cloning SVG cells', { skip }, async t => {
@@ -1282,6 +1308,25 @@ test('automatic inspector queues edits across selection changes without writing 
   assert.match(source, /circle\(\(4, 0\), radius: 2\)/);
 });
 
+test('unfinished point components survive selection changes and an earlier property acknowledgement', { skip }, async t => {
+  let source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\nline((0,0),(2,1))\ncircle((4,0),radius:1)\n})';
+  const f=await fixture(t,source);f.select('cetz-edit-0');
+  const input=name=>f.ui.sidebar.wrapper.querySelector('[aria-label="'+name+'"]');
+  input('Start X').value='1';input('Start X').dispatchEvent(new f.w.Event('change',{bubbles:true}));
+  assert.equal(inspectorCommands(f).length,1);
+  input('Start X').value='';input('Start X').dispatchEvent(new f.w.Event('input',{bubbles:true}));
+  input('Start Y').value='4';input('Start Y').dispatchEvent(new f.w.Event('input',{bubbles:true}));
+  f.select('cetz-edit-1');f.select('cetz-edit-0');
+  assert.equal(input('Start X').value,'','the incomplete axis must stay visible as entered');assert.equal(input('Start Y').value,'4');
+  source=await acceptInspectorCommand(f,source);
+  assert.equal(input('Start X').value,'','acknowledging the earlier value must not replace the newer draft');assert.equal(input('Start Y').value,'4');
+  input('close').value='true';input('close').dispatchEvent(new f.w.Event('change',{bubbles:true}));
+  assert.equal(inspectorCommands(f).length,0,'other property edits wait for the incomplete point');
+  input('Start X').value='2.12345678';input('Start X').dispatchEvent(new f.w.Event('change',{bubbles:true}));
+  await waitForInspector(()=>inspectorCommands(f).length===1);source=await acceptInspectorCommand(f,source);
+  assert.match(source,/line\(\(2.12345678, 4\),\(2,1\), close: true\)/);
+});
+
 test('automatic inspector waits for IME composition and preserves rejected values for correction', { skip }, async t => {
   const source = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\ncontent((0, 0), [Hello])\n})';
   const f = await fixture(t, source); f.select('cetz-edit-0');
@@ -1578,6 +1623,16 @@ test('body drag protocol preserves free movement when the grid is disabled', { s
   assert.equal(String(f.graph.getCellStyle(drag.cell).cetzMoveGrid), '0');
   const patches = patchesFromEditable(source, f.rendered, f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)), readAllCells);
   assert.match(patches[0].text, /polygon\(\(0.37, 0.61\), 6, radius: 0.70710678\)/);
+});
+
+test('disabling the grid also releases control point snapping and preserves free source coordinates', { skip }, async t => {
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\nline((0,0),(2,1))\n})';
+  const f=await fixture(t,source,{loadedLayers:true});f.graph.gridEnabled=false;f.graph.graphHandler.guidesEnabled=false;
+  const unit=f.rendered.calibration.unitX*2.5,drag=f.drag('cetz-point-0-0',unit*.37001234,-unit*.61001234);
+  assert.ok(Math.abs(drag.handler.currentDx-unit*.37001234)<1e-8);assert.ok(Math.abs(drag.handler.currentDy+unit*.61001234)<1e-8);
+  f.send(drag.target,'up',drag.x+unit*.37001234,drag.y-unit*.61001234);
+  const xml=f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)),patches=patchesFromEditable(source,f.rendered,xml,readAllCells);
+  assert.match(patches[0].text,/line\(\(0.37001234, 0.61001234\),\(2,1\)\)/);
 });
 
 test('Shift drag bypasses grid, alignment guides and axis constraints and preserves free coordinates in source', { skip }, async t => {

@@ -584,6 +584,38 @@ test('a standard 2D drawing converts to a 3D plane and returns to normal 2D edit
   await until(()=>source.text.includes('radius:2')&&gui.text.includes('cetzMode=plane-2d;'));
 });
 
+test('workspace switches reuse the full 3D preview while edits and explicit refresh stay fresh',async t=>{
+  let renders=0;
+  const initial='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({circle((1,2),radius:1)})})\n})';
+  const {source,gui,action,save,until,runCommand}=await extensionFixture(t,initial,{beforeRender(){renders++;}});
+  function mode(mode){
+    const workspace=JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+    const value=encodeURIComponent(JSON.stringify({mode,planeKey:workspace.planes[0].key}));
+    save(gui.text.replace('</root>',action('workspace-mode').replace('cetzAction=workspace-mode;','cetzAction=workspace-mode;cetzValue='+value+';')+'</root>'));
+  }
+  for(let i=0;i<2;i++){
+    mode('2d');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+    mode('3d');await until(()=>gui.text.includes('cetzMode=3d;'));
+  }
+  assert.equal(renders,1,'source-neutral tab switches do not compile the full drawing again');
+  assert.equal(source.text,initial);
+  await runCommand('cetzEditor.syncFromSource');
+  assert.equal(renders,2,'explicit refresh recompiles included files as well');
+  mode('2d');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  const cell=[...readAllCells(gui.text).values()].find(item=>/cetzKind=circle;/.test(item.cell.style||''));
+  const model=JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(cell.cell.style)[1]));
+  const value=encodeURIComponent(JSON.stringify({base:model.base,values:{radius:'2'}})).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));
+  save(gui.text.replace('</root>',action('properties','0').replace('cetzAction=properties;','cetzAction=properties;cetzValue='+value+';')+'</root>'));
+  await until(()=>source.text.includes('radius:2')&&!gui.text.includes('cetzAction=properties;'));
+  mode('3d');await until(()=>gui.text.includes('cetzMode=3d;'));
+  const ids=[...readAllCells(gui.text).keys()];
+  assert.equal(new Set(ids).size,ids.length);
+  mode('2d');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  const updated=[...readAllCells(gui.text).values()].find(item=>/cetzKind=circle;/.test(item.cell.style||''));
+  const properties=JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(updated.cell.style)[1]));
+  assert.equal(properties.fields.find(field=>field.key==='radius').value,'2');
+});
+
 test('3D plane settings and camera position actions remain source-validated and keep selected plane identity',async t=>{
   const initial='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({line((0,0,0),(2,1,1))})\n})';
   const {source,gui,action,save,until}=await extensionFixture(t,initial);

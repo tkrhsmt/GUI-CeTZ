@@ -81,6 +81,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     addListener(name, callback) { selectionChanged = callback; }
   };
   const graph = {
+    gridEnabled: true,
     view: { scale: 1, translate: { x: 0, y: 0 }, getOverlayPane() { return {}; },
       invalidate() {}, validate() { viewValidations++; },
       getState(cell) { return cellStates.get(cell.id) ||

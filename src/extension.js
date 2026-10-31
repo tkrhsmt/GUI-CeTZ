@@ -27,6 +27,7 @@ function closeSession(session, dispose = false) {
   clearTimeout(session.timer);
   session.timer = null;
   session.preparedRender = null;
+  session.full3DRender = null;
   // Preserve a last debounced GUI edit without writing to the closed editor.
   const flush = session.flushGui;
   session.flushGui = null;
@@ -106,10 +107,18 @@ function decorateWorkspace(editable,state) {
   editable.workspace.activePlaneKey=active;state.activePlaneKey=active;
   editable.xml=editable.xml.replace(/cetzWorkspace=[^;]*;/,`cetzWorkspace=${encodeURIComponent(JSON.stringify(editable.workspace))};`);
 }
-async function sessionRender(session,text,strict=false,requestedKey=session.activePlaneKey) {
+function retain3DRender(session,text,rendered) {
+  session.full3DRender=rendered.editable?.mode==='3d'?{text,rendered}:null;
+  // Scene binding and plane selection mutate the model. Keep the reusable full
+  // render in its original coordinate/ID space, including after plane edits.
+  return rendered.editable?.mode==='3d'?{...rendered,editable:{...rendered.editable,
+    workspace:{...rendered.editable.workspace}}}:rendered;
+}
+async function sessionRender(session,text,strict=false,requestedKey=session.activePlaneKey,reuseFull=false) {
   const canvas=usableDiagram(text,session.index).canvas;
-  const full=strict?{editable:await renderEditable(text,canvas,session.sourceUri.fsPath)}:
-    await renderDiagram(text,canvas,session.sourceUri.fsPath);
+  const cached=reuseFull&&session.full3DRender?.text===text?session.full3DRender.rendered:null;
+  const full=retain3DRender(session,text,cached||(strict?{editable:await renderEditable(text,canvas,session.sourceUri.fsPath)}:
+    await renderDiagram(text,canvas,session.sourceUri.fsPath)));
   const state={workspaceMode:session.workspaceMode,activePlaneKey:requestedKey};
   decorateWorkspace(full.editable,state);
   if(state.workspaceMode==='2d'&&full.editable?.mode==='3d'){
@@ -188,7 +197,7 @@ async function applyHistoryAction(session, action) {
   await syncFromSource(session);
   await refreshGuiView(session);
 }
-async function syncFromSource(session) {
+async function syncFromSource(session,reuseFull=false) {
   if (session.closed) return;
   const generation = session.syncGeneration = (session.syncGeneration || 0) + 1;
   const doc = await documentForSession(session);
@@ -198,7 +207,7 @@ async function syncFromSource(session) {
   const prepared = session.preparedRender;
   session.preparedRender = null;
   const requestedKey=require('./plane-editor').rebasePlaneKey(session.activePlaneKey,session.sceneSource||text,text);
-  const result=prepared&&prepared.text===text?prepared:await sessionRender(session,text,false,requestedKey);
+  const result=prepared&&prepared.text===text?prepared:await sessionRender(session,text,false,requestedKey,reuseFull);
   const {xml:renderedXml,editable}=result;
   if (generation !== session.syncGeneration || (await documentForSession(session)).version !== sourceVersion) return;
   const scene = Object.fromEntries(['sceneBase', 'sceneSpan', 'sceneSignature', 'sceneRevision', 'sceneSource']
@@ -282,7 +291,7 @@ async function syncToSource(session, xml) {
           session.workspaceMode='2d';session.activePlaneKey=plane.key;
         }else{session.workspaceMode=request.mode;if(request.mode==='2d')session.activePlaneKey=null;}
         session.preparedRender=null;
-        await syncFromSource(session);await refreshGuiView(session);
+        await syncFromSource(session,true);await refreshGuiView(session);
       }catch(error){Object.assign(session,oldState);session.preparedRender=null;await syncFromSource(session);await refreshGuiView(session);throw error;}
       return;
     }
@@ -485,7 +494,7 @@ function activate(context) {
       const doc = await vscode.workspace.openTextDocument(source.sourceUri);
       const version = doc.version, text = doc.getText();
       const diagram = usableDiagram(text, source.index);
-      const { xml, editable } = await renderDiagram(text, diagram.canvas, doc.uri.fsPath);
+      const { xml, editable } = retain3DRender(session,text,await renderDiagram(text, diagram.canvas, doc.uri.fsPath));
       if ((await vscode.workspace.openTextDocument(source.sourceUri)).version !== version) continue;
       session.lastXml = bindScene(session, text, xml, editable);
       session.sourceVersion = version;
