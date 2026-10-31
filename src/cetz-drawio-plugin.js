@@ -1324,10 +1324,10 @@ Draw.loadPlugin(function (ui) {
     });
     return ids.length ? cells[ids[0]] : null;
   }
-  function threeCameraAngles() {
+  function threeCameraAngles(sourceOnly) {
     var cell = threeCameraCell(threeView()), data = cell && inspectorData(cell);
     if (!data) return null;
-    var state = inspectorStates[cell.id];
+    var state = !sourceOnly && inspectorStates[cell.id];
     return ['x','y','z'].map(function (key, index) {
       var value = state && state.values[key] !== undefined ? state.values[key] : inspectorValue(data, key);
       if (!value) return [35.264,45,0][index];
@@ -1512,6 +1512,48 @@ Draw.loadPlugin(function (ui) {
     if(preview.node&&preview.node.parentNode)preview.node.parentNode.removeChild(preview.node);
     drawThreePlaneAxes();
   }
+  function updateThreeOrbitPreview() {
+    var preview=threeOrbitPreview;
+    if(!preview)return;
+    var cell=is3D()&&graph.getModel().getCell('cetz-preview-image');
+    if(!cell){clearThreeOrbitPreview();return;}
+    // Revision markers can change without changing the artwork. Keep the
+    // local frame until the camera result itself arrives, rather than flashing
+    // the old projection on an unrelated source/selection acknowledgement.
+    if(!preview.finalAngles){
+      if(cell.style!==preview.imageStyle)clearThreeOrbitPreview();
+      return;
+    }
+    var angles=threeCameraAngles(true),camera=threeCameraCell(threeView()),state=camera&&inspectorStates[camera.id];
+    var accepted=angles&&angles.every(function(value,i){return Number.isFinite(value)&&Math.abs(value-preview.finalAngles[i])<0.000001;});
+    if(!accepted&&!(state&&state.error&&!inspectorFlight))return;
+    var style=cell.style;
+    if(preview.loadingStyle===style)return;
+    preview.loadingStyle=style;
+    var imageState=graph.view.getState(cell),node=imageState&&imageState.shape&&imageState.shape.node;
+    if(node){
+      if(!preview.hidden.some(function(entry){return entry.node===node;}))
+        preview.hidden.push({node:node,visibility:node.style.visibility});
+      node.style.visibility='hidden';
+    }
+    function showResult() {
+      var current=graph.getModel().getCell('cetz-preview-image');
+      if(threeOrbitPreview!==preview||!is3D()||!current||current.style!==style)return;
+      clearThreeOrbitPreview();
+      // The live merge can replace the image's SVG node while it is hidden.
+      // Repaint the current cell, not just the node saved before the gesture.
+      graph.view.invalidate(current);graph.view.validate();
+      var state=graph.view.getState(current);
+      if(state&&state.shape){graph.cellRenderer.redraw(state,true);state.shape.node.style.visibility='visible';}
+      updateSpatialSelection();
+    }
+    var image=style!==preview.imageStyle&&/(?:^|;)image=([^;]+)(?:;|$)/.exec(style);
+    var loader=image&&new Image();
+    if(loader&&typeof loader.decode==='function'){
+      loader.src=image[1];
+      loader.decode().then(showResult,showResult);
+    }else showResult();
+  }
   function prepareThreeOrbit(angles) {
     if(!angles||inspectorFlight||threeOrbitPreview)return null;
     var view=threeView(),workspace=threeWorkspace(),data;
@@ -1578,7 +1620,7 @@ Draw.loadPlugin(function (ui) {
       var lens=threePerspectiveLens(angles,position,depthPoints,info.distance);
       if(lens&&Math.abs(lens.distance-distance)<0.001*Math.max(1,distance))baseLens=lens;
     }
-    return {parts:parts,camera:camera,perspective:perspective,adaptiveLens:!!baseLens,geometry:data.geometry,view:view,sorted:info.sorted,shapes:[],hidden:[],node:null,source:inspectorScene(),
+    return {parts:parts,camera:camera,perspective:perspective,adaptiveLens:!!baseLens,geometry:data.geometry,view:view,sorted:info.sorted,shapes:[],hidden:[],node:null,
       imageStyle:graph.getModel().getCell('cetz-preview-image').style,matrix:matrix};
   }
   function renderThreeOrbit(preview,angles) {
@@ -1678,6 +1720,7 @@ Draw.loadPlugin(function (ui) {
     else if (threeDrag.angles) {
       var angles=[threeDrag.angles[0]+dy*0.5,threeDrag.angles[1]-dx*0.5,threeDrag.angles[2]];
       if(threeDrag.preview&&renderThreeOrbit(threeDrag.preview,angles)===false){clearThreeOrbitPreview();threeDrag.preview=null;}
+      if(immediate&&threeDrag.preview)threeDrag.preview.finalAngles=angles;
       if(immediate||!threeDrag.preview)queueThreeCamera(angles,immediate);
       else threeAngles.forEach(function(input,i){input.value=String(Number(angles[i].toFixed(3)));});
       if(immediate&&threeDrag.preview&&!inspectorFlight&&!workspaceFlight)clearThreeOrbitPreview();
@@ -4626,8 +4669,6 @@ Draw.loadPlugin(function (ui) {
     suppressCachedSelectionBorders();
     var active = isCetz(), preview = active && isPreview();
     if (active && ui.fitWindowEnabled && ui.setFitWindowEnabled) ui.setFitWindowEnabled(false);
-    if(threeOrbitPreview&&(!is3D()||threeOrbitPreview.source!==inspectorScene()||
-      threeOrbitPreview.imageStyle!==(graph.getModel().getCell('cetz-preview-image')||{}).style))clearThreeOrbitPreview();
     threeHint.style.display = active && is3D() ? '' : 'none';
     updateDimensionUI();
     updateThreeWorkspace();
@@ -5074,6 +5115,7 @@ Draw.loadPlugin(function (ui) {
     clearRenderedTemplates();
     syncCodeSelection();
     updateControls();
+    updateThreeOrbitPreview();
     if(dimensionViewport&&dimensionViewport.stamp===workspaceStamp()){
       fitOnLoad=false;
       restoreDimensionViewport(dimensionViewport.state);

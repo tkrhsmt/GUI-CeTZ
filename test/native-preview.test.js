@@ -2095,6 +2095,46 @@ test('3D pointer rotation previews locally without model writes and compiles onc
   assert.notEqual(g.view.getState(g.model.getCell('cetz-preview-image')).shape.node.style.visibility,'hidden');
 });
 
+test('3D orbit keeps its last frame through scene refreshes and waits for the final SVG to decode', {skip}, async t => {
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,y:30deg,z:5deg,{on-xy({rect((0,0),(2,1))})})\n})';
+  const f=await fixture(t,source,{pointerEvents:true}),g=f.graph;
+  const state={source,mode:'3d',key:f.rendered.workspace.planes[0].key,scene:{},liveMerge:true};
+  await loadWorkspaceScene(f,state,f.rendered);
+  const decodes=[];
+  f.w.Image=class { decode(){return new Promise(resolve=>decodes.push(resolve));} };
+  const preview=()=>g.view.getOverlayPane().querySelector('[data-cetz-orbit-preview]');
+  f.send(g.container,'down',100,100);f.send(f.w.document,'move',140,120);
+  await waitForInspector(()=>!!preview());
+  const frame=preview();
+  await loadWorkspaceScene(f,state,await renderEditable(source,parseCanvas(source).canvas,path.resolve('examples/native.typ')));
+  assert.equal(preview(),frame,'a source-neutral scene refresh must not discard the active rotation');
+  f.send(f.w.document,'up',140,120);
+  assert.equal(inspectorCommands(f).length,1);
+  await acceptWorkspaceUI(f,state);
+  assert.match(state.source,/ortho\(x:30deg,y:10deg,z:5deg/);
+  assert.equal(preview(),frame,'the final frame remains visible while the exact SVG is decoding');
+  assert.equal(decodes.length,1);
+  f.send(g.container,'down',100,100);f.send(f.w.document,'move',120,110);
+  await waitForInspector(()=>!!preview()&&preview()!==frame);
+  const nextFrame=preview();
+  decodes[0]();
+  await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(preview(),nextFrame,'a late decode from the previous rotation cannot clear a newer gesture');
+  f.send(f.w.document,'up',120,110);
+  await acceptWorkspaceUI(f,state);
+  assert.match(state.source,/ortho\(x:35deg,y:0deg,z:5deg/);
+  assert.equal(preview(),nextFrame);
+  assert.equal(decodes.length,2);
+  const imageCell=g.model.getCell('cetz-preview-image'),oldNode=g.view.getState(imageCell).shape.node;
+  g.view.clear(imageCell);g.view.validate();
+  const newNode=g.view.getState(imageCell).shape.node;
+  assert.notEqual(newNode,oldNode);
+  newNode.style.visibility='hidden';
+  decodes[1]();
+  await waitForInspector(()=>!preview());
+  assert.equal(g.view.getState(g.model.getCell('cetz-preview-image')).shape.node.style.visibility,'visible');
+});
+
 test('local orbit moves raw XYZ lines and labels alongside planes and commits the latest frame on blur',{skip},async t=>{
   const source='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,y:30deg,z:5deg,{on-xy({rect((0,0),(2,1))})\nline((0,0,0),(3,2,2),stroke:1.5pt+red)\ncontent((3,2,2),[XYZ])})\n})';
   const f=await fixture(t,source),g=f.graph,state={source,mode:'3d',key:f.rendered.workspace.planes[0].key,scene:{},liveMerge:true};
