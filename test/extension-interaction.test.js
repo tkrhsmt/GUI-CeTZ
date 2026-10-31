@@ -751,3 +751,20 @@ test('plane manipulation, projection arguments and 3D reorder participate in sou
   assert.equal(workspace().activePlaneKey,'gui-plane-1');assert.ok(source.text.includes('rotate(x: 0deg, y: 0deg, z: 90deg)'));
   save(gui.text.replace('</root>',action('undo')+'</root>'));await until(()=>source.text===configured&&workspace().activePlaneKey==='gui-plane-1');
 });
+
+for(const mode of ['2d','3d'])test(`compile errors preserve the last ${mode} scene without reloading and recover in place`,async t=>{
+  const body='circle((2,3),radius:1)';
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\n'+(mode==='3d'?'ortho(x:17deg,y:39deg,{on-xy({'+body+'})})':body)+'\n})';
+  const {gui,editSource,until,executedCommands,source}=await extensionFixture(t,initial);
+  const before=gui.text;
+  const {withDiagramStatus}=require('../src/diagram-status');
+  for(const broken of [initial.replace('radius:1','radius:missing'),initial.replace('radius:1','radius:unknown'),initial.slice(0,-1)]){
+    const previous=gui.text;
+    editSource(broken);await until(()=>gui.text.includes('cetzStatus=')&&gui.text!==previous);
+    assert.equal(withDiagramStatus(gui.text,null),withDiagramStatus(before,null),'an error changes only status, never geometry, camera, IDs or workspace');
+    assert.deepEqual(executedCommands,[],'compile failure never reloads the webview or fits the drawing');
+  }
+  editSource(initial);await until(()=>!gui.text.includes('cetzStatus='));
+  assert.equal(source.text,initial);assert.deepEqual(executedCommands,[]);
+  if(mode==='3d')assert.match(gui.text,/cetzMode=3d;/);
+});

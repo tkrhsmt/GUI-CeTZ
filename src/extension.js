@@ -489,7 +489,9 @@ async function showSyncError(session, error) {
   if (!session.lastXml) return report(error);
   const message = error instanceof Error ? error.message : String(error);
   await updateDiagramDocument(session, withDiagramStatus(session.lastXml, message), session.diagramFiles);
-  await refreshGuiView(session, true);
+  // The scene's status cell updates the error banner through the live merge.
+  // Reloading the webview would discard its zoom, scroll and pending viewport
+  // state, and fileLoaded would fit the last valid artwork all over again.
 }
 function activate(context) {
   const diagramFiles = new DiagramFiles(vscode, async uri => {

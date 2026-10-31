@@ -920,7 +920,16 @@ Draw.loadPlugin(function (ui) {
   controls.insertBefore(inspector, controls.firstChild);
   var inspectorSignature = '', inspectorFields = [], inspectorCurrent = null;
   var inspectorStatus, inspectorStates = {}, inspectorFlight = null, inspectorUpdating = false, inspectorFileKey = null;
-  function inspectorScene() { return Object.keys(graph.getModel().cells || {}).filter(function (id) { return /^cetz-scene-/.test(id); }).join(','); }
+  function inspectorScene() {
+    var cells=graph.getModel().cells||{};
+    // A failed compile keeps the last valid scene and changes only its error
+    // status. Treat that reply as an acknowledgement so pending edits and
+    // orbit previews can be rejected without reloading the entire webview.
+    return Object.keys(cells).filter(function(id){return /^cetz-scene-/.test(id);}).map(function(id){
+      var status=/(?:^|;)cetzError=([^;]*)/.exec(cells[id].style||'');
+      return id+':'+(status?status[1]:'');
+    }).join(',');
+  }
   var paletteNames = ['black', 'gray', 'silver', 'white', 'navy', 'blue', 'aqua', 'teal',
     'eastern', 'purple', 'fuchsia', 'maroon', 'red', 'orange', 'yellow', 'olive', 'green', 'lime', 'none'];
   var paletteHex = ['#000000','#aaaaaa','#dddddd','#ffffff','#001f3f','#0074d9','#7fdbff','#39cccc','#239dad','#b10dc9','#f012be','#85144b','#ff4136','#ff851b','#ffdc00','#3d9970','#2ecc40','#01ff70'];
@@ -1552,6 +1561,16 @@ Draw.loadPlugin(function (ui) {
       rejected=state&&state.error&&!inspectorFlight;
     }
     if(!accepted&&!rejected)return;
+    if(rejected&&!preview.spatialEdit&&state){
+      // Camera gestures start from the displayed, accepted pose. Do not let
+      // a failed gesture become the starting point of the next rotation.
+      ['x','y','z'].forEach(function(key,i){
+        var sent=String(Number(preview.finalAngles[i].toFixed(6)))+'deg';
+        if(state.values[key]===sent)delete state.values[key];
+      });
+      if(!Object.keys(state.values).length){state.error=false;state.ready=false;state.historyGroup=null;}
+      updateThreeWorkspace();
+    }
     var style=cell.style;
     if(preview.loadingStyle===style)return;
     preview.loadingStyle=style;
@@ -1741,7 +1760,11 @@ Draw.loadPlugin(function (ui) {
   function updateThreeDrag(immediate) {
     if (!threeDrag || !threeDrag.moved) return;
     var dx = threeDrag.lastX-threeDrag.x, dy = threeDrag.lastY-threeDrag.y;
-    if (threeDrag.pan) graph.view.setTranslate(threeDrag.tx+dx/graph.view.scale,threeDrag.ty+dy/graph.view.scale);
+    if (threeDrag.pan) {
+      var scrollbars=graph.getContainerMetrics?graph.getContainerMetrics().scrollbars:mxUtils.hasScrollbars(graph.container);
+      if(scrollbars)positionCanvasViewport(threeDrag.worldX-dx/graph.view.scale,threeDrag.worldY-dy/graph.view.scale);
+      else graph.view.setTranslate(threeDrag.tx+dx/graph.view.scale,threeDrag.ty+dy/graph.view.scale);
+    }
     else if (threeDrag.angles) {
       var angles=[threeDrag.angles[0]+dy*0.5,threeDrag.angles[1]-dx*0.5,threeDrag.angles[2]];
       if(threeDrag.preview&&renderThreeOrbit(threeDrag.preview,angles)===false){clearThreeOrbitPreview();threeDrag.preview=null;}
@@ -1780,7 +1803,8 @@ Draw.loadPlugin(function (ui) {
     if(spatialSelectionLayer)spatialSelectionLayer.style.display='none';
     threeDrag = {x:event.clientX,y:event.clientY,lastX:event.clientX,lastY:event.clientY,moved:false,preview:threePanMode?null:prepareThreeOrbit(angles),
       pointerId:event.pointerId,plane:plane,object:object,
-      angles:angles,pan:threePanMode,token:'orbit-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2), tx:graph.view.translate.x,ty:graph.view.translate.y};
+      angles:angles,pan:threePanMode,token:'orbit-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2), tx:graph.view.translate.x,ty:graph.view.translate.y,
+      worldX:graph.container.scrollLeft/graph.view.scale-graph.view.translate.x,worldY:graph.container.scrollTop/graph.view.scale-graph.view.translate.y};
   }, true);
   document.addEventListener(threeMoveEvent, function (event) {
     if (!threeDrag || event.pointerId !== threeDrag.pointerId) return;
@@ -3045,10 +3069,10 @@ Draw.loadPlugin(function (ui) {
   var previousFormatMinWidth = null;
   var previousFormatMaxWidth = null;
   var viewportLayoutDepth = 0;
-  function preserve2DViewport(layout) {
+  function preserveCanvasViewport(layout) {
     return function () {
       var view = graph.view, container = graph.container;
-      var viewport = container && !viewportLayoutDepth && activeMode && isEditablePreview() && !is3D() ? {
+      var viewport = container && !viewportLayoutDepth && activeMode && isEditablePreview() ? {
         x: container.scrollLeft / view.scale - view.translate.x,
         y: container.scrollTop / view.scale - view.translate.y
       } : null;
@@ -3066,8 +3090,8 @@ Draw.loadPlugin(function (ui) {
   // Native refresh listeners can retain a bound EditorUi.refresh from before
   // this plugin loaded. Guard the actual layout entry points they all call,
   // including the delayed validation after the CeTZ rail is restored.
-  if (graph.sizeDidChange) graph.sizeDidChange = preserve2DViewport(graph.sizeDidChange);
-  if (graph.view.validate) graph.view.validate = preserve2DViewport(graph.view.validate);
+  if (graph.sizeDidChange) graph.sizeDidChange = preserveCanvasViewport(graph.sizeDidChange);
+  if (graph.view.validate) graph.view.validate = preserveCanvasViewport(graph.view.validate);
   var originalRefresh = ui.refresh;
   if (originalRefresh) ui.refresh = function () {
     if (activeMode) {
@@ -3097,7 +3121,7 @@ Draw.loadPlugin(function (ui) {
     if (collapsed && ui.hsplitPosition > 0) sidebarExpandedWidth = ui.hsplitPosition;
     sidebarCollapsed = collapsed;
     applySidebarLayout();
-    if (ui.refresh) preserve2DViewport(ui.refresh).call(ui, true);
+    if (ui.refresh) preserveCanvasViewport(ui.refresh).call(ui, true);
   }
   var originalToggleFormatPanel = ui.toggleFormatPanel;
   if (originalToggleFormatPanel) ui.toggleFormatPanel = function () {
@@ -4029,6 +4053,18 @@ Draw.loadPlugin(function (ui) {
     var padding = nativePagePadding.apply(this, arguments);
     return isCetz() ? new mxPoint(padding.x + viewportPadding.x, padding.y + viewportPadding.y) : padding;
   };
+  function positionCanvasViewport(x,y) {
+    var view=graph.view,container=graph.container;
+    var left=(x+view.translate.x)*view.scale,top=(y+view.translate.y)*view.scale;
+    var extraX=Math.max(0,-left,container.scrollWidth>0?left+container.clientWidth-container.scrollWidth:0);
+    var extraY=Math.max(0,-top,container.scrollHeight>0?top+container.clientHeight-container.scrollHeight:0);
+    if(nativePagePadding&&(extraX>0||extraY>0)){
+      viewportPadding.x+=extraX/view.scale;viewportPadding.y+=extraY/view.scale;
+      view.validate();graph.sizeDidChange();
+    }
+    container.scrollLeft=(x+view.translate.x)*view.scale;
+    container.scrollTop=(y+view.translate.y)*view.scale;
+  }
   if (graph.graphModelChanged) {
     var nativeGraphModelChanged = graph.graphModelChanged;
     graph.graphModelChanged = function () {

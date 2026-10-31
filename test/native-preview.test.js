@@ -3078,3 +3078,54 @@ test('projection Properties and hierarchical Outline reorder planes, line and co
   row(line.index).querySelector('.cetzOutlineGrip').dispatchEvent(dragEvent('dragstart'));row(other.index).dispatchEvent(dragEvent('drop'));
   assert.ok(!Object.values(f.graph.model.cells).some(cell=>/cetzAction=move-(?:before|after);/.test(cell.style||'')),'cross-projection drops are ignored');
 });
+
+for(const mode of ['2d','3d'])test(`${mode} error status and native refresh preserve the viewport and recover without fitting`,{skip},async t=>{
+  const body='circle((2,3),radius:1)';
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\n'+(mode==='3d'?'ortho(x:17deg,y:39deg,{on-xy({'+body+'})})':body)+'\n})';
+  const f=await fixture(t,source,{nativeCanvas:true,clampedScroll:true,nativeRefresh:true}),g=f.graph;
+  const state={source,scene:{},liveMerge:true};await loadWorkspaceScene(f,state,f.rendered);
+  g.view.setScale(1.7);g.view.validate();g.sizeDidChange();g.container.scrollLeft=123;g.container.scrollTop=157;
+  const origin=()=>{const v=g.view;return [v.translate.x*v.scale-g.container.scrollLeft,v.translate.y*v.scale-g.container.scrollTop];};
+  const before=origin(),background=g.model.getGeometry(g.model.getCell('cetz-preview-background')).clone();
+  const scene=Object.values(g.model.cells).find(cell=>/^cetz-scene-/.test(cell.id));
+  const scale=g.view.scale,fits=f.nativeFits();
+  for(const message of ['Missing coordinate\n'.repeat(30),'Different compile error','']){
+    g.model.setStyle(scene,scene.style.replace(/cetzError=[^;]*;/,'cetzError='+encodeURIComponent(message)+';'));
+    await new Promise(resolve=>setTimeout(resolve,30));
+    assert.equal(f.ui.container.querySelector('.cetzErrorBar').style.display,message?'block':'none');
+    f.ui.refresh(true);f.ui.boundNativeRefresh(true);f.ui.formatContainer.style.width='48px';g.view.validate();g.sizeDidChange();
+    assert.equal(g.view.scale,scale);assert.equal(f.nativeFits(),fits);
+    origin().forEach((value,i)=>assert.ok(Math.abs(value-before[i])<1e-5,`error layout drifted axis ${i} by ${value-before[i]} pixels`));
+    assert.deepEqual(g.model.getGeometry(g.model.getCell('cetz-preview-background')),background);
+  }
+});
+
+test('an error-only reply rejects a pending orbit without moving the viewport or retaining an unaccepted camera',{skip},async t=>{
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,y:30deg,z:0deg,{on-xy({rect((0,0),(2,1))})})\n})';
+  const f=await fixture(t,source,{nativeCanvas:true,clampedScroll:true}),g=f.graph;
+  const state={source,scene:{},liveMerge:true};await loadWorkspaceScene(f,state,f.rendered);
+  g.view.setScale(1.4);g.view.validate();g.sizeDidChange();g.container.scrollLeft=123;g.container.scrollTop=157;
+  const origin=()=>[g.view.translate.x*g.view.scale-g.container.scrollLeft,g.view.translate.y*g.view.scale-g.container.scrollTop];
+  const before=origin(),preview=()=>g.view.getOverlayPane().querySelector('[data-cetz-orbit-preview]');
+  f.send(g.container,'down',100,100);f.send(f.w.document,'move',140,120);f.send(f.w.document,'up',140,120);
+  assert.ok(preview());assert.equal(inspectorCommands(f).length,1);
+  const scene=Object.values(g.model.cells).find(cell=>/^cetz-scene-/.test(cell.id));
+  g.model.setStyle(scene,scene.style.replace(/cetzError=[^;]*;/,'cetzError=compile%20failed;'));
+  await waitForInspector(()=>!preview());
+  assert.notEqual(g.view.getState(g.model.getCell('cetz-preview-image')).shape.node.style.visibility,'hidden');
+  assert.equal(f.ui.sidebar.wrapper.querySelector('[aria-label="Camera X °"]').value,'20');
+  assert.equal(f.ui.sidebar.wrapper.querySelector('[aria-label="Camera Y °"]').value,'30');
+  assert.equal(g.view.scale,1.4);origin().forEach((n,i)=>assert.ok(Math.abs(n-before[i])<1e-5));
+});
+
+test('3D native pan moves by the pointer distance once while retaining layout protection',{skip},async t=>{
+  const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo(x:20deg,y:30deg,{on-xy({rect((0,0),(2,1))})})\n})';
+  const f=await fixture(t,source,{nativeCanvas:true,clampedScroll:true}),g=f.graph;
+  await loadWorkspaceScene(f,{source,scene:{},liveMerge:true},f.rendered);
+  const pan=[...f.ui.sidebar.wrapper.querySelectorAll('button')].find(button=>button.textContent==='Pan');pan.click();
+  const origin=()=>[g.view.translate.x*g.view.scale-g.container.scrollLeft,g.view.translate.y*g.view.scale-g.container.scrollTop],before=origin();
+  f.send(g.container,'down',700,400);
+  for(const y of [420,440,460]){f.send(f.w.document,'move',700,y);await new Promise(resolve=>f.w.requestAnimationFrame(resolve));}
+  f.send(f.w.document,'up',700,460);
+  const after=origin();assert.ok(Math.abs(after[0]-before[0])<1e-5);assert.ok(Math.abs(after[1]-before[1]-60)<1e-5,`pan moved ${after[1]-before[1]} pixels instead of 60`);
+});
