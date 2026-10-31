@@ -179,14 +179,14 @@ async function fixture(t, sourceOverride, options = {}) {
   }
   currentFileReady = true;
   ui.fileLoaded();
-  function send(target, kind, x, y) {
+  function send(target, kind, x, y, modifiers = {}) {
     // Live preview can replace the original SVG node. Subsequent pointer
     // events still reach the graph in a browser through its document listeners.
     if (!target.isConnected) target = graph.container;
     const event = w.mxClient.IS_POINTER ? { down: 'pointerdown', move: 'pointermove', up: 'pointerup' } :
       { down: 'mousedown', move: 'mousemove', up: 'mouseup' };
     target.dispatchEvent(new w.MouseEvent(event[kind], { bubbles: true, clientX: x, clientY: y,
-      button: 0, buttons: kind === 'up' ? 0 : 1 }));
+      button: 0, buttons: kind === 'up' ? 0 : 1, ...modifiers }));
   }
   function select(id) {
     const cell = graph.model.getCell(id); graph.setSelectionCell(cell); graph.view.validate();
@@ -1192,6 +1192,14 @@ test('inspector automatically saves debounced coordinates and preserves newer in
   f.w.document.body.appendChild(f.ui.sidebar.wrapper);
   const panel = f.ui.sidebar.wrapper.querySelector('.cetzInspector');
   const input = label => panel.querySelector('[aria-label="' + label + '"]');
+  const fold = panel.closest('.cetzPropertiesFold'), summary = fold.querySelector('summary');
+  assert.equal(fold.open, true);
+  summary.click();
+  assert.equal(fold.open, false);
+  f.graph.clearSelection(); f.select('cetz-edit-0');
+  assert.equal(fold.open, false, 'selection updates preserve the collapsed Properties panel');
+  summary.click();
+  assert.equal(fold.open, true);
   assert.equal(panel.querySelector('.cetzApply'), null);
   const x = input('Start X'); x.focus();
   for (const value of ['0.0', '0.03', '0.03125']) {
@@ -1570,6 +1578,69 @@ test('body drag protocol preserves free movement when the grid is disabled', { s
   assert.equal(String(f.graph.getCellStyle(drag.cell).cetzMoveGrid), '0');
   const patches = patchesFromEditable(source, f.rendered, f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)), readAllCells);
   assert.match(patches[0].text, /polygon\(\(0.37, 0.61\), 6, radius: 0.70710678\)/);
+});
+
+test('Shift drag bypasses grid, alignment guides and axis constraints and preserves free coordinates in source', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\npolygon((0, 0), 6, radius: 0.70710678)\ncircle((1.4, 0.6), radius: 0.3)\n})';
+  for (const scale of [1, 4]) {
+    const f = await fixture(t, source, { loadedLayers: true });
+    f.graph.graphHandler.guidesEnabled = true;
+    f.graph.view.scaleAndTranslate(scale, 3, -2);
+    const { cell, state } = f.select('cetz-edit-0');
+    const x = state.getCenterX(), y = state.getCenterY(), target = state.shape.node.firstChild;
+    const unit = f.rendered.calibration.unitX * 2.5 * scale;
+    f.send(target, 'down', x, y, { shiftKey: true });
+    f.send(target, 'move', x + unit * 0.37, y - unit * 0.61, { shiftKey: true });
+    const handler = f.graph.graphHandler;
+    assert.ok(Math.abs(handler.currentDx - unit * 0.37) < 1e-8);
+    assert.ok(Math.abs(handler.currentDy + unit * 0.61) < 1e-8);
+    assert.equal(handler.cetzGridEnabled, false);
+    assert.equal(handler.cetzGuideSnap.x, false);
+    assert.equal(handler.cetzGuideSnap.y, false);
+    assert.equal(handler.useGuidesForEvent(new f.w.mxMouseEvent(new f.w.MouseEvent('mousemove', { shiftKey: true }))), false);
+    f.send(target, 'up', x + unit * 0.37, y - unit * 0.61, { shiftKey: true });
+    assert.equal(String(f.graph.getCellStyle(cell).cetzMoveGrid), '0');
+    assert.equal(handler.cetzFreeDrag, false, 'the next drag starts with a clean modifier state');
+    assert.equal(f.graph.gridEnabled, true, 'the workspace grid stays enabled');
+    const patches = patchesFromEditable(source, f.rendered, f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)), readAllCells);
+    assert.match(patches[0].text, /polygon\(\(0.37, 0.61\), 6, radius: 0.70710678\)/);
+  }
+});
+
+test('pressing and releasing Shift during a drag switches snapping immediately', { skip }, async t => {
+  const f = await fixture(t, undefined, { loadedLayers: true });
+  f.graph.graphHandler.guidesEnabled = false;
+  const { state } = f.select('cetz-edit-0');
+  const x = state.getCenterX(), y = state.getCenterY(), target = state.shape.node.firstChild;
+  const unit = f.rendered.calibration.unitX * 2.5;
+  f.send(target, 'down', x, y);
+  const handler = f.graph.graphHandler;
+  for (const shiftKey of [true, false, true]) {
+    f.send(target, 'move', x + unit * 0.37, y - unit * 0.61, { shiftKey });
+    assert.equal(handler.cetzFreeDrag, shiftKey);
+    if (shiftKey) {
+      assert.ok(Math.abs(handler.currentDx - unit * 0.37) < 1e-8);
+      assert.ok(Math.abs(handler.currentDy + unit * 0.61) < 1e-8);
+    } else {
+      assert.equal(handler.cetzGridEnabled, true);
+      assert.ok(Math.abs(handler.currentDx - unit * 0.37) > 0.01);
+    }
+  }
+  f.send(target, 'up', x + unit * 0.37, y - unit * 0.61, { shiftKey: true });
+});
+
+test('Shift drag preserves free control point coordinates through source synchronization', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\nline((0, 0), (2, 1))\ncircle((0.4, 0.6), radius: 0.3)\n})';
+  const f = await fixture(t, source, { loadedLayers: true });
+  f.graph.graphHandler.guidesEnabled = true;
+  const { state } = f.select('cetz-point-0-0');
+  const x = state.getCenterX(), y = state.getCenterY(), target = state.shape.node.firstChild;
+  const unit = f.rendered.calibration.unitX * 2.5;
+  f.send(target, 'down', x, y, { shiftKey: true });
+  f.send(target, 'move', x + unit * 0.37, y - unit * 0.61, { shiftKey: true });
+  f.send(target, 'up', x + unit * 0.37, y - unit * 0.61, { shiftKey: true });
+  const patches = patchesFromEditable(source, f.rendered, f.w.mxUtils.getXml(new f.w.mxCodec().encode(f.graph.model)), readAllCells);
+  assert.match(patches[0].text, /line\(\(0.37, 0.61\), \(2, 1\)\)/);
 });
 
 test('moving a selection shares one translation and preserves relative positions', { skip }, async t => {
@@ -2445,10 +2516,26 @@ test('a queued 2D tab follows the selected legacy plane across camera header edi
 
 test('late native refresh keeps the 2D viewport after the CeTZ rail layout settles', {skip},async t=>{
   const f=await fixture(t,undefined,{nativeCanvas:true,clampedScroll:true,nativeRefresh:true,loadedLayers:true}),g=f.graph;
+  f.select('cetz-edit-0');
+  const selected=g.getSelectionCell(),input=f.ui.sidebar.wrapper.querySelector('[aria-label="Corner 1 X"]');
+  input.value='';input.dispatchEvent(new f.w.Event('input',{bubbles:true}));
+  const toggle=f.ui.container.querySelector('.cetzSidebarToggle');
+  assert.equal(toggle.getAttribute('aria-expanded'),'true');
+  assert.equal(toggle.getAttribute('aria-controls'),f.ui.sidebarContainer.id);
+  const snapshot=f.w.mxUtils.getXml(new f.w.mxCodec().encode(g.model));
   g.container.scrollLeft=123;g.container.scrollTop=157;
   const origin=()=>{const c=f.rendered.calibration,v=g.view;return [(c.originX+v.translate.x)*v.scale-g.container.scrollLeft,(c.originY+v.translate.y)*v.scale-g.container.scrollTop];};
   const before=origin();
   for(let i=0;i<5;i++){
+    toggle.click();
+    const collapsed=i%2===0;
+    assert.equal(f.ui.hsplitPosition,collapsed?0:300);
+    assert.equal(f.ui.sidebarContainer.style.display,collapsed?'none':'');
+    assert.equal(toggle.getAttribute('aria-expanded'),collapsed?'false':'true');
+    assert.equal(toggle.getAttribute('aria-label'),collapsed?'Expand properties panel':'Collapse properties panel');
+    assert.equal(toggle.closest('.cetzDimensionTabs').style.display,'flex','the expand control remains visible outside the sidebar');
+    f.ui.refresh(true);
+    assert.equal(f.ui.sidebarContainer.style.display,collapsed?'none':'','refresh cannot reopen the panel');
     f.ui.boundNativeRefresh(true);
     f.ui.formatContainer.style.width='48px';
     // Validation/resize runs again after the native standard-panel width
@@ -2456,6 +2543,13 @@ test('late native refresh keeps the 2D viewport after the CeTZ rail layout settl
     g.view.validate();g.sizeDidChange();
     origin().forEach((value,j)=>assert.ok(Math.abs(value-before[j])<1e-5,`late refresh moved axis ${j} by ${value-before[j]} pixels`));
   }
+  toggle.click();
+  assert.equal(f.ui.hsplitPosition,300);
+  assert.equal(g.getSelectionCell(),selected);
+  assert.equal(f.ui.sidebar.wrapper.querySelector('[aria-label="Corner 1 X"]').value,'','unfinished properties survive collapse and expansion');
+  assert.equal(f.w.mxUtils.getXml(new f.w.mxCodec().encode(g.model)),snapshot,'panel toggles never edit diagram content');
+  toggle.click();f.select('cetz-edit-1');
+  assert.equal(f.ui.hsplitPosition,0,'selection cannot reopen the panel');
 });
 
 test('native page patches preserve the viewport when shapes are added and deleted', {skip},async t=>{

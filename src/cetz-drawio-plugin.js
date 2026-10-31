@@ -130,7 +130,15 @@ Draw.loadPlugin(function (ui) {
   var controls = document.createElement('div');
   controls.className = 'cetzPropertyPanel';
   controls.style.cssText = 'box-sizing:border-box;width:100%;min-width:0;padding:10px 12px 12px;white-space:normal;overflow-wrap:anywhere;display:none;font:12px -apple-system,BlinkMacSystemFont,sans-serif;color:inherit;';
-  sidebar.wrapper.insertBefore(controls, sidebar.wrapper.firstChild);
+  var propertiesFold = document.createElement('details');
+  propertiesFold.className = 'cetzPropertiesFold';
+  propertiesFold.open = true;
+  propertiesFold.style.display = 'none';
+  var propertiesSummary = document.createElement('summary');
+  propertiesSummary.textContent = 'Properties';
+  propertiesFold.appendChild(propertiesSummary);
+  propertiesFold.appendChild(controls);
+  sidebar.wrapper.insertBefore(propertiesFold, sidebar.wrapper.firstChild);
   // Draw.io's sidebar cancels mousedown/selectstart unless this hook allows
   // the target. Its default permits inputs and selects, but excludes textareas.
   // Permit CeTZ text fields so clicking them can focus and select text normally.
@@ -146,13 +154,13 @@ Draw.loadPlugin(function (ui) {
   threeHint.className = 'cetz3DHint'; threeHint.setAttribute('role', 'note');
   threeHint.style.cssText = 'display:none;';
   threeHint.textContent = '3D: Drag to orbit · Click to select';
-  sidebar.wrapper.insertBefore(threeHint, controls);
+  sidebar.wrapper.insertBefore(threeHint, propertiesFold);
   var outline = document.createElement('div');
   outline.className = 'cetzOutline';
   outline.setAttribute('aria-label', 'Document outline');
   outline.style.cssText = 'box-sizing:border-box;width:100%;padding:10px 12px 0;' +
     'border-bottom:1px solid var(--ol-line,#dce0e5);display:none;';
-  sidebar.wrapper.insertBefore(outline, controls);
+  sidebar.wrapper.insertBefore(outline, propertiesFold);
   // Keep the Outline and inspector in Draw.io's left sidebar; the right
   // format column holds only the compact icon palette.
   var rail = document.createElement('div');
@@ -170,6 +178,7 @@ Draw.loadPlugin(function (ui) {
     '.cetzOutlineList{max-height:240px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:0 0 8px}.cetzOutlineRow{display:flex;box-sizing:border-box;width:100%;align-items:center;gap:2px;min-height:48px;border-radius:6px;margin:2px 0;color:inherit;position:relative}.cetzOutlineRow:hover{background:var(--ol-hover)}.cetzOutlineRow[data-selected=true]{background:var(--ol-selected)}.cetzOutlineRow[data-selected=true]:before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:2px;border-radius:2px;background:var(--ol-accent)}' +
     '.cetzOutline button{font:inherit;color:inherit;border:0;background:transparent;cursor:pointer;border-radius:4px}.cetzOutline button:focus-visible{outline:2px solid var(--ol-accent);outline-offset:-2px}.cetzOutlineGrip{width:12px;flex:none;cursor:grab;text-align:center;user-select:none;opacity:0;font-size:11px}.cetzOutlineRow:hover .cetzOutlineGrip,.cetzOutlineRow:focus-within .cetzOutlineGrip{opacity:.45}.cetzOutlineSelect{display:flex;align-items:center;gap:8px;flex:1;min-width:0;text-align:left;padding:6px 3px}.cetzOutlineIcon{display:flex;width:26px;height:28px;align-items:center;justify-content:center;flex:none;border-radius:5px;background:var(--ol-icon);opacity:.85}.cetzOutlineRow[data-selected=true] .cetzOutlineIcon{color:var(--ol-accent)}.cetzOutlineText{display:block;flex:1;min-width:0}.cetzOutlineName{display:flex;align-items:center;gap:6px}.cetzOutlineNameText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:550;line-height:18px}.cetzOutlineMeta{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;opacity:.55;line-height:16px;font-variant-numeric:tabular-nums}.cetzOutlineBranch{flex:none;width:16px;height:24px;padding:0;font-size:10px!important;opacity:.6}.cetzOutlineBranch svg{display:block;margin:auto}.cetzOutlineMove{padding:3px!important;width:20px;height:24px;flex:none;opacity:0;pointer-events:none}.cetzOutlineRow:hover .cetzOutlineMove,.cetzOutlineRow:focus-within .cetzOutlineMove{opacity:.65;pointer-events:auto}.cetzOutlineMove:hover{background:var(--ol-icon)}.cetzOutlineEmpty{margin:0 4px 12px;padding:16px 12px;border:1px dashed var(--ol-line);border-radius:6px;line-height:1.6;font-size:11px;opacity:.65}';
   railStyle.textContent += '.cetzOutline[data-resized=true] .cetzOutlineList{flex:1;min-height:0;max-height:none}.cetzOutlineResize{flex:none;height:14px;position:relative;cursor:row-resize;touch-action:none;user-select:none;border-radius:4px;outline:none}.cetzOutlineResize:after{content:"";position:absolute;width:32px;height:3px;left:50%;top:5px;transform:translateX(-50%);border-radius:3px;background:var(--ol-line)}.cetzOutlineResize:hover:after,.cetzOutlineResize:focus-visible:after,.cetzOutlineResize[data-dragging=true]:after{background:var(--ol-accent)}.cetzOutlineResize:focus-visible{box-shadow:inset 0 0 0 1px var(--ol-accent)}';
+  railStyle.textContent += '.cetzPropertiesFold{box-sizing:border-box;width:100%;min-width:0;color:inherit;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;border-bottom:1px solid var(--vscode-panel-border,#dce0e5)}.cetzPropertiesFold>summary{padding:14px 16px;cursor:pointer;user-select:none;font-weight:600}.cetzPropertiesFold>summary:hover{background:var(--vscode-list-hoverBackground,rgba(127,127,127,.08))}.cetzPropertiesFold>summary:focus-visible{outline:2px solid var(--vscode-focusBorder,#4675e7);outline-offset:-2px}';
   rail.appendChild(railStyle);
   function placePalette(pair) {
     if (!pair) return;
@@ -1746,6 +1755,15 @@ Draw.loadPlugin(function (ui) {
   // a 3D image locally and then treat those pixels as editable plane geometry.
   var dimensionTabs=document.createElement('div'); dimensionTabs.className='cetzDimensionTabs';
   dimensionTabs.style.cssText='display:none;';
+  var sidebarToggle=document.createElement('button');sidebarToggle.type='button';sidebarToggle.className='cetzSidebarToggle';
+  sidebarToggle.innerHTML='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg>';
+  sidebarToggle.addEventListener('click',function(){setSidebarCollapsed(!sidebarCollapsed);});
+  dimensionTabs.appendChild(sidebarToggle);
+  if(ui.sidebarContainer){
+    if(!ui.sidebarContainer.id)ui.sidebarContainer.id='cetz-sidebar';
+    sidebarToggle.setAttribute('aria-controls',ui.sidebarContainer.id);
+  }
+  workspaceStyle.textContent += '.cetzDimensionTabs .cetzSidebarToggle{flex:none;align-self:center;width:30px;min-height:26px;padding:4px;border:0;border-radius:4px;background:transparent}.cetzSidebarToggle[aria-expanded=false] svg{transform:rotate(180deg)}';
   var dimensionSwitch=document.createElement('div');dimensionSwitch.className='cetzDimensionSwitch';
   dimensionSwitch.setAttribute('role','tablist');dimensionSwitch.setAttribute('aria-label','Drawing mode');dimensionTabs.appendChild(dimensionSwitch);
   var tab2D=document.createElement('button'),tab3D=document.createElement('button');
@@ -1759,6 +1777,7 @@ Draw.loadPlugin(function (ui) {
     entry[0].addEventListener('click',function(){requestDimension(entry[2]);});dimensionSwitch.appendChild(entry[0]);
   });
   dimensionTabs.addEventListener('keydown',function(event){
+    if(event.target!==tab2D&&event.target!==tab3D)return;
     if(event.key!=='ArrowLeft'&&event.key!=='ArrowRight')return;event.preventDefault();
     var tab=event.key==='ArrowLeft'?tab2D:tab3D;if(!tab.disabled){tab.focus();requestDimension(tab===tab2D?'2d':'3d');}
   });
@@ -1797,7 +1816,7 @@ Draw.loadPlugin(function (ui) {
   twoGridLabel.appendChild(twoGrid);var twoGridText=document.createElement('span');twoGridText.textContent='Grid and snap';twoGridLabel.appendChild(twoGridText);twoSection.appendChild(twoGridLabel);
   var twoBack=document.createElement('button');twoBack.type='button';twoBack.textContent='Back to 3D';
   workspaceButtonIcon(twoBack,'<path d="M5 12h14M11 6l-6 6 6 6"/>');twoBack.addEventListener('click',function(){requestDimension('3d');});twoSection.appendChild(twoBack);
-  sidebar.wrapper.insertBefore(twoPanel,controls);
+  sidebar.wrapper.insertBefore(twoPanel,propertiesFold);
   var workspacePending=[],workspaceFlight=null,dimensionPending=null,pendingThreeAngles=null;
   var planeUIKey=null,planeDraft=null,cameraDraft=null,serverActivePlane=null,selectedPlaneKey=null,planeSelectionSerial=0,lastPlaneIdentity=null,viewMemory={},dimensionViewport=null,lastDimensionViewport=null,viewportSerial=0;
   function planeContext(){
@@ -2813,6 +2832,8 @@ Draw.loadPlugin(function (ui) {
     constrainChild: graph.isConstrainChild,
     updateHint: graph.graphHandler && graph.graphHandler.updateHint,
     useGuidesForEvent: graph.graphHandler && graph.graphHandler.useGuidesForEvent,
+    dragMouseMove: graph.graphHandler && graph.graphHandler.mouseMove,
+    constrainedDrag: graph.graphHandler && graph.graphHandler.isConstrainedEvent,
     getGuideStates: graph.graphHandler && graph.graphHandler.getGuideStates,
     maxLivePreview: graph.graphHandler && graph.graphHandler.maxLivePreview,
     allowLivePreview: graph.graphHandler && graph.graphHandler.allowLivePreview,
@@ -2855,6 +2876,7 @@ Draw.loadPlugin(function (ui) {
     else original.redo.apply(this, arguments);
   };
   var activeMode = false;
+  var sidebarCollapsed = false, sidebarExpandedWidth = 300;
   var previousSidebarWidth = null;
   var previousSidebarDisplay = null;
   var previousFormatWidth = null;
@@ -2889,16 +2911,35 @@ Draw.loadPlugin(function (ui) {
   if (graph.view.validate) graph.view.validate = preserve2DViewport(graph.view.validate);
   var originalRefresh = ui.refresh;
   if (originalRefresh) ui.refresh = function () {
+    if (activeMode) {
+      if (!sidebarCollapsed && ui.hsplitPosition > 0) sidebarExpandedWidth = ui.hsplitPosition;
+      applySidebarLayout();
+    }
     var result = originalRefresh.apply(this, arguments);
     // Draw.io's refresh clears the inline width back to its 240px CSS rule.
     if (activeMode && ui.formatContainer) ui.formatContainer.style.width = '48px';
     return result;
   };
   var originalToggleShapesPanel = ui.toggleShapesPanel;
-  if (originalToggleShapesPanel) ui.toggleShapesPanel = function () {
-    if (isCetz()) return;
+  if (originalToggleShapesPanel) ui.toggleShapesPanel = function (visible) {
+    if (isCetz()) return setSidebarCollapsed(visible == null ? !sidebarCollapsed : !visible);
     return originalToggleShapesPanel.apply(this, arguments);
   };
+  function applySidebarLayout() {
+    if (!ui.sidebarContainer) return;
+    ui.hsplitPosition = sidebarCollapsed ? 0 : sidebarExpandedWidth;
+    ui.sidebarContainer.style.display = sidebarCollapsed ? 'none' : '';
+    sidebarToggle.setAttribute('aria-expanded', sidebarCollapsed ? 'false' : 'true');
+    var label = sidebarCollapsed ? 'Expand properties panel' : 'Collapse properties panel';
+    sidebarToggle.setAttribute('aria-label', label);sidebarToggle.title = label;
+  }
+  function setSidebarCollapsed(collapsed) {
+    if (!isCetz() || !ui.sidebarContainer || sidebarCollapsed === collapsed) return;
+    if (collapsed && ui.hsplitPosition > 0) sidebarExpandedWidth = ui.hsplitPosition;
+    sidebarCollapsed = collapsed;
+    applySidebarLayout();
+    if (ui.refresh) preserve2DViewport(ui.refresh).call(ui, true);
+  }
   var originalToggleFormatPanel = ui.toggleFormatPanel;
   if (originalToggleFormatPanel) ui.toggleFormatPanel = function () {
     if (isCetz()) return;
@@ -3886,6 +3927,13 @@ Draw.loadPlugin(function (ui) {
     handler.cetzGuideSnap = null;
     handler.cetzGridEnabled = null;
     handler.cetzPointGuideActive = false;
+    handler.cetzFreeDrag = false;
+  }
+  function isFreeDrag(handler, me) {
+    var event = me && me.getEvent();
+    var cells = handler.cells || graph.getSelectionCells();
+    return isEditablePreview() && !is3D() && !!(event && event.shiftKey) && cells.length > 0 &&
+      cells.every(function (cell) { return /^cetz-(?:edit-\d+|point-\d+-\d+)$/.test(cell.id || ''); });
   }
   function preparePointGuide(handler, cell) {
     var guide = handler.guide;
@@ -4023,6 +4071,7 @@ Draw.loadPlugin(function (ui) {
     }
     var textCell = cell && !graph.getModel().isEdge(cell) && (cell.style || '').split(';')[0] === 'text';
     controls.style.display = isCetz() && (previewCell || !isPreview() && cell && !textCell) ? '' : 'none';
+    propertiesFold.style.display = controls.style.display;
     if (!cell || controls.style.display === 'none') return;
     var style = graph.getCellStyle(cell);
     if (previewCell) {
@@ -4610,6 +4659,13 @@ Draw.loadPlugin(function (ui) {
       // mxGraph preview the whole hierarchy while dragging, including when
       // several shapes (or a grid with many paths) are selected.
       if (graph.graphHandler) {
+        if (original.dragMouseMove) graph.graphHandler.mouseMove = function (sender, me) {
+          this.cetzFreeDrag = isFreeDrag(this, me);
+          return original.dragMouseMove.apply(this, arguments);
+        };
+        if (original.constrainedDrag) graph.graphHandler.isConstrainedEvent = function (me) {
+          return isFreeDrag(this, me) ? false : original.constrainedDrag.apply(this, arguments);
+        };
         graph.graphHandler.maxLivePreview = Number.MAX_SAFE_INTEGER;
         graph.graphHandler.allowLivePreview = true;
         if (original.createPreviewShape) graph.graphHandler.createPreviewShape = function () {
@@ -4634,15 +4690,16 @@ Draw.loadPlugin(function (ui) {
           model.beginUpdate();
           try {
             graph.setCellStyles('cetzSnapStep', String(snapStep()), cells);
-            graph.setCellStyles('cetzGuideX', snap.x ? '1' : '0', cells);
-            graph.setCellStyles('cetzGuideY', snap.y ? '1' : '0', cells);
+            // These flags also preserve unsnapped point coordinates in source.
+            graph.setCellStyles('cetzGuideX', snap.x || this.cetzFreeDrag ? '1' : '0', cells);
+            graph.setCellStyles('cetzGuideY', snap.y || this.cetzFreeDrag ? '1' : '0', cells);
             var args = Array.prototype.slice.call(arguments);
             // Keep the grid/guide result through mxGraph's integer drop rounding.
             if (Number.isFinite(this.currentDx)) args[1] = this.currentDx / graph.view.scale;
             if (Number.isFinite(this.currentDy)) args[2] = this.currentDy / graph.view.scale;
             if (cells.every(function (cell) { return /^cetz-edit-\d+$/.test(cell.id || ''); })) {
               var frame = cetzFrame(), geometry = model.getGeometry(cells[0]), anchor = cetzAnchor(cells[0]);
-              var grid = this.cetzGridEnabled == null ? graph.gridEnabled : this.cetzGridEnabled;
+              var grid = !this.cetzFreeDrag && (this.cetzGridEnabled == null ? graph.gridEnabled : this.cetzGridEnabled);
               if (frame && geometry && anchor) {
                 var firstX = (geometry.x + anchor.x - frame.originX) / frame.unitX;
                 var firstY = (frame.originY - geometry.y - anchor.y) / frame.unitY;
@@ -4741,6 +4798,7 @@ Draw.loadPlugin(function (ui) {
         });
       };
       if (original.useGuidesForEvent) graph.graphHandler.useGuidesForEvent = function () {
+        if (this.cetzFreeDrag) return false;
         var cells = graph.getSelectionCells();
         if (isEditablePreview() && cells.length === 1 &&
           /^cetz-point-\d+-\d+$/.test(cells[0].id || '')) preparePointGuide(this, cells[0]);
@@ -4749,6 +4807,11 @@ Draw.loadPlugin(function (ui) {
       if (original.snapDelta) graph.snapDelta = function (delta, bounds, ignoreGrid, ignoreX, ignoreY) {
         var cells = graph.getSelectionCells();
         var cell = isEditablePreview() && cells.length === 1 ? cells[0] : null;
+        if (isEditablePreview() && graph.graphHandler && graph.graphHandler.cetzFreeDrag) {
+          graph.graphHandler.cetzGuideSnap = { x: false, y: false };
+          graph.graphHandler.cetzGridEnabled = false;
+          return delta;
+        }
         if (isEditablePreview() && graph.graphHandler) {
           graph.graphHandler.cetzGuideSnap = { x: !!ignoreX, y: !!ignoreY };
           graph.graphHandler.cetzGridEnabled = !ignoreGrid && graph.gridEnabled;
@@ -4860,9 +4923,9 @@ Draw.loadPlugin(function (ui) {
         var modelY = (this.bounds.y + this.currentDy) / scale - translate.y + anchor.y;
         var arcCenter = cells.length === 1 && graph.getCellStyle(cells[0]).cetzArcHandle === 'center';
         var guided = this.cetzGuideSnap || {};
-        var x = guided.x ? Number(((modelX - frame.originX) / frame.unitX).toFixed(8)) :
+        var x = guided.x || this.cetzFreeDrag ? Number(((modelX - frame.originX) / frame.unitX).toFixed(8)) :
           snapValue((modelX - frame.originX) / frame.unitX);
-        var y = guided.y ? Number(((frame.originY - modelY) / frame.unitY).toFixed(8)) :
+        var y = guided.y || this.cetzFreeDrag ? Number(((frame.originY - modelY) / frame.unitY).toFixed(8)) :
           snapValue((frame.originY - modelY) / frame.unitY);
         this.hint.textContent = (arcCenter ? 'CeTZ arc center ' : 'CeTZ ') +
           '(' + x + ', ' + y + ')' + (arcCenter ? ' · start fixed' : '');
@@ -4929,6 +4992,8 @@ Draw.loadPlugin(function (ui) {
       graph.gridSize = original.gridSize;
       if (graph.graphHandler) graph.graphHandler.updateHint = original.updateHint;
       if (graph.graphHandler) graph.graphHandler.useGuidesForEvent = original.useGuidesForEvent;
+      if (graph.graphHandler) graph.graphHandler.mouseMove = original.dragMouseMove;
+      if (graph.graphHandler) graph.graphHandler.isConstrainedEvent = original.constrainedDrag;
       if (graph.graphHandler && original.getGuideStates) graph.graphHandler.getGuideStates = original.getGuideStates;
       if (graph.graphHandler) graph.graphHandler.maxLivePreview = original.maxLivePreview;
       if (graph.graphHandler) {
@@ -4963,9 +5028,8 @@ Draw.loadPlugin(function (ui) {
         previousFormatMinWidth = ui.formatContainer && ui.formatContainer.style.minWidth;
         previousFormatMaxWidth = ui.formatContainer && ui.formatContainer.style.maxWidth;
       }
-      ui.hsplitPosition = 300;
+      applySidebarLayout();
       ui.formatWidth = 48;
-      ui.sidebarContainer.style.display = '';
     } else if (changed && ui.sidebarContainer) {
       if (previousSidebarWidth != null) ui.hsplitPosition = previousSidebarWidth;
       if (previousFormatWidth != null) ui.formatWidth = previousFormatWidth;
