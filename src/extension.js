@@ -140,8 +140,10 @@ async function applySourcePatches(session, source, patches, deferInvalid = false
     throw new Error('Typst changed while the GUI was being edited.');
   if(session.editable?.planeContext && patches.some(patch=>patch.start<session.editable.planeContext.bodyStart||patch.end>session.editable.planeContext.bodyEnd))
     throw new Error('This edit would affect another drawing plane. Edit it in the 3D view.');
-  const expected = sourceWithPatches(before, patches);
-  const nextKey=Object.hasOwn(patches,'activePlaneKey')?patches.activePlaneKey:require('./plane-editor').rebasePlaneKey(session.activePlaneKey,before,expected);
+  const edited = sourceWithPatches(before, patches);
+  const orientation=require('./plane-content').prepare(edited,session.index),expected=orientation.text;
+  const oldKey=Object.hasOwn(patches,'activePlaneKey')?patches.activePlaneKey:require('./plane-editor').rebasePlaneKey(session.activePlaneKey,before,edited);
+  const nextKey=require('./plane-content').rebaseKey(oldKey,orientation.patches);
   // A GUI edit must preserve an editable preview. Otherwise renderDiagram's
   // fallback would replace all handles with a locked image after the write.
   let prepared;
@@ -157,7 +159,7 @@ async function applySourcePatches(session, source, patches, deferInvalid = false
     throw new Error('Typst changed while the GUI was being edited.');
   session.expectedSourceText = expected;
   const edit = new vscode.WorkspaceEdit();
-  for (const patch of patches) edit.replace(session.sourceUri,
+  for (const patch of orientation.patches.length?[{start:0,end:before.length,text:expected}]:patches) edit.replace(session.sourceUri,
     new vscode.Range(source.positionAt(patch.start), source.positionAt(patch.end)), patch.text);
   session.writingSource = true;
   let applied = false;
@@ -260,6 +262,11 @@ async function syncToSource(session, xml) {
   const sourceCommand = sourceAction(readAllCells(xml), readAllCells(session.lastXml), session.handledHistoryActions);
   if (sourceCommand) {
     session.handledHistoryActions.add(sourceCommand.key);
+    // Draw.io can retain an older selection notification while merging a new
+    // scene. Ignore its expired targets, but still process any new geometry
+    // saved with it. Actual editing commands keep strict target validation.
+    if(sourceCommand.action==='select'&&session.editable?.cellIds)
+      sourceCommand.indices=sourceCommand.indices.filter(id=>session.editable.cellIds.includes(id));
     sourceCommand.indices = sourceIndices(session.editable, sourceCommand.indices);
     const source = await documentForSession(session);
     if (source.version !== session.sourceVersion) {
@@ -490,6 +497,9 @@ function activate(context) {
     if (!source) throw vscode.FileSystemError.FileNotFound(uri);
     const session = sessionFor(source.sourceUri, uri, source.index, diagramFiles);
     await ensureDrawioPlugin(vscode, context.extensionPath, source.sourceUri);
+    session.writingSource=true;
+    try{await require('./plane-content').installInDocument(vscode,await documentForSession(session),source.index);}
+    finally{session.writingSource=false;}
     for (let attempt = 0; attempt < 3; attempt++) {
       const doc = await vscode.workspace.openTextDocument(source.sourceUri);
       const version = doc.version, text = doc.getText();

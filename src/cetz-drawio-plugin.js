@@ -563,6 +563,13 @@ Draw.loadPlugin(function (ui) {
   }
   function positionPlacementHint(){
     if(!placement)return;
+    if(placement.spatial){
+      var bounds=graph.container.getBoundingClientRect();
+      placement.hint.style.left=(bounds.left+12)+'px';
+      placement.hint.style.top=(bounds.top+12)+'px';
+      placement.hint.style.maxWidth=Math.max(1,(graph.container.clientWidth||800)-24)+'px';
+      return;
+    }
     placement.hint.style.left=(graph.container.scrollLeft+12)+'px';
     placement.hint.style.top=(graph.container.scrollTop+12)+'px';
   }
@@ -598,12 +605,14 @@ Draw.loadPlugin(function (ui) {
     if(!is3D()||!view||!view.matrix){threeNotice.textContent='Choose a calibrated 3D view.';return;}
     if(workspaceFlight||inspectorFlight||workspacePending.length){threeNotice.textContent='Wait for the view update, then choose the tool again.';return;}
     var hint=document.createElement('div');hint.className='cetzPlacementHint cetzSpatialHint';
-    hint.style.cssText='position:absolute;z-index:20;box-sizing:border-box;width:280px;max-width:calc(100% - 24px);padding:10px;border:1px solid #4675e7;border-radius:5px;background:var(--vscode-editor-background,var(--spatial-bg,#fff));color:var(--vscode-editor-foreground,var(--spatial-fg,#26334a));font:12px/1.5 -apple-system,sans-serif;white-space:normal;';
+    hint.style.cssText='position:fixed;z-index:20;box-sizing:border-box;width:280px;max-width:calc(100% - 24px);padding:10px;border:1px solid #4675e7;border-radius:5px;background:var(--vscode-editor-background,var(--spatial-bg,#fff));color:var(--vscode-editor-foreground,var(--spatial-fg,#26334a));font:12px/1.5 -apple-system,sans-serif;white-space:normal;';
     hint.innerHTML='<div class="cetzSpatialStage" role="status" aria-live="polite"></div><div class="cetzSpatialCoordinates"></div><label style="display:flex;gap:8px;align-items:center;margin:8px 0"><span>Coordinate</span><input aria-label="3D coordinate" type="number" step="any" style="min-width:0;flex:1;width:100%;box-sizing:border-box"></label>'+
       (name==='content'?'<label style="display:flex;gap:8px;margin-bottom:8px"><span>Text</span><input aria-label="3D text" value="Text" maxlength="10000" style="min-width:0;flex:1;width:100%"></label>':'')+
       '<div style="display:flex;flex-wrap:wrap;gap:6px"><button type="button" data-action="back">Back</button><button type="button" data-action="confirm">Confirm</button><button type="button" data-action="cancel">Cancel</button></div><div class="cetzSpatialNote" style="font-size:10px;opacity:.75;margin-top:6px"></div>';
     var preview=document.createElementNS('http://www.w3.org/2000/svg','g');preview.setAttribute('data-cetz-placement','3d-'+name);preview.setAttribute('pointer-events','none');
-    graph.view.getOverlayPane().appendChild(preview);graph.container.appendChild(hint);
+    // Interactive controls must not live inside the scrolling drawing area:
+    // focusing/scrolling a field into view would otherwise pan the artwork.
+    graph.view.getOverlayPane().appendChild(preview);document.body.appendChild(hint);
     var firstStage=typeof pointIndex==='number'?pointIndex*3:0;
     placement={name:name,spatial:true,view:view,scene:inspectorScene(),edit:edit,firstStage:firstStage,lastStage:typeof pointIndex==='number'?firstStage+2:name==='line'?5:2,
       stage:firstStage,points:edit?edit.points.map(function(point){return point.slice();}):[[0,0,0]],hint:hint,preview:preview,icon:icon,
@@ -706,7 +715,7 @@ Draw.loadPlugin(function (ui) {
     var p=placement;if(!p||!p.spatial)return;
     var scale=graph.view.scale,tr=graph.view.translate,container=graph.container,colors=['#d64b4b','#309b56','#397bd5'],axis=p.stage%3,index=Math.floor(p.stage/3),point=p.points[index],markup='';
     var left=container.scrollLeft,top=container.scrollTop,width=container.clientWidth||800,height=container.clientHeight||600;
-    p.hint.style.left=(left+12)+'px';p.hint.style.top=(top+12)+'px';
+    positionPlacementHint();
     function screen(point){var q=threeProject(p.view.matrix,point);return q&&q.map(function(n,i){return (n+(i?tr.y:tr.x))*scale;});}
     function line(a,b,color,dashed,tag){var u=screen(a),v=screen(b);if(!u||!v)return;markup+='<path '+(tag||'')+' d="M '+u.join(' ')+' L '+v.join(' ')+'" fill="none" stroke="'+color+'" stroke-width="1.5"'+(dashed?' stroke-dasharray="5 4"':'')+'/>';}
     var q=screen(point),h=point.concat(1),w=p.view.matrix[2].reduce(function(sum,n,i){return sum+n*h[i];},0),projected=threeProject(p.view.matrix,point);
@@ -4003,6 +4012,11 @@ Draw.loadPlugin(function (ui) {
   }
   function viewportFrame() {
     var frame = isCetz() && cetzFrame();
+    if(!frame&&isCetz()&&is3D()){
+      var workspace=threeWorkspace(),view=workspace&&(workspace.views||[]).filter(function(view){return !!view.matrix;})[0];
+      var origin=view&&threeProject(view.matrix,view.position||[0,0,0]);
+      if(origin)frame={originX:origin[0],originY:origin[1]};
+    }
     if (!frame) return null;
     var file = ui.getCurrentFile(), context = planeContext();
     return { x: frame.originX, y: frame.originY,
@@ -4393,7 +4407,7 @@ Draw.loadPlugin(function (ui) {
     event.preventDefault(); event.stopPropagation(); applyOutlineHeight(null); rememberOutlineHeight();
   });
   if (typeof window !== 'undefined' && window.addEventListener) {
-    window.addEventListener('resize', function () { applyOutlineHeight(outlineHeight); });
+    window.addEventListener('resize', function () { applyOutlineHeight(outlineHeight);positionPlacementHint(); });
     window.addEventListener('blur', finishOutlineResize);
   }
   function clearOutlineDropLine() {
@@ -5206,6 +5220,7 @@ Draw.loadPlugin(function (ui) {
     if (!active) rail.style.display = 'none';
     updateRuler(active, changed);
     updateChrome(active);
+    positionPlacementHint();
     updateErrorBar(active);
     if (changed && ui.refresh) ui.refresh(true);
     if (active && ui.formatContainer) {

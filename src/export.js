@@ -29,6 +29,7 @@ async function exportTypst(vscode, document) {
     filters: { [format]: [extension] }
   });
   if (!output) return;
+  if(document.getText)await require('./plane-content').installInDocument(vscode,document);
   if (document.isDirty && !await document.save())
     throw new Error('Save the Typst source before exporting.');
   const args = ['compile', document.uri.fsPath, output.fsPath];

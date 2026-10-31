@@ -2216,7 +2216,7 @@ for(const version of ['0.4.2','0.5.2']) test(`local orbit matches CeTZ ${version
   const {planeCode}=require('../src/plane-editor'),{project}=require('../src/three-workspace');
   const header=`#import "@preview/cetz:${version}"\n`;
   const poses=[{kind:'xy',position:[2,3,4],angles:[15,-25,35]},{kind:'xz',position:[-1,2,0],angles:[5,15,20]},{kind:'zy',position:[2,-2,1],angles:[-10,20,15]}];
-  const source=header+'#cetz.canvas({cetz.draw.ortho(x:20deg,y:30deg,z:5deg,{\n// GUI-CeTZ camera-position: [3,4,5]\ncetz.draw.translate(x:-3,y:-4,z:-5)\n'+poses.map((pose,i)=>planeCode(header,'gui-plane-'+(i+1),pose,'cetz.draw.rect((0,0),(2,1),fill:blue)')).join('\n')+'})})';
+  const source=require('../src/plane-content').prepare(header+'#cetz.canvas({cetz.draw.ortho(x:20deg,y:30deg,z:5deg,{\n// GUI-CeTZ camera-position: [3,4,5]\ncetz.draw.translate(x:-3,y:-4,z:-5)\n'+poses.map((pose,i)=>planeCode(header,'gui-plane-'+(i+1),pose,'cetz.draw.rect((0,0),(2,1),fill:blue)\ncetz.draw.content((1,.5))[Plane]')).join('\n')+'})})').text;
   const f=await fixture(t,source),g=f.graph;
   g.view.setScale(1.25);g.view.setTranslate(-9,11);
   f.send(g.container,'down',100,100);f.send(f.w.document,'move',140,120);
@@ -2647,6 +2647,35 @@ test('late native refresh keeps the 2D viewport after the CeTZ rail layout settl
   assert.equal(f.ui.hsplitPosition,0,'selection cannot reopen the panel');
 });
 
+test('3D native page patches preserve the camera origin when XYZ labels change canvas bounds', {skip},async t=>{
+  const source=require('../src/plane-content').prepare('#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo(x:-30deg,y:40deg,sorted:false,{on-xy({rect((0,0),(4,3))\ncontent((2,2))[Plane]})})})').text;
+  const f=await fixture(t,source,{nativeCanvas:true,clampedScroll:true,loadedLayers:true,modelCoordinates:true,nativeFitWindow:true}),{w,graph:g,ui}=f;
+  const start=f.rendered.calls[f.rendered.workspace.views[0].index].bodyStart;
+  w.EditorUi=function(){};w.EditorUi.debug=function(){};w.Editor={guid:()=> 'fixture',config:{}};w.urlParams={};w.Graph=w.mxGraph;
+  w.eval(fs.readFileSync(path.resolve(path.dirname(editorUi),'Pages.js'),'utf8'));
+  w.eval(fs.readFileSync(path.resolve(path.dirname(editorUi),'DiffSync.js'),'utf8'));
+  Object.setPrototypeOf(ui,w.EditorUi.prototype);g.setShadowVisible=function(){};g.setAdaptiveColors=function(){};
+  const pageFor=xml=>{
+    const doc=w.mxUtils.parseXml(xml),node=doc.getElementsByTagName('mxGraphModel')[0],model=new w.mxGraphModel();new w.mxCodec(doc).decode(node,model);
+    const page=new w.DiagramPage(doc.getElementsByTagName('diagram')[0]);page.root=model.root;
+    page.viewState={...g.getViewState(),pageFormat:new w.mxRectangle(0,0,+node.getAttribute('pageWidth'),+node.getAttribute('pageHeight'))};return page;
+  };
+  let shadow=pageFor(f.rendered.xml);ui.currentPage=pageFor(f.rendered.xml);ui.currentPage.root=g.model.root;ui.pages=[ui.currentPage];
+  g.view.validate();g.sizeDidChange();
+  g.container.scrollLeft=(500+g.view.translate.x)*g.view.scale-400;g.container.scrollTop=(500+g.view.translate.y)*g.view.scale-300;
+  const origin=()=>[(500+g.view.translate.x)*g.view.scale-g.container.scrollLeft,(500+g.view.translate.y)*g.view.scale-g.container.scrollTop];
+  const before=origin(),scale=g.view.scale;
+  for(const addition of ['content((5,1,1))[XYZ]','content((-30,30,10))[XYZ]','']){
+    const text=source.slice(0,start)+addition+'\n'+source.slice(start),next=await renderEditable(text,parseCanvas(text).canvas,path.resolve('examples/native.typ'));
+    const incoming=pageFor(next.xml),patch=ui.diffPages([shadow],[incoming]);
+    g.model.beginUpdate();try{ui.pages=ui.applyPatches(ui.pages,[patch],true);}finally{g.model.endUpdate();}
+    f.rendered=next;shadow=incoming;g.view.validate();g.sizeDidChange();
+    await new Promise(resolve=>setTimeout(resolve,30));
+    assert.equal(g.view.scale,scale);
+    origin().forEach((value,i)=>assert.ok(Math.abs(value-before[i])<1e-5,`camera origin drifted axis ${i} by ${value-before[i]} pixels`));
+  }
+});
+
 test('native page patches preserve the viewport when shapes are added and deleted', {skip},async t=>{
   const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\ncircle((4,2),radius:1)\n})';
   const f=await fixture(t,source,{nativeCanvas:true,clampedScroll:true,loadedLayers:true,modelCoordinates:true,nativeFitWindow:true}),{w,graph:g,ui}=f;
@@ -2789,8 +2818,15 @@ for(const kind of ['ortho','perspective'])test(`3D ${kind} line tool guides six 
   f.w.document.body.appendChild(f.ui.container);f.w.document.body.appendChild(f.ui.formatContainer);
   const rail=f.ui.formatContainer.querySelector('.cetzPlaneRail');assert.equal(rail.querySelector('[aria-label="Drawing plane Free"]'),null);
   rail.querySelector('[aria-label="3D line"]').click();
-  const hint=()=>f.graph.container.querySelector('.cetzSpatialHint'),preview=()=>f.graph.view.getOverlayPane().querySelector('[data-cetz-placement="3d-line"]');
+  const hint=()=>f.graph.container.ownerDocument.querySelector('.cetzSpatialHint'),preview=()=>f.graph.view.getOverlayPane().querySelector('[data-cetz-placement="3d-line"]');
   assert.ok(hint());assert.match(hint().textContent,/line: Start point · X/);assert.ok(preview().querySelector('[data-cetz-spatial-axis="X"]'));
+  assert.equal(hint().style.position,'fixed');
+  assert.equal(f.graph.container.contains(hint()),false,'focusing placement fields cannot scroll the drawing container');
+  const measureContainer=f.graph.container.getBoundingClientRect;
+  f.graph.container.getBoundingClientRect=()=>({left:180,top:75});
+  f.w.dispatchEvent(new f.w.Event('resize'));
+  assert.equal(hint().style.left,'192px');assert.equal(hint().style.top,'87px','the floating controls follow the canvas position');
+  f.graph.container.getBoundingClientRect=measureContainer;f.w.dispatchEvent(new f.w.Event('resize'));
   assert.equal(Object.values(f.graph.model.cells).some(c=>/cetzPlacement3D=/.test(c.style||'')),false,'live guides do not change the model');
   const matrix=f.rendered.workspace.views[0].matrix,project=require('../src/three-workspace').project;
   function pointer(point,type='mousemove',shiftKey=false){
@@ -2822,7 +2858,7 @@ for(const projection of ['ortho(x:0deg,y:0deg,z:0deg','perspective(x:20deg,y:30d
   const source='#import "@preview/cetz:0.5.3"\n#cetz.canvas({cetz.draw.'+projection+',{ })})';
   const f=await fixture(t,source),state={source,mode:'3d',scene:{}};await loadWorkspaceScene(f,state,f.rendered);f.w.document.body.appendChild(f.ui.formatContainer);
   const rail=f.ui.formatContainer.querySelector('.cetzPlaneRail');rail.querySelector('[aria-label="3D line"]').click();
-  const hint=()=>f.graph.container.querySelector('.cetzSpatialHint');
+  const hint=()=>f.graph.container.ownerDocument.querySelector('.cetzSpatialHint');
   function enter(value){const input=hint().querySelector('[aria-label="3D coordinate"]');input.value=value;input.dispatchEvent(new f.w.Event('input',{bubbles:true}));input.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));}
   enter('1');enter('2');assert.match(hint().querySelector('.cetzSpatialStage').textContent,/Z \(/);
   if(projection.startsWith('ortho'))assert.equal(f.graph.view.getOverlayPane().querySelector('[data-cetz-spatial-axis="Z"]'),null,'depth uses numeric input when edge-on');
@@ -2850,9 +2886,9 @@ for(const projection of ['ortho','perspective'])test(`3D ${projection} objects c
   const outline=f.ui.sidebar.wrapper.querySelector('.cetzOutline');assert.ok(outline.textContent.includes('line'));assert.ok(outline.textContent.includes('content'));
   let handles=f.graph.view.getOverlayPane().querySelectorAll('[data-cetz-spatial-handle]');assert.equal(handles.length,2);
   const hx=Number(handles[0].getAttribute('cx')),hy=Number(handles[0].getAttribute('cy'));
-  f.send(handles[0],'down',hx,hy);assert.equal(f.graph.container.querySelector('.cetzSpatialHint'),null,'mousedown does not orbit or prematurely advance a coordinate');
+  f.send(handles[0],'down',hx,hy);assert.equal(f.graph.container.ownerDocument.querySelector('.cetzSpatialHint'),null,'mousedown does not orbit or prematurely advance a coordinate');
   handles[0].dispatchEvent(new f.w.MouseEvent('click',{bubbles:true,cancelable:true}));
-  const hint=()=>f.graph.container.querySelector('.cetzSpatialHint');assert.match(hint().textContent,/Edit · line: Start point · X/);
+  const hint=()=>f.graph.container.ownerDocument.querySelector('.cetzSpatialHint');assert.match(hint().textContent,/Edit · line: Start point · X/);
   function enter(value){const input=hint().querySelector('[aria-label="3D coordinate"]');input.value=String(value);input.dispatchEvent(new f.w.Event('input',{bubbles:true}));input.dispatchEvent(new f.w.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));}
   enter(2);enter(3);enter(4);assert.equal(hint(),null);
   let action=await acceptWorkspaceUI(f,state);assert.equal(action.action,'spatial-edit');
@@ -2945,7 +2981,7 @@ test('2D and 3D reuse English tool names, thumbnails and placement labels',{skip
   }
   const ui=f.ui.sidebar.wrapper.querySelector('.cetz3DWorkspace').textContent+f.ui.container.querySelector('.cetzDimensionTabs').textContent+rail.textContent;
   assert.ok(!/[ぁ-んァ-ヶ一-龯]/.test(ui),'workspace controls and plane labels use English');
-  rail.querySelector('[aria-label="3D line"]').click();const spatialHint=f.graph.container.querySelector('.cetzSpatialHint');
+  rail.querySelector('[aria-label="3D line"]').click();const spatialHint=f.graph.container.ownerDocument.querySelector('.cetzSpatialHint');
   assert.match(spatialHint.textContent,/line: Start point/);assert.ok(!/[ぁ-んァ-ヶ一-龯]/.test(spatialHint.textContent));spatialHint.querySelector('[data-action="cancel"]').click();
   tabs[0].click();await acceptWorkspaceUI(f,state);
   const line=f.paletteEntries['cetz-preview-primitives'].find(entry=>entry.getAttribute('aria-label')==='line');line.click();

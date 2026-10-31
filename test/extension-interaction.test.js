@@ -254,18 +254,19 @@ test('3D planes, lines and content copy and paste through the source bridge, sel
     planeCode('', 'gui-plane-1', { kind: 'xz', position: [1, 2, 3], angles: [20, 30, 40] }, '\nrect((0,0),(2,1),name: "r")\ncontent("r.center")[Plane]\n') +
     '\nline((0,0,0),(1,2,3),name: "edge")\ncontent("edge.mid")[Label]\n})\n})';
   const { source, gui, save, action, until, selectedIndices, getClipboard } = await extensionFixture(t, initial);
+  const openedSource=source.text;
   const workspace = () => JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
   const original = workspace(), plane = original.planes[0], objects = original.objects;
   save(gui.text.replace('</root>', action('copy', [plane.wrapperIndex, ...objects.map(object => object.index)].join(',')) + action('paste') + '</root>'));
   await until(() => workspace().planes.length === 2 && selectedIndices().split(',').length === 3);
   assert.match(getClipboard(), /^\/\/ GUI-CeTZ 3D shapes v1/);
   assert.ok(source.text.includes('content("edge-2.mid")[Label]'));
-  assert.ok(source.text.includes('content("r-2.center")[Plane]'));
+  assert.ok(source.text.includes('content("r-2.center", angle: (rel: (1, 0)))[Plane]'));
   assert.deepEqual(workspace().planes[1].position, [1.5, 1.5, 3]);
   assert.deepEqual(workspace().planes[1].angles, [20, 30, 40]);
   const firstPaste = source.text;
   save(gui.text.replace('</root>', action('undo') + '</root>'));
-  await until(() => source.text === initial && workspace().planes.length === 1 && !gui.text.includes('cetzAction=undo;'));
+  await until(() => source.text === openedSource && workspace().planes.length === 1 && !gui.text.includes('cetzAction=undo;'));
   save(gui.text.replace('</root>', action('redo') + '</root>'));
   await until(() => source.text === firstPaste && workspace().planes.length === 2 && !gui.text.includes('cetzAction=redo;'));
   save(gui.text.replace('</root>', action('paste') + action('paste') + '</root>'));
@@ -614,6 +615,44 @@ test('workspace switches reuse the full 3D preview while edits and explicit refr
   const updated=[...readAllCells(gui.text).values()].find(item=>/cetzKind=circle;/.test(item.cell.style||''));
   const properties=JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(updated.cell.style)[1]));
   assert.equal(properties.fields.find(field=>field.key==='radius').value,'2');
+});
+
+test('the first plane text insertion saves a short native angle and preserves a second legacy plane through undo and redo',async t=>{
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({rect((0,0),(2,1))})\non-xz({rect((0,0),(3,2))})})})';
+  const {source,gui,save,action,until}=await extensionFixture(t,initial);
+  const workspace=()=>JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  const value=encodeURIComponent(JSON.stringify({mode:'2d',planeKey:workspace().planes[1].key}));
+  save(gui.text.replace('</root>',action('workspace-mode').replace('cetzAction=workspace-mode;','cetzAction=workspace-mode;cetzValue='+value+';')+'</root>'));
+  await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  const marker='<mxCell id="plane-content" style="cetzTemplate=content;cetzPoints=%5B%5B1%2C1%5D%5D;" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell>';
+  save(gui.text.replace('</root>',marker+'</root>'));
+  await until(()=>source.text.includes('angle: (rel: (1, 0))')&&gui.text.includes('cetzMode=plane-2d;')&&!gui.text.includes('id="plane-content"'));
+  const edited=source.text;
+  assert.doesNotMatch(edited,/__gui-plane|GUI-CeTZ plane content/);
+  assert.equal(workspace().activePlaneKey,workspace().planes[1].key);
+  save(gui.text.replace('</root>',action('undo')+'</root>'));
+  await until(()=>source.text===initial&&!gui.text.includes('cetzAction=undo;'));
+  assert.equal(workspace().activePlaneKey,workspace().planes[1].key);
+  save(gui.text.replace('</root>',action('redo')+'</root>'));
+  await until(()=>source.text===edited&&!gui.text.includes('cetzAction=redo;'));
+  assert.equal(workspace().activePlaneKey,workspace().planes[1].key);
+});
+
+test('an expired selection after a 2D/3D switch cannot block a new XYZ label saved in the same snapshot',async t=>{
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({content((1,1))[Plane]})})})';
+  const {source,gui,save,action,until,ownerIds}=await extensionFixture(t,initial);
+  const workspace=()=>JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  function mode(mode){const value=encodeURIComponent(JSON.stringify({mode,planeKey:workspace().planes[0].key}));save(gui.text.replace('</root>',action('workspace-mode').replace('cetzAction=workspace-mode;','cetzAction=workspace-mode;cetzValue='+value+';')+'</root>'));}
+  mode('2d');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  const expiredId=Number(ownerIds()[0].slice('cetz-edit-'.length));
+  mode('3d');await until(()=>gui.text.includes('cetzMode=3d;'));
+  const view=workspace().views[0];
+  const payload=encodeURIComponent(JSON.stringify({space:'xyz',view:view.index,base:view.base,points:[[5,1,1]],text:'XYZ label'})).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));
+  const selection='<mxCell id="late-select" style="cetzAction=select;cetzTargets='+expiredId+';cetzActionToken=late-select;" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell>';
+  const placement='<mxCell id="xyz-label" style="cetzTemplate=content;cetzPlacement3D='+payload+';" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell>';
+  save(gui.text.replace('</root>',selection+placement+'</root>'));
+  await until(()=>source.text.includes('content((5, 1, 1), "XYZ label")')&&!gui.text.includes('id="xyz-label"'));
+  assert.match(gui.text,/cetzError=;/);
 });
 
 test('3D plane settings and camera position actions remain source-validated and keep selected plane identity',async t=>{

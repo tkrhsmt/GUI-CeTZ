@@ -204,6 +204,14 @@ function rebasePlaneKey(key, before, after) {
   while(start<endBefore && start<endAfter && before[start]===after[start]) start++;
   while(endBefore>start && endAfter>start && before[endBefore-1]===after[endAfter-1]) {endBefore--;endAfter--;}
   if (endBefore <= offset) return 'source-plane-'+(offset+endAfter-endBefore);
+  // Removing the legacy text adapter changes several source
+  // ranges at once. Undo/redo still refers to the same legacy plane.
+  if(before.includes(require('./plane-content').MARKER)!==after.includes(require('./plane-content').MARKER)){
+    const {locate3DCalls}=require('./three-dimensional');
+    const planes=text=>locateCanvases(text).flatMap(canvas=>locate3DCalls(text,canvas).filter(call=>PLANE_NAMES.has(call.name))).sort((a,b)=>a.start-b.start);
+    const old=planes(before),next=planes(after),index=old.findIndex(plane=>plane.start===offset);
+    if(index>=0&&old.length===next.length&&old[index].name===next[index].name)return 'source-plane-'+next[index].start;
+  }
   if (start <= offset) return null;
   return key;
 }
@@ -237,17 +245,20 @@ function planeCanvas(source, canvas, plane) {
   const { locate3DCalls } = require('./three-dimensional');
   const calls=locate3DCalls(source,canvas), selected=calls.find(call=>call.start===plane.start);
   if(!selected) throw new Error('The drawing plane no longer exists.');
+  // Local editing uses native, unprojected content. Keep offsets intact while
+  // excluding the saved 3D adapters from the synthetic 2D document.
+  const flatSource=require('./plane-content').withoutAdapters(source);
   const ancestors=[];
   for(let current=selected;current;current=current.group) ancestors.unshift(current);
   // Calibration probes use unqualified drawing calls. This import belongs
   // only to the temporary preview document and is never written to the plane.
   let start=canvas.bodyStart, prelude='import cetz.draw: *\n';
   for(const ancestor of ancestors) {
-    prelude+=localPrelude(source.slice(start,ancestor.start));
+    prelude+=localPrelude(flatSource.slice(start,ancestor.start));
     start=ancestor.bodyStart;
   }
   const syntheticStart=canvas.bodyStart+prelude.length;
-  const text=source.slice(0,canvas.bodyStart)+prelude+source.slice(plane.bodyStart,plane.bodyEnd)+source.slice(canvas.bodyEnd);
+  const text=flatSource.slice(0,canvas.bodyStart)+prelude+flatSource.slice(plane.bodyStart,plane.bodyEnd)+flatSource.slice(canvas.bodyEnd);
   const syntheticCanvas=locateCanvases(text).find(item=>item.start===canvas.start);
   return {text,canvas:syntheticCanvas,delta:plane.bodyStart-syntheticStart};
 }
