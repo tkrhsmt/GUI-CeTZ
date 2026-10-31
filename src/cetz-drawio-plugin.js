@@ -585,7 +585,7 @@ Draw.loadPlugin(function (ui) {
   }
   var spatialGuideId=0;
   function beginSpatialPlacement(name,icon,edit,pointIndex){
-    finishThreeDrag();cancelPlacement();
+    finishSpatialGesture(true);finishThreeDrag();cancelPlacement();
     var view=edit?((threeWorkspace()||{}).views||[]).filter(function(view){return view.index===edit.view;})[0]:threeView();
     if(edit&&!edit.guidable){threeNotice.textContent='Edit this coordinate expression in Properties.';return;}
     if(edit&&view)threeViewSelect.value=String(view.index);
@@ -630,7 +630,7 @@ Draw.loadPlugin(function (ui) {
     var p=placement,axis='XYZ'[p.stage%3],index=Math.floor(p.stage/3),point=p.points[index];
     p.hint.querySelector('.cetzSpatialStage').textContent=(p.edit?'Edit · ':'')+p.name+': '+placementSteps[p.name][index]+' · '+axis+' ('+(p.stage-p.firstStage+1)+' / '+(p.lastStage-p.firstStage+1)+')';
     p.hint.querySelector('.cetzSpatialCoordinates').textContent=p.points.map(function(point,i){return placementSteps[p.name][i]+': ('+point.map(function(v){return Number(v.toFixed(6));}).join(', ')+')';}).join(' / ');
-    p.hint.querySelector('.cetzSpatialNote').textContent=message||(p.outOfView?'This point is behind the camera. Enter its coordinates.':p.axisHidden?'This axis is edge-on. Enter a value to continue.':p.snap?'Snapped to '+p.snap.label:'Click along the axis or enter a value · Enter to confirm · Step '+snapStep()+' · Esc to cancel');
+    p.hint.querySelector('.cetzSpatialNote').textContent=message||(p.outOfView?'This point is behind the camera. Enter its coordinates.':p.axisHidden?'This axis is edge-on. Enter a value to continue.':p.snap?'Snapped to '+p.snap.label:'Click along the axis or enter a value · Enter to confirm · '+(p.free?'Free movement (Shift)':'Step '+snapStep()+' · Shift: free')+' · Esc to cancel');
     p.hint.querySelector('[data-action="back"]').disabled=p.stage===p.firstStage;
     p.valueInput.step=String(snapStep());p.valueInput.setAttribute('aria-label','3D coordinate');p.valueInput.title=placementSteps[p.name][index]+' '+axis;
     if(document.activeElement!==p.valueInput)p.valueInput.value=String(point[p.stage%3]);
@@ -662,8 +662,8 @@ Draw.loadPlugin(function (ui) {
     var value=(a-u*c)/(u*matrix[2][axis]-matrix[component][axis]);
     if(!Number.isFinite(value)||Math.abs(value)>1e6)return;
     var raw=point.slice();raw[axis]=value;var projected=threeProject(matrix,raw);if(!projected)return;
-    point[axis]=snapValue(value);p.valueInput.setAttribute('aria-invalid','false');p.snap=null;var best=8;
-    (p.snapPoints||(p.snapPoints=spatialSnapPoints())).forEach(function(target){
+    point[axis]=spatialCoordinate(value,event);p.free=!!event.shiftKey;p.valueInput.setAttribute('aria-invalid','false');p.snap=null;var best=8;
+    if(!event.shiftKey)(p.snapPoints||(p.snapPoints=spatialSnapPoints())).forEach(function(target){
       var candidate=point.slice();candidate[axis]=target[axis];var q=threeProject(matrix,candidate);if(!q)return;
       var distance=Math.hypot(q[0]-projected[0],q[1]-projected[1])*graph.view.scale;
       if(distance<best){best=distance;point[axis]=target[axis];p.snap={point:target,label:'XYZ'[axis]+' = '+Number(target[axis].toFixed(6))};}
@@ -928,6 +928,7 @@ Draw.loadPlugin(function (ui) {
     var file = ui.getCurrentFile && ui.getCurrentFile();
     var fileKey = file && (typeof file.getId === 'function' && file.getId() || file.getTitle());
     if (fileKey === inspectorFileKey) return;
+    finishSpatialGesture(false);
     Object.keys(inspectorStates).forEach(function (id) { if (inspectorStates[id].timer) clearTimeout(inspectorStates[id].timer); });
     if (threeCameraTimer) clearTimeout(threeCameraTimer);
     cancelThreeDragFrame(); clearThreeOrbitPreview(); threeDrag = null; threeCameraTimer = null; threeViewSignature = '';
@@ -1449,10 +1450,10 @@ Draw.loadPlugin(function (ui) {
     var frame = threePlane();
     drawThreeGuides(view);
     drawThreePlaneGrid(frame);updateSpatialSelection();
-    threeNotice.textContent = angles && !angles.every(Number.isFinite) ? 'Camera angles are expressions. Choose a preset or enter X/Y/Z angles to orbit.' : !views.length ? 'Choose Enable 3D view to orbit this scene and use the drawing tools.' : threeObjectForCell(graph.getSelectionCell())?'Click a handle to edit XYZ, or use Properties for coordinates, text and appearance.': !frame ?
+    threeNotice.textContent = angles && !angles.every(Number.isFinite) ? 'Camera angles are expressions. Choose a preset or enter X/Y/Z angles to orbit.' : !views.length ? 'Choose Enable 3D view to orbit this scene and use the drawing tools.' : threeObjectForCell(graph.getSelectionCell())?'Drag XYZ arrows to move a point · Shift: free movement · Click a point to enter coordinates.': !frame ?
       'This plane is edge-on or cannot be calibrated. Use Edit in 2D for a front view.' : !planes.length?'Use the right toolbar to add a line, content or plane.':
       planeDraft&&planeDraft.invalid?'Complete the numeric plane position and rotation.':selected?
-      'Drag XYZ arrows to move or rotation rings to rotate. Shift snaps rotation to 15°.':
+      'Drag XYZ arrows to move · Shift: free movement. Rotate with rings · Shift: 15°.':
       'Use the right toolbar to add a plane. Drag to orbit.';
   }
   var threeDownEvent = typeof PointerEvent === 'undefined' ? 'mousedown' : 'pointerdown';
@@ -1520,13 +1521,20 @@ Draw.loadPlugin(function (ui) {
     // Revision markers can change without changing the artwork. Keep the
     // local frame until the camera result itself arrives, rather than flashing
     // the old projection on an unrelated source/selection acknowledgement.
-    if(!preview.finalAngles){
+    if(!preview.finalAngles&&!preview.spatialEdit){
       if(cell.style!==preview.imageStyle)clearThreeOrbitPreview();
       return;
     }
-    var angles=threeCameraAngles(true),camera=threeCameraCell(threeView()),state=camera&&inspectorStates[camera.id];
-    var accepted=angles&&angles.every(function(value,i){return Number.isFinite(value)&&Math.abs(value-preview.finalAngles[i])<0.000001;});
-    if(!accepted&&!(state&&state.error&&!inspectorFlight))return;
+    var angles=threeCameraAngles(true),camera=threeCameraCell(threeView()),state=camera&&inspectorStates[camera.id],accepted,rejected;
+    if(preview.spatialEdit){
+      var edit=preview.spatialEdit,object=((threeWorkspace()||{}).objects||[]).filter(function(object){return object.index===edit.index;})[0];
+      accepted=edit.scene!==inspectorScene()&&object&&object.points&&object.points.every(function(point,i){return point.every(function(value,j){return Math.abs(value-edit.points[i][j])<0.000001;});});
+      rejected=!workspaceFlight&&edit.scene!==inspectorScene();
+    }else{
+      accepted=angles&&angles.every(function(value,i){return Number.isFinite(value)&&Math.abs(value-preview.finalAngles[i])<0.000001;});
+      rejected=state&&state.error&&!inspectorFlight;
+    }
+    if(!accepted&&!rejected)return;
     var style=cell.style;
     if(preview.loadingStyle===style)return;
     preview.loadingStyle=style;
@@ -1741,8 +1749,9 @@ Draw.loadPlugin(function (ui) {
     threeDragTimer = setTimeout(render,32);
   }
   if (graph.container && graph.container.addEventListener) graph.container.addEventListener(threeDownEvent, function (event) {
-    if (!is3D() || workspaceFlight || workspacePending.length || placement || event.button !== 0 || threeDrag || planeGesture) return;
+    if (!is3D() || workspaceFlight || workspacePending.length || placement || event.button !== 0 || threeDrag || planeGesture || spatialGesture) return;
     var planeHandle=event.target&&event.target.closest&&event.target.closest('[data-cetz-plane-handle]');if(planeHandle){event.preventDefault();event.stopImmediatePropagation();if(typeof clearCanvasHighlight==='function')clearCanvasHighlight();startPlaneGesture(event,planeHandle);return;}
+    var spatialAxis=event.target&&event.target.closest&&event.target.closest('[data-cetz-spatial-axis]');if(spatialAxis){event.preventDefault();event.stopImmediatePropagation();if(typeof clearCanvasHighlight==='function')clearCanvasHighlight();startSpatialGesture(event,spatialAxis);return;}
     if(event.target&&event.target.closest&&event.target.closest('[data-cetz-spatial-handle]')){event.preventDefault();event.stopImmediatePropagation();return;}
     var angles = threeCameraAngles();
     if (!angles || !angles.every(Number.isFinite)) angles = null;
@@ -1955,21 +1964,61 @@ Draw.loadPlugin(function (ui) {
     if(!planes.some(function(plane){return plane.key===selectedPlaneKey;})){selectedPlaneKey=planes.length?planes[0].key:null;lastPlaneIdentity=null;planeUIKey=null;planeDraft=null;}
     var cell=threeObjectCell(object);if(cell)graph.setSelectionCell(cell);updateThreeWorkspace();updateSpatialSelection();
   }
-  var spatialSelectionLayer=null,spatialSelectionSignature=null;
+  // Work in the selected axis's coordinate, including the perspective divide.
+  function spatialCoordinate(value,event){return event.shiftKey?Number(value.toFixed(8)):snapValue(value);}
+  function threeAxisDirection(matrix,point,axis){
+    var origin=threeProject(matrix,point);if(!origin)return null;
+    var w=matrix[2].reduce(function(sum,n,i){return sum+n*point.concat(1)[i];},0);
+    return [0,1].map(function(i){return (matrix[i][axis]-origin[i]*matrix[2][axis])/w;});
+  }
+  function threeAxisDrag(matrix,point,axis,dx,dy){
+    var origin=threeProject(matrix,point),d=threeAxisDirection(matrix,point,axis);if(!origin||!d)return null;
+    var length=d[0]*d[0]+d[1]*d[1];if(length*graph.view.scale*graph.view.scale<.25)return null;
+    var t=(dx*d[0]+dy*d[1])/length,j=Math.abs(d[0])>=Math.abs(d[1])?0:1,u=origin[j]+t*d[j],base=point.slice();base[axis]=0;
+    var a=matrix[j].reduce(function(sum,n,i){return sum+n*base.concat(1)[i];},0),c=matrix[2].reduce(function(sum,n,i){return sum+n*base.concat(1)[i];},0);
+    var value=(a-u*c)/(u*matrix[2][axis]-matrix[j][axis]),target=point.slice();target[axis]=value;
+    return Number.isFinite(value)&&Math.abs(value)<=1e6&&threeProject(matrix,target)?value:null;
+  }
+  function drawTranslationAxes(layer,matrix,point,size,decorate){
+    var center=threeProject(matrix,point);if(!center)return;
+    var scale=graph.view.scale,tr=graph.view.translate,c=[(center[0]+tr.x)*scale,(center[1]+tr.y)*scale],colors=['#d64b4b','#309b56','#397bd5'];
+    function node(name,attributes){var element=document.createElementNS('http://www.w3.org/2000/svg',name);Object.keys(attributes).forEach(function(key){element.setAttribute(key,String(attributes[key]));});layer.appendChild(element);return element;}
+    ['X','Y','Z'].forEach(function(axis,i){
+      var d=threeAxisDirection(matrix,point,i),length=d&&Math.hypot(d[0],d[1]);if(!length||length*scale<.5)return;
+      var ux=d[0]/length,uy=d[1]/length,x=c[0]+ux*size,y=c[1]+uy*size,path='M '+c.join(' ')+' L '+x+' '+y;
+      decorate(node('path',{d:path,fill:'none',stroke:'transparent','stroke-width':10}),i);
+      decorate(node('path',{d:path,fill:'none',stroke:colors[i],'stroke-width':2.5}),i);
+      decorate(node('path',{d:'M '+(x-ux*8-uy*4)+' '+(y-uy*8+ux*4)+' L '+x+' '+y+' L '+(x-ux*8+uy*4)+' '+(y-uy*8-ux*4),fill:'none',stroke:colors[i],'stroke-width':2.5}),i);
+      decorate(node('circle',{cx:x,cy:y,r:5,fill:'white',stroke:colors[i],'stroke-width':2}),i);
+      var text=node('text',{x:x+7,y:y+4,fill:colors[i],'font-size':11,stroke:'none'});text.textContent=axis;
+    });
+  }
+  var spatialSelectionLayer=null,spatialSelectionSignature=null,spatialGesture=null,spatialGestureFrame=null,spatialGestureTimer=null;
   function updateSpatialSelection(){
     updatePlaneManipulator();
+    if(spatialGesture)return;
     var cell=is3D()&&!placement&&!threeDrag&&!threeOrbitPreview&&graph.getSelectionCell(),object=threeObjectForCell(cell),view=object&&((threeWorkspace()||{}).views||[]).filter(function(view){return view.index===object.view;})[0];
     var signature=object&&object.guidable&&view?JSON.stringify([cell.id,object.base,object.points,view.matrix,graph.view.scale,graph.view.translate.x,graph.view.translate.y]):null;
     if(signature&&signature===spatialSelectionSignature&&spatialSelectionLayer&&spatialSelectionLayer.parentNode===graph.view.getOverlayPane()&&spatialSelectionLayer.style.display!=='none')return;
+    spatialSelectionSignature=signature;
+    if(!signature){if(spatialSelectionLayer&&spatialSelectionLayer.parentNode)spatialSelectionLayer.parentNode.removeChild(spatialSelectionLayer);spatialSelectionLayer=null;return;}
+    drawSpatialSelection(object,view,object.points,cell.id);
+  }
+  function drawSpatialSelection(object,view,coordinates,id){
     if(spatialSelectionLayer&&spatialSelectionLayer.parentNode)spatialSelectionLayer.parentNode.removeChild(spatialSelectionLayer);
-    spatialSelectionLayer=null;spatialSelectionSignature=signature;
-    if(!signature)return;
-    var layer=document.createElementNS('http://www.w3.org/2000/svg','g');layer.setAttribute('data-cetz-spatial-selection',cell.id);layer.setAttribute('pointer-events','none');
+    spatialSelectionLayer=null;
+    var layer=document.createElementNS('http://www.w3.org/2000/svg','g');layer.setAttribute('data-cetz-spatial-selection',id);layer.setAttribute('pointer-events','none');
     var scale=graph.view.scale,tr=graph.view.translate;
-    var points=object.points.map(function(point){var q=threeProject(view.matrix,point);return q&&[(q[0]+tr.x)*scale,(q[1]+tr.y)*scale];});
+    var points=coordinates.map(function(point){var q=threeProject(view.matrix,point);return q&&[(q[0]+tr.x)*scale,(q[1]+tr.y)*scale];});
     if(object.kind==='line'&&points.every(Boolean)){
       var line=document.createElementNS('http://www.w3.org/2000/svg','path');line.setAttribute('d','M '+points[0].join(' ')+' L '+points[1].join(' '));line.setAttribute('stroke','#4675e7');line.setAttribute('stroke-width','2');layer.appendChild(line);
     }
+    coordinates.forEach(function(point,i){
+      drawTranslationAxes(layer,view.matrix,point,64,function(element,axis){
+        element.setAttribute('data-cetz-spatial-axis',i+'-'+axis);element.setAttribute('pointer-events',element.localName==='path'?'stroke':'all');element.style.cursor='move';
+        var title=document.createElementNS('http://www.w3.org/2000/svg','title');title.textContent='Move '+(object.kind==='line'?(i===0?'start':'end'):'text position')+' '+'XYZ'[axis]+' · Shift: free movement';element.appendChild(title);
+      });
+    });
     points.forEach(function(point,i){
       if(!point)return;
       var circle=document.createElementNS('http://www.w3.org/2000/svg','circle');circle.setAttribute('cx',point[0]);circle.setAttribute('cy',point[1]);circle.setAttribute('r','5');
@@ -1980,6 +2029,59 @@ Draw.loadPlugin(function (ui) {
     });
     graph.view.getOverlayPane().appendChild(layer);spatialSelectionLayer=layer;
   }
+  function startSpatialGesture(event,handle){
+    var object=threeObjectForCell(graph.getSelectionCell()),view=object&&((threeWorkspace()||{}).views||[]).filter(function(view){return view.index===object.view;})[0];
+    if(!object||!object.guidable||!view||!view.matrix||inspectorFlight)return;
+    var fields=handle.getAttribute('data-cetz-spatial-axis').split('-').map(Number),point=mxUtils.convertPoint(graph.container,event.clientX,event.clientY);
+    var preview=prepareThreeOrbit(threeCameraAngles()),cell=threeObjectCell(object),start=Number(graph.getCellStyle(cell).cetzStart);
+    var entry=preview&&preview.parts.filter(function(entry){return entry.source.order===start&&['line','point'].indexOf(entry.source.type)>=0;})[0];
+    if(!entry)preview=null;
+    spatialGesture={object:object,view:view,id:cell.id,pointIndex:fields[0],axis:fields[1],scene:inspectorScene(),pointerId:event.pointerId,x:point.x,y:point.y,
+      points:object.points.map(function(point){return point.slice();}),preview:preview,entry:entry,moved:false,free:!!event.shiftKey};
+    graph.container.style.cursor='move';
+  }
+  function renderSpatialGesture(){
+    var g=spatialGesture;if(!g)return;
+    if(g.preview){g.entry.source=Object.assign({},g.entry.source,{points:g.points});if(renderThreeOrbit(g.preview,threeCameraAngles())===false){clearThreeOrbitPreview();g.preview=null;}}
+    drawSpatialSelection(g.object,g.view,g.points,g.id);
+    spatialSelectionLayer.setAttribute('data-cetz-spatial-preview',g.points.map(function(point){return point.join(',');}).join(';'));
+    var p=threeProject(g.view.matrix,g.points[g.pointIndex]);
+    if(p){
+      var label=document.createElementNS('http://www.w3.org/2000/svg','text');label.setAttribute('x',(p[0]+graph.view.translate.x)*graph.view.scale+12);label.setAttribute('y',(p[1]+graph.view.translate.y)*graph.view.scale+84);
+      label.setAttribute('fill','#4675e7');label.setAttribute('stroke','white');label.setAttribute('stroke-width','3');label.setAttribute('paint-order','stroke');label.setAttribute('font-size','12');
+      label.textContent='Move '+'XYZ'[g.axis]+': '+g.points[g.pointIndex][g.axis]+' · '+(g.free?'Free':'Step '+snapStep()+' · Shift: free');spatialSelectionLayer.appendChild(label);
+    }
+  }
+  function updateSpatialGesture(event){
+    var g=spatialGesture;if(!g||event.pointerId!==g.pointerId)return;event.preventDefault();event.stopImmediatePropagation();
+    var point=mxUtils.convertPoint(graph.container,event.clientX,event.clientY);
+    g.moved=g.moved||Math.hypot(point.x-g.x,point.y-g.y)>2;g.free=!!event.shiftKey;
+    var value=threeAxisDrag(g.view.matrix,g.object.points[g.pointIndex],g.axis,(point.x-g.x)/graph.view.scale,(point.y-g.y)/graph.view.scale);
+    if(value!==null)g.points[g.pointIndex][g.axis]=spatialCoordinate(value,event);
+    if(g.moved&&spatialGestureFrame===null&&spatialGestureTimer===null){
+      var render=function(){cancelSpatialGestureFrame();renderSpatialGesture();};
+      spatialGestureFrame=requestAnimationFrame(render);spatialGestureTimer=setTimeout(render,32);
+    }
+  }
+  function cancelSpatialGestureFrame(){
+    if(spatialGestureFrame!==null){cancelAnimationFrame(spatialGestureFrame);spatialGestureFrame=null;}
+    if(spatialGestureTimer!==null){clearTimeout(spatialGestureTimer);spatialGestureTimer=null;}
+  }
+  function finishSpatialGesture(commit){
+    var g=spatialGesture;if(!g)return;cancelSpatialGestureFrame();if(commit&&g.moved)renderSpatialGesture();spatialGesture=null;
+    var changed=g.points.some(function(point,i){return point.some(function(value,j){return Math.abs(value-g.object.points[i][j])>1e-8;});});
+    var distinct=g.object.kind!=='line'||Math.hypot.apply(Math,g.points[0].map(function(value,i){return value-g.points[1][i];}))>=1e-6;
+    if(commit&&g.moved&&changed&&distinct&&g.scene===inspectorScene()){
+      if(g.preview&&threeOrbitPreview===g.preview)g.preview.spatialEdit={index:g.object.index,points:g.points,scene:g.scene};
+      queueWorkspaceAction('spatial-edit',{index:g.object.index,base:g.object.base,viewBase:g.view.base,points:g.points});
+    }else if(g.preview&&threeOrbitPreview===g.preview)clearThreeOrbitPreview();
+    spatialSelectionSignature=null;updateThreeWorkspace();updateSpatialSelection();
+  }
+  document.addEventListener(threeMoveEvent,updateSpatialGesture,true);
+  document.addEventListener(threeUpEvent,function(event){if(spatialGesture&&event.pointerId===spatialGesture.pointerId){updateSpatialGesture(event);finishSpatialGesture(true);}},true);
+  document.addEventListener('pointercancel',function(){finishSpatialGesture(false);},true);
+  document.addEventListener('keydown',function(event){if(spatialGesture&&event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();finishSpatialGesture(false);}},true);
+  if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('blur',function(){finishSpatialGesture(true);});
   var planeManipulator=null,planeManipulatorSignature=null,planeGesture=null,planeGestureFrame=null,planeGestureTimer=null;
   function planePoseWorld(plane,pose){
     var r=threeRotation(pose.angles,true),axes={xy:[0,1],xz:[0,2],zy:[2,1]}[plane.kind];
@@ -2006,31 +2108,21 @@ Draw.loadPlugin(function (ui) {
       handle(node('circle',{cx:c[0],cy:c[1],r:radius,fill:'none',stroke:colors[i],'stroke-width':1.5,'stroke-opacity':.45}), 'rotate',i);
       rotationKnobs.push({axis:axis,index:i,x:x,y:y});
     });
-    var pivot=planePivot(plane,pose),w=plane.parentMatrix[2].reduce(function(sum,n,i){return sum+n*pivot.concat(1)[i];},0);
-    ['X','Y','Z'].forEach(function(axis,i){
-      var d=[0,1].map(function(j){return (plane.parentMatrix[j][i]-center[j]*plane.parentMatrix[2][i])/w;}),length=Math.hypot(d[0],d[1]);
-      if(length*scale<.5)return;
-      var x=c[0]+d[0]/length*83,y=c[1]+d[1]/length*83;
-      handle(node('path',{d:'M '+c.join(' ')+' L '+x+' '+y,fill:'none',stroke:colors[i],'stroke-width':2.5}), 'move',i);
-      var ux=d[0]/length,uy=d[1]/length;
-      handle(node('path',{d:'M '+(x-ux*8-uy*4)+' '+(y-uy*8+ux*4)+' L '+x+' '+y+' L '+(x-ux*8+uy*4)+' '+(y-uy*8-ux*4),fill:'none',stroke:colors[i],'stroke-width':2.5}), 'move',i);
-      handle(node('circle',{cx:x,cy:y,r:5,fill:'white',stroke:colors[i],'stroke-width':2}), 'move',i);
-      var text=node('text',{x:x+7,y:y+4,fill:colors[i],'font-size':11,stroke:'none'});text.textContent=axis;
-    });
+    drawTranslationAxes(layer,plane.parentMatrix,planePivot(plane,pose),83,function(element,axis){handle(element,'move',axis);});
     rotationKnobs.forEach(function(knob){
       handle(node('circle',{cx:knob.x,cy:knob.y,r:5,fill:'white',stroke:colors[knob.index],'stroke-width':2}), 'rotate',knob.index);
       var text=node('text',{x:knob.x+7,y:knob.y-7,fill:colors[knob.index],'font-size':10,stroke:'none'});text.textContent='R'+knob.axis;
     });
     node('circle',{cx:c[0],cy:c[1],r:3,fill:'#4675e7',stroke:'white','stroke-width':1});
     if(gesture){
-      var label=(gesture.mode==='move'?'Move ':'Rotate ')+'XYZ'[gesture.axis]+': '+Number((gesture.mode==='move'?pose.position[gesture.axis]:pose.angles[gesture.axis]).toFixed(4))+(gesture.mode==='rotate'?'°':'')+' · '+(gesture.mode==='rotate'?'Shift: 15°':'Step '+snapStep());
+      var label=(gesture.mode==='move'?'Move ':'Rotate ')+'XYZ'[gesture.axis]+': '+Number((gesture.mode==='move'?pose.position[gesture.axis]:pose.angles[gesture.axis]).toFixed(8))+(gesture.mode==='rotate'?'°':'')+' · '+(gesture.mode==='rotate'?'Shift: 15°':gesture.free?'Free':'Step '+snapStep()+' · Shift: free');
       var text=node('text',{x:c[0]+12,y:c[1]+83,fill:'#4675e7',stroke:'white','stroke-width':3,'paint-order':'stroke','font-size':12});text.textContent=label;
     }
     graph.view.getOverlayPane().appendChild(layer);planeManipulator=layer;
   }
   function updatePlaneManipulator(){
     if(planeGesture)return;
-    var plane=is3D()&&!placement&&!threeDrag&&!threeOrbitPreview&&!workspaceFlight&&threePlaneForCell(graph.getSelectionCell());
+    var plane=is3D()&&!placement&&!threeDrag&&!threeOrbitPreview&&!spatialGesture&&!workspaceFlight&&threePlaneForCell(graph.getSelectionCell());
     if(!plane||!plane.parentMatrix||!plane.matrix||!plane.position||!plane.angles||!plane.position.concat(plane.angles).every(Number.isFinite)){clearPlaneManipulator();return;}
     var predicted=threePlaneProjection(plane.parentMatrix,planePoseWorld(plane,plane));
     if([[0,0],[1,0],[0,1]].some(function(point){var a=applyThree(predicted,point,true),b=threeProject(plane.matrix,[point[0],point[1],0]);return !a||!b||Math.hypot(a[0]-b[0],a[1]-b[1])>.2;})){clearPlaneManipulator();return;}
@@ -2101,8 +2193,8 @@ Draw.loadPlugin(function (ui) {
     var point=mxUtils.convertPoint(graph.container,event.clientX,event.clientY),axis=g.axis;
     g.moved=g.moved||Math.hypot(point.x-g.x,point.y-g.y)>2;
     if(g.mode==='move'){
-      var m=g.plane.parentMatrix,p=g.pivot,origin=threeProject(m,p),h=p.concat(1),w=m[2].reduce(function(sum,n,i){return sum+n*h[i];},0),d=[0,1].map(function(i){return (m[i][axis]-origin[i]*m[2][axis])/w;}),length=d[0]*d[0]+d[1]*d[1];
-      if(length>1e-12){var dx=(point.x-g.x)/graph.view.scale,dy=(point.y-g.y)/graph.view.scale,t=(dx*d[0]+dy*d[1])/length,j=Math.abs(d[0])>=Math.abs(d[1])?0:1,u=origin[j]+t*d[j],base=p.slice();base[axis]=0;var a=m[j].reduce(function(sum,n,i){return sum+n*base.concat(1)[i];},0),c=m[2].reduce(function(sum,n,i){return sum+n*base.concat(1)[i];},0),value=(a-u*c)/(u*m[2][axis]-m[j][axis]);if(Number.isFinite(value)&&Math.abs(value)<1e6)g.pose.position[axis]=snapValue(g.initial.position[axis]+value-p[axis]);}
+      var value=threeAxisDrag(g.plane.parentMatrix,g.pivot,axis,(point.x-g.x)/graph.view.scale,(point.y-g.y)/graph.view.scale);g.free=!!event.shiftKey;
+      if(value!==null)g.pose.position[axis]=spatialCoordinate(g.initial.position[axis]+value-g.pivot[axis],event);
     }else{
       var angle=Math.atan2(point.y-g.center[1],point.x-g.center[0]),delta=angle-g.previousAngle;while(delta>Math.PI)delta-=Math.PI*2;while(delta< -Math.PI)delta+=Math.PI*2;g.rotation+=delta;g.previousAngle=angle;
       var step=event.shiftKey?15:1;g.pose.angles[axis]=Math.round((g.initial.angles[axis]+g.rotation*180/Math.PI)/step)*step;
@@ -2158,7 +2250,7 @@ Draw.loadPlugin(function (ui) {
     updateThreeWorkspace();
   }
   function queueWorkspaceAction(name,payload){
-    finishPlaneGesture(true);finishThreeDrag();cancelPlacement();
+    finishSpatialGesture(true);finishPlaneGesture(true);finishThreeDrag();cancelPlacement();
     var item={name:name,payload:payload};
     var existing=workspacePending.filter(function(p){return p.name===name&&name!=='plane-create'&&(p.payload.key||p.payload.viewKey)===(payload.key||payload.viewKey);})[0];
     if(existing)existing.payload=payload;else workspacePending.push(item);
@@ -2196,7 +2288,7 @@ Draw.loadPlugin(function (ui) {
     sendSourceAction(item.name,encodedProperties(payload),[]);
   }
   function requestDimension(mode,key){
-    finishPlaneGesture(true);finishThreeDrag();cancelPlacement();
+    finishSpatialGesture(true);finishPlaneGesture(true);finishThreeDrag();cancelPlacement();
     dimensionPending={mode:mode,planeKey:key||selectedPlaneKey||(planeContext()&&planeContext().key)};
     flushInspectorDrafts();flushWorkspaceActions();flushDimensionRequest();
   }
@@ -4665,6 +4757,7 @@ Draw.loadPlugin(function (ui) {
     applyOutlineHeight(outlineHeight);
   }
   function update() {
+    if(spatialGesture&&(!is3D()||spatialGesture.scene!==inspectorScene()))finishSpatialGesture(false);
     if(planeGesture&&(!is3D()||planeGesture.scene!==inspectorScene()))finishPlaneGesture(false);
     suppressCachedSelectionBorders();
     var active = isCetz(), preview = active && isPreview();
