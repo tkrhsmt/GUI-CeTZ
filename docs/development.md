@@ -38,7 +38,7 @@ GUI入力はキューで順に処理します。古いsceneやbaseを使う編�
 | `properties.js` / `templates.js` | 引数スキーマと編集、挿入テンプレート |
 | `placement.js` / `snapping.js` | クリック作図のソース生成、座標精度 |
 | `source-actions.js` / `path-operations.js` | 配置、グループ、接続、共有点、パス合成 |
-| `clipboard.js` / `history.js` | ソースを用いたコピー・貼り付け、GUI履歴 |
+| `clipboard.js` / `clipboard-3d.js` / `history.js` | ソースを用いた2D・3Dのコピー・貼り付け、GUI履歴 |
 | `selection.js` / `scene.js` / `diagram-status.js` | 選択通知、sceneの識別と版、状態表示 |
 | `three-dimensional.js` / `three-workspace.js` | 3Dシーン、投影の校正、軸・グリッド、空間への追加 |
 | `plane-editor.js` / `plane-boolean.js` | 平面・カメラの編集、2Dローカル表示、面内Booleanの補助 |

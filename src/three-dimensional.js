@@ -1,6 +1,6 @@
 'use strict';
 
-const { closing, skipTrivia, splitArgs, deletionRange } = require('./scanner');
+const { closing, skipTrivia, splitArgs, callArguments, deletionRange } = require('./scanner');
 const { renderCanvas } = require('./preview');
 const { layerInstrumentation, splitSvgLayers } = require('./svg-layers');
 const { propertyModel, SCHEMAS, argumentsOf } = require('./properties');
@@ -34,7 +34,7 @@ function codeOnly(text) {
   return result;
 }
 function is3DCanvas(source, canvas) {
-  const code = codeOnly(source.slice(canvas.bodyStart, canvas.bodyEnd));
+  const code = codeOnly(require('./plane-content').withoutAdapters(source.slice(canvas.bodyStart, canvas.bodyEnd)));
   const n = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)';
   if (/\b(?:ortho|perspective|on-xy|on-xz|on-zy|on-yz|set-transform)\s*\(/.test(code) ||
       /\bz\s*:/.test(code) || /\brotate\s*\([^)]*\b(?:x|y|yaw|pitch|roll)\s*:/.test(code)) return true;
@@ -58,7 +58,7 @@ function is3DCanvas(source, canvas) {
   }
   return false;
 }
-function locate3DCalls(source, canvas) {
+function locate3DCalls(source, canvas, resolveName = name => name) {
   const calls = [];
   function scan(start, limit, group = null) {
     for (let i = start; i < limit;) {
@@ -78,15 +78,16 @@ function locate3DCalls(source, canvas) {
       }
       const match = /^(?:cetz\.draw\.)?([A-Za-z_][\w-]*)/.exec(source.slice(i));
       if (!match || /[\w.]/.test(source[i - 1] || '')) { i++; continue; }
-      const name = match[1], open = skipTrivia(source, i + match[0].length);
-      if (source[open] !== '(') { i += name.length; continue; }
-      const end = closing(source, open, '(', ')');
-      if (end < 0 || end >= limit) { i += name.length; continue; }
+      const name = match[0].startsWith('cetz.draw.') ? match[1] : resolveName(match[1], i), open = skipTrivia(source, i + match[0].length);
+      if (source[open] !== '(') { i += match[0].length; continue; }
+      const parsed = callArguments(source, open, limit);
+      if (!parsed) { i += match[0].length; continue; }
+      const end = parsed.end - 1;
       const call = { name, start: i, end: end + 1, call: source.slice(i, end + 1), group,
         mode: '3d', points: [], transform: { tx: 0, ty: 0, sx: 1, sy: 1 } };
       if (CONTAINERS.has(name)) {
         call.container = true;
-        for (const arg of splitArgs(source, open + 1, end)) {
+        for (const arg of parsed.args) {
           let brace = skipTrivia(source, arg.start);
           const bodyKey = /^body\s*:\s*/.exec(source.slice(brace, arg.end));
           if (bodyKey) brace = skipTrivia(source, brace + bodyKey[0].length);

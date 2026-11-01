@@ -1,6 +1,6 @@
 'use strict';
 
-const { closing, skipTrivia, splitArgs, deletionRange } = require('./scanner');
+const { closing, skipTrivia, splitArgs, callArguments, deletionRange } = require('./scanner');
 const { renderCanvas } = require('./preview');
 const { templateInsertions } = require('./templates');
 const { color: parseColor, stroke: parseStroke, typstColor, typstStroke } = require('./style');
@@ -34,9 +34,9 @@ const STYLE_KEYS = new Set(['cetzFillColor', 'cetzStrokeColor', 'cetzStrokeWidth
 function contentText(call) {
   if (call.name !== 'content') return null;
   const open = skipTrivia(call.call, call.name.length);
-  const end = closing(call.call, open, '(', ')');
-  if (end < 0) return null;
-  const args = splitArgs(call.call, open + 1, end).filter(arg =>
+  const parsed = callArguments(call.call, open);
+  if (!parsed) return null;
+  const args = parsed.args.filter(arg =>
     !/^\s*[\w-]+\s*:/.test(call.call.slice(arg.start, arg.end)));
   if (args.length < 2) return null;
   const raw = call.call.slice(args[1].start, args[1].end).trim();
@@ -315,12 +315,13 @@ function locateEditableCalls(source, canvas) {
     if (!match || /[\w.]/.test(source[i - 1] || '')) { i++; continue; }
     const name = match[0], open = skipTrivia(source, i + name.length);
     if (source[open] !== '(') { i += name.length; continue; }
-    const end = closing(source, open, '(', ')');
-    if (end < 0 || end >= bodyEnd) { i += name.length; continue; }
+    const parsed = callArguments(source, open, bodyEnd);
+    if (!parsed) { i += name.length; continue; }
+    const end = parsed.end - 1;
     if (EDITABLE.has(name)) result.push({ name, start: i, end: end + 1,
       call: source.slice(i, end + 1), group, transform: { tx: 0, ty: 0, sx: 1, sy: 1 } });
     else if (name === 'group') {
-      const args = splitArgs(source, open + 1, end);
+      const args = parsed.args;
       const body = args.find(arg => source[skipTrivia(source, arg.start)] === '{');
       const brace = body && skipTrivia(source, body.start);
       const bodyEnd = brace != null && closing(source, brace, '{', '}');
@@ -611,7 +612,7 @@ async function renderEditable(source, canvas, filePath) {
         if (!name) {
           name = `__gui_cetz_content_${index}`;
           while (source.includes(`"${name}"`)) name += '_';
-          insertions.push({ offset: innerEnd - 1, text: `, name: "${name}"` });
+          insertions.push({ offset: innerStart + namedArgument(call.call, 'name').end, text: `, name: "${name}"` });
         }
         const corners = ['north-west', 'north-east', 'south-west', 'south-east'];
         const markers = corners.map((corner, side) => {

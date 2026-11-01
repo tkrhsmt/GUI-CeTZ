@@ -43,6 +43,21 @@ test('3D discovery respects nested scopes, named bodies, unknown functions and d
   for (const call of calls) assert.equal(source.slice(call.start, call.end), call.call);
 });
 
+test('3D trailing content is rendered, inspected and deleted with its complete source range', async () => {
+  const source = document('ortho({ content((0, 0, 0))[3D text]\nline((0, 0, 0), (1, 1, 1)) })');
+  const rendered = await render(source);
+  const index = rendered.calls.findIndex(call => call.name === 'content'), call = rendered.calls[index];
+  assert.equal(call.call, 'content((0, 0, 0))[3D text]');
+  assert.equal(propertyModel(call).fields.find(field => field.key === '$1').text, '3D text');
+  const edited = apply(source, propertyPatches(rendered, action(call, index, { '$1': '[Updated]' })));
+  assert.ok(edited.includes('content((0, 0, 0))[Updated]'));
+  await render(edited);
+  const deleted = apply(source, patchesFromEditable(source, rendered,
+    rendered.xml.replace(new RegExp(`<mxCell id="cetz-edit-${index}"[\\s\\S]*?</mxCell>`), ''), readAllCells));
+  assert.ok(!deleted.includes('[3D text]'));
+  await render(deleted);
+});
+
 for (const version of ['0.4.2', '0.5.2']) test(`3D ${version}: exact rendering, depth order, planes, nested transforms, text and positive bounds`, async () => {
   const source = document(`ortho(x: 25deg, y: 40deg, z: 10deg, sorted: true, {
     on-xy(z: -1, { rect((0,0), (2,1), fill: red) })

@@ -81,6 +81,7 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
     addListener(name, callback) { selectionChanged = callback; }
   };
   const graph = {
+    gridEnabled: true,
     view: { scale: 1, translate: { x: 0, y: 0 }, getOverlayPane() { return {}; },
       invalidate() {}, validate() { viewValidations++; },
       getState(cell) { return cellStates.get(cell.id) ||
@@ -223,8 +224,19 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   assert.equal(ui.sidebarContainer.style.width, '300px');
   assert.equal(ui.sidebarContainer.style.display, '');
   assert.equal(formatContainer.children[0].className, 'cetzRightRail');
+  ui.hsplitPosition = 360;
+  ui.refresh();
   ui.toggleShapesPanel(false);
+  assert.equal(ui.hsplitPosition, 0);
+  assert.equal(ui.sidebarContainer.style.display, 'none');
+  ui.refresh();
+  assert.equal(ui.sidebarContainer.style.width, '0px');
+  ui.toggleShapesPanel(true);
+  assert.equal(ui.hsplitPosition, 360, 'expansion restores the resized panel width');
+  ui.hsplitPosition = 300;
+  ui.refresh();
   assert.equal(ui.hsplitPosition, 300);
+  assert.equal(ui.sidebarContainer.style.display, '');
   ui.toggleFormatPanel(true);
   assert.equal(ui.formatWidth, 48);
   ui.refresh();
@@ -339,13 +351,18 @@ test('CeTZ shows supported controls and restores standard Draw.io chrome afterwa
   insertedAction = null;
   selectionChanged();
   assert.equal(insertedAction, null, 'repeated selection does not notify again');
-  const controls = wrapper.children[0];
+  const propertiesFold = wrapper.children[0];
+  const controls = propertiesFold.children[1];
   const rail = formatContainer.children[0];
   assert.equal(rail.children[0].children.includes(palettes['cetz-preview-primitives'][1]), true);
   assert.equal(rail.children[0].children.includes(palettes['cetz-advanced'][1]), true);
   assert.match(palettes['cetz-advanced'][1].style.cssText, /flex-direction:column/);
   assert.match(palettes['cetz-advanced'][1].style.cssText, /padding:0/);
-  assert.equal(wrapper.children.includes(controls), true);
+  assert.equal(propertiesFold.className, 'cetzPropertiesFold');
+  assert.equal(propertiesFold.open, true);
+  assert.equal(propertiesFold.children[0].textContent, 'Properties');
+  assert.equal(propertiesFold.style.display, '');
+  assert.equal(wrapper.children.includes(propertiesFold), true);
   assert.equal(controls.style.display, '');
   assert.match(controls.style.cssText, /box-sizing:border-box;width:100%/);
   assert.match(controls.children[1].style.cssText, /grid-template-columns:minmax\(0,76px\) minmax\(0,1fr\)/);

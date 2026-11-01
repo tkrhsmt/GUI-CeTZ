@@ -1,6 +1,6 @@
 'use strict';
 
-const { skipTrivia, closing, splitArgs } = require('./scanner');
+const { skipTrivia, closing, callArguments } = require('./scanner');
 
 // CeTZ shapes and style parameters. Values stay Typst expressions: a
 // coordinate reference, a ratio or a dictionary must survive an inspector edit.
@@ -53,10 +53,10 @@ function valueEnd(text, start, end) {
 function argumentsOf(text) {
   const qualified = /^(?:cetz\.draw\.)?([\w-]+)/.exec(text);
   const name = qualified?.[1];
-  const open = skipTrivia(text, qualified?.[0].length || 0), end = closing(text, open, '(', ')');
-  if (!name || end < 0) throw new Error('Cannot inspect this CeTZ call.');
+  const open = skipTrivia(text, qualified?.[0].length || 0), parsed = callArguments(text, open);
+  if (!name || !parsed) throw new Error('Cannot inspect this CeTZ call.');
   let positional = 0;
-  const args = splitArgs(text, open + 1, end).map(range => {
+  const args = parsed.args.map(range => {
     const start = skipTrivia(text, range.start);
     if (start >= range.end) return { ...range, empty: true };
     const named = /^([\w-]+)\s*:\s*/.exec(text.slice(start, range.end));
@@ -67,7 +67,7 @@ function argumentsOf(text) {
     return { ...range, valueStart, valueEnd: last, value,
       key: named ? named[1] : '$' + positional++, named: !!named };
   });
-  return { name, open, end, args };
+  return { name, open, end: parsed.parenEnd, callEnd: parsed.end, args };
 }
 function positionalLabel(name, index, count) {
   if (name === 'boolean') return index === 0 ? 'Operand A' : 'Operand B';
@@ -127,6 +127,10 @@ function expression(value) {
       if (!closed) throw new Error('Unclosed string in property.');
     } else if (value.startsWith('//', i) || value.startsWith('/*', i)) {
       i = skipTrivia(value, i) - 1;
+    } else if (value[i] === '[') {
+      const end = closing(value, i, '[', ']');
+      if (end < 0) throw new Error('Unbalanced property expression.');
+      i = end;
     } else if (pairs[value[i]]) stack.push(pairs[value[i]]);
     else if (')]}'.includes(value[i])) {
       if (stack.pop() !== value[i]) throw new Error('Unbalanced property expression.');
@@ -146,9 +150,15 @@ function propertyPatches(rendered, action) {
   if (call.mode === '3d' && CONTAINERS.has(call.name) &&
       [...remaining.keys()].some(key => key[0] === '$' || key === 'body'))
     throw new Error('Edit nested shapes individually or edit the body in Typst.');
-  const parts = [];
+  const parts = [], trailing = [];
   for (const arg of parsed.args) {
     if (arg.empty) continue;
+    if (arg.trailing) {
+      const value = remaining.has(arg.key) ? expression(remaining.get(arg.key)) : arg.value;
+      remaining.delete(arg.key);
+      trailing.push(value);
+      continue;
+    }
     if (!remaining.has(arg.key)) { parts.push(call.call.slice(arg.start, arg.end)); continue; }
     const value = remaining.get(arg.key); remaining.delete(arg.key);
     if (value === '' && arg.named) continue;
@@ -158,7 +168,12 @@ function propertyPatches(rendered, action) {
     if (!/^[a-zA-Z][\w-]*$/.test(key)) throw new Error('Invalid property name.');
     if (value !== '') parts.push(` ${key}: ${expression(value)}`);
   }
-  let text = call.call.slice(0, parsed.open + 1) + parts.join(',') + call.call.slice(parsed.end);
+  // Keep bracket syntax when possible; arbitrary inspector expressions belong
+  // inside the parentheses, in the same positional order as the content blocks.
+  const keepTrailing = trailing.every(value => value[0] === '[' && closing(value, 0, '[', ']') === value.length - 1);
+  if (!keepTrailing) parts.push(...trailing.map(value => ' ' + value));
+  let text = call.call.slice(0, parsed.open + 1) + parts.join(',') + ')' +
+    (keepTrailing ? trailing.join('') : '') + call.call.slice(parsed.callEnd);
   if (call.rotation) text = `scope({ rotate(${call.rotation.angle}deg, origin: (${call.rotation.cx}, ${call.rotation.cy})); ${text} })`;
   return [{ start: call.start, end: call.end, text }];
 }

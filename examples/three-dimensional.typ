@@ -10,7 +10,7 @@
   ortho(x: 20.165985deg, y: -318.994079deg, z: 0deg, sorted: true, {
 
     on-xy(z: 0, {
-      rect((0, 0), (3, 2), fill: blue.lighten(70%), stroke: blue)
+      rect((0, 0),(3, 2), fill: blue.lighten(70%), stroke: blue)
     })
     on-xz(y: 0, {
       rect((0, 0), (3, 2), fill: green.lighten(70%), stroke: green)

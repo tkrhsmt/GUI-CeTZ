@@ -136,6 +136,49 @@ test('edits plain content from the CeTZ sidebar style', async () => {
   assert.match(fromCanvas, /content\(\(1, 2\),\s*\[Hi\]\)/);
 });
 
+test('trailing content blocks render, edit, copy and delete as part of the complete call', async () => {
+  const { copyShapes, pasteShapes } = require('../src/clipboard');
+  const call = 'content((1, 2))[Hello]';
+  const text = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *;\n' + call + '\ncircle((4, 0))\n})';
+  const canvas = locateCanvases(text)[0], model = parseCanvas(text);
+  assert.deepEqual(model.unsupported, []);
+  assert.equal(text.slice(model.elements[0].start, model.elements[0].end), call);
+  const basicXml = xmlForDiagram(text, model);
+  const basicEdited = apply(text, patchesFromXml(text, model, basicXml.replace('value="Hello"', 'value="World"')));
+  assert.ok(basicEdited.includes('content((1, 2))[World]'));
+  const rendered = await renderEditable(text, canvas, path.resolve('examples/basic.typ'));
+  assert.equal(rendered.calls[0].call, call);
+  assert.match(rendered.xml, /cetzText=Hello;/);
+  assert.deepEqual(patchesFromEditable(text, rendered, rendered.xml, readAllCells), []);
+  const edited = apply(text, patchesFromEditable(text, rendered,
+    rendered.xml.replace('cetzText=Hello;', 'cetzText=Updated;'), readAllCells));
+  assert.ok(edited.includes('content((1, 2))[Updated]'));
+  const handle = readAllCells(rendered.xml).get('cetz-point-0-0');
+  const moved = rendered.xml.replace(`<mxGeometry x="${handle.geometry.x}" y="${handle.geometry.y}"`,
+    `<mxGeometry x="${+handle.geometry.x + rendered.calibration.unitX * 2.5}" y="${handle.geometry.y}"`);
+  const movedSource = apply(text, patchesFromEditable(text, rendered, moved, readAllCells));
+  assert.ok(movedSource.includes('content((2, 2))[Hello]'));
+  const clipboard = copyShapes(text, rendered, [0]);
+  assert.ok(clipboard.includes(call));
+  const pasted = apply(text, pasteShapes(text, rendered, clipboard, 1));
+  assert.ok(pasted.includes('content((1.5, 1.5))[Hello]'));
+  const removed = apply(text, patchesFromEditable(text, rendered,
+    rendered.xml.replace(/<mxCell id="cetz-edit-0"[\s\S]*?<\/mxCell>/, ''), readAllCells));
+  assert.ok(!removed.includes('[Hello]'));
+  assert.ok(removed.includes('circle((4, 0))'));
+});
+
+test('markup punctuation, nested content and embedded calls do not change canvas or call boundaries', async () => {
+  for (const label of ['[Hello (]', '[a " quote }]', '[nested [content]]', '[#text("]") [nested]]', '[escaped \\] bracket]']) {
+    const call = `content((0, 0))${label}`;
+    const text = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *; ' + call + '\n})';
+    const canvas = locateCanvases(text)[0];
+    assert.ok(canvas, label);
+    assert.equal(locateEditableCalls(text, canvas)[0].call, call);
+    await renderEditable(text, canvas, path.resolve('examples/basic.typ'));
+  }
+});
+
 test('content edit frames follow Typst text bounds instead of a character estimate', async () => {
   const source = '#import "@preview/cetz:0.5.2"\n' +
     '#cetz.canvas({ import cetz.draw: *; content((0, 0), [Hi]); ' +

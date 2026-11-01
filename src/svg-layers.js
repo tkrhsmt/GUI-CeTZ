@@ -70,7 +70,7 @@ function splitSvgLayers(svg, count, excludedOwners = new Set()) {
   function visit(node) {
     if (typeof node === 'string') return current != null || node.trim() ? fragment(node) : new Map();
     if (/^<defs\b/.test(node.open)) {
-      definitions.push(serialize(node));
+      definitions.push(node);
       return new Map();
     }
     const fill = /^<path\b/.test(node.open) && /\bstroke="#010204"/i.test(node.open) &&
@@ -105,18 +105,49 @@ function splitSvgLayers(svg, count, excludedOwners = new Set()) {
   const fragments = new Map();
   for (const child of document.children) for (const [key, value] of visit(child)) add(fragments, key, value);
   if (active) throw new Error('Unclosed CeTZ SVG layer marker.');
-  const defs = definitions.join('');
-  const wrap = (body, viewBox) => {
+  const defs = definitions.map(serialize).join('');
+  // A small fragment only needs the symbols, gradients and clipping paths it
+  // references. Copying every glyph into every fragment multiplies large text
+  // and image drawings into megabytes of unused definitions.
+  const entries = definitions.map(node => ({ node, children: node.children.map(child => {
+    const xml = serialize(child);
+    const ids = [...xml.matchAll(/\bid\s*=\s*["']([^"']+)["']/g)].map(match => match[1]);
+    return { xml, ids };
+  }) }));
+  const byId = new Map(entries.flatMap(def => def.children.flatMap(entry => entry.ids.map(id => [id, entry]))));
+  function referencedDefinitions(body) {
+    const needed = new Set(), pending = [];
+    function references(xml) {
+      for (const match of xml.matchAll(/\b(?:xlink:)?href\s*=\s*["']#([^"']+)["']|url\(\s*["']?#([^\s)"']+)["']?\s*\)/g))
+        pending.push(match[1] || match[2]);
+    }
+    references(document.open + body);
+    for (const def of entries) for (const entry of def.children) {
+      // Keep styles and other definitions without IDs, including their refs.
+      if (!entry.ids.length) { needed.add(entry); references(entry.xml); }
+    }
+    while (pending.length) {
+      const entry = byId.get(pending.pop());
+      if (!entry || needed.has(entry)) continue;
+      needed.add(entry);
+      references(entry.xml);
+    }
+    return entries.map(({ node, children }) => {
+      const xml = children.filter(entry => needed.has(entry)).map(entry => entry.xml).join('');
+      return xml.trim() ? node.open + xml + node.close : '';
+    }).join('');
+  }
+  const wrap = (body, viewBox, complete = false) => {
     let open = document.open;
     if (viewBox) open = open.replace(/\bviewBox="[^"]*"/, `viewBox="${viewBox.join(' ')}"`)
       .replace(/\bwidth="[^"]*"/, `width="${viewBox[2]}"`)
       .replace(/\bheight="[^"]*"/, `height="${viewBox[3]}"`);
-    return open + body + defs + document.close;
+    return open + body + (complete ? defs : referencedDefinitions(body)) + document.close;
   };
   return {
     compose: owners => wrap([...fragments].filter(([key]) => owners.has(layers[key].owner) && !excludedOwners.has(layers[key].owner))
       .map(([, value]) => value).join('')),
-    svg: wrap([...fragments].filter(([key]) => !excludedOwners.has(layers[key].owner)).map(([, value]) => value).join('')),
+    svg: wrap([...fragments].filter(([key]) => !excludedOwners.has(layers[key].owner)).map(([, value]) => value).join(''), null, true),
     layers: layers.flatMap((layer, key) => {
       const body = fragments.get(key);
       if (!body) return [];

@@ -17,6 +17,7 @@ test('typing in Typst does not register cursor-driven virtual document edits', (
     languages: { registerCodeLensProvider() { return disposable; } },
     commands: { registerCommand(name, callback) { commands.set(name, callback); return disposable; } },
     window: {
+      tabGroups: { onDidChangeTabs() { return disposable; } },
       onDidChangeTextEditorSelection() {
         throw new Error('Ordinary Typst cursor movement must not edit the virtual diagram.');
       }
@@ -34,15 +35,18 @@ test('typing in Typst does not register cursor-driven virtual document edits', (
   assert.ok(commands.has('cetzEditor.selectInGui'));
 });
 
-async function extensionFixture(t, initialText) {
+async function extensionFixture(t, initialText, options = {}) {
   const docs = new Map(), errors = [], subscriptions = [];
   const disposable = { dispose() {} };
   const extensionPath = path.resolve(__dirname, '..');
-  let provider, changed, clipboard = '';
+  let provider, changed, tabsChanged, clipboard = '';
+  const commands = new Map(), executedCommands = [], diagramOpens = [];
+  const group = { tabs: [], activeTab: null };
   const uri = parts => ({ authority: '', ...parts, fsPath: parts.path,
     toString() { return this.scheme + ':' + this.path; } });
   function document(uri, text) {
-    const doc = { uri, text, version: 1, getText() { return this.text; }, positionAt(offset) { return offset; } };
+    const doc = { uri, text, version: 1, fileName: uri.path, languageId: 'typst',
+      getText() { return this.text; }, positionAt(offset) { return offset; } };
     docs.set(uri.toString(), doc);
     return doc;
   }
@@ -63,6 +67,7 @@ async function extensionFixture(t, initialText) {
       getConfiguration() { return { get() { return [{ file: path.join(extensionPath, 'src/cetz-drawio-plugin.js') }]; } }; },
       getWorkspaceFolder() {},
       async openTextDocument(uri) {
+        if (uri.scheme === 'gui-cetz') diagramOpens.push(uri);
         return docs.get(uri.toString()) || document(uri, Buffer.from(await provider.readFile(uri)).toString());
       },
       async applyEdit(edit) {
@@ -83,13 +88,27 @@ async function extensionFixture(t, initialText) {
       }
     },
     languages: { registerCodeLensProvider() { return disposable; } },
-    commands: { registerCommand() { return disposable; }, async executeCommand() {} },
-    window: { showErrorMessage(message) { errors.push(message); } }
+    commands: {
+      registerCommand(name, callback) { commands.set(name, callback); return disposable; },
+      async executeCommand(...args) { executedCommands.push(args); }
+    },
+    window: {
+      tabGroups: { all: [group], activeTabGroup: group,
+        onDidChangeTabs(callback) { tabsChanged = callback; return disposable; } },
+      showErrorMessage(message) { errors.push(message); }
+    }
   };
   const originalLoad = Module._load;
   let extension;
   try {
     Module._load = function (name, parent, isMain) {
+      if (name === './render-diagram' && options.beforeRender) {
+        const renderer = originalLoad.call(this, name, parent, isMain);
+        return { async renderDiagram(...args) {
+          await options.beforeRender();
+          return renderer.renderDiagram(...args);
+        } };
+      }
       return name === 'vscode' ? vscode : originalLoad.call(this, name, parent, isMain);
     };
     delete require.cache[require.resolve('../src/extension')];
@@ -101,6 +120,8 @@ async function extensionFixture(t, initialText) {
     '#import "@preview/cetz:0.5.2"\n#cetz.canvas({\n  import cetz.draw: *\n' +
     '  rect((0, 0), (2, 1), name: "a")\n  content("a.center", [Text])\n})');
   const gui = await vscode.workspace.openTextDocument(extension.diagramUri(source.uri, 0));
+  const tab = { input: { uri: gui.uri } };
+  group.tabs.push(tab); group.activeTab = tab;
   let serial = 0;
   function ownerIds(xml = gui.text) {
     return [...readAllCells(xml).keys()].filter(id => /^cetz-edit-\d+$/.test(id));
@@ -128,8 +149,75 @@ async function extensionFixture(t, initialText) {
     assert.ok(predicate(), 'GUI synchronization completes');
   }
   return { source, gui, save, action, until, ownerIds, selectedIndices, removeShapes,
+    diagramOpens, executedCommands, runCommand: name => commands.get(name)(),
+    closeGui() { group.tabs = []; group.activeTab = null; tabsChanged({ closed: [tab], opened: [] }); },
+    reopenGui() { group.tabs = [tab]; group.activeTab = tab; tabsChanged({ closed: [], opened: [tab] }); },
+    activateOtherTab() { group.activeTab = { input: { uri: source.uri } }; },
     editSource(text) { source.text = text; source.version++; changed({ document: source }); }, getClipboard: () => clipboard };
 }
+
+test('closing a Draw.io tab cancels pending sync and source edits stay quiet until it is reopened', async t => {
+  const fixture = await extensionFixture(t);
+  const { source, gui, diagramOpens, executedCommands, editSource, closeGui, reopenGui, until } = fixture;
+  const originalXml = gui.text, opens = diagramOpens.length;
+  editSource(source.text.replace('[Text]', '[Pending]'));
+  closeGui();
+  await new Promise(resolve => setTimeout(resolve, 240));
+  editSource(source.text.replace('[Pending]', '[Reopened]'));
+  await fixture.runCommand('cetzEditor.syncFromSource');
+  await new Promise(resolve => setTimeout(resolve, 240));
+  assert.equal(diagramOpens.length, opens);
+  assert.equal(gui.text, originalXml);
+  assert.deepEqual(executedCommands, []);
+  reopenGui();
+  await until(() => gui.text.includes('cetzText=Reopened;'));
+});
+
+test('closing a Draw.io tab during rendering discards the late result', async t => {
+  let release, started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const rendering = new Promise(resolve => { started = resolve; });
+  let renders = 0;
+  const fixture = await extensionFixture(t, undefined, { async beforeRender() {
+    if (++renders > 1) { started(); await gate; }
+  } });
+  const originalXml = fixture.gui.text, opens = fixture.diagramOpens.length;
+  fixture.editSource(fixture.source.text.replace('[Text]', '[Late]'));
+  const sync = fixture.runCommand('cetzEditor.syncFromSource');
+  await rendering;
+  fixture.closeGui();
+  release();
+  await sync;
+  assert.equal(fixture.gui.text, originalXml);
+  assert.equal(fixture.diagramOpens.length, opens);
+  assert.deepEqual(fixture.executedCommands, []);
+});
+
+test('closing immediately after a GUI edit saves the last snapshot without reopening the diagram', async t => {
+  const fixture = await extensionFixture(t);
+  const opens = fixture.diagramOpens.length;
+  fixture.save(fixture.gui.text.replace('cetzText=Text;', 'cetzText=Saved;'));
+  fixture.closeGui();
+  await fixture.until(() => fixture.source.text.includes('[Saved]'));
+  assert.equal(fixture.diagramOpens.length, opens);
+  assert.deepEqual(fixture.executedCommands, []);
+  const closedXml = fixture.gui.text;
+  fixture.reopenGui();
+  await fixture.until(() => fixture.gui.text !== closedXml && fixture.gui.text.includes('cetzText=Saved;'));
+});
+
+test('late render errors do not reload a closed or unrelated webview', async t => {
+  const fixture = await extensionFixture(t);
+  fixture.activateOtherTab();
+  fixture.editSource(fixture.source.text.replace('[Text]', '[Broken'));
+  await fixture.until(() => fixture.gui.text.includes('cetzStatus='));
+  assert.deepEqual(fixture.executedCommands, []);
+  const opens = fixture.diagramOpens.length;
+  fixture.closeGui();
+  fixture.editSource(fixture.source.text + '\n');
+  await new Promise(resolve => setTimeout(resolve, 240));
+  assert.equal(fixture.diagramOpens.length, opens);
+});
 
 test('clipboard bridge handles rapid copy-paste, deletion and paste after the originals are gone', async t => {
   const { source, gui, save, action, until, selectedIndices, removeShapes, getClipboard } = await extensionFixture(t);
@@ -158,6 +246,50 @@ test('clipboard bridge handles rapid copy-paste, deletion and paste after the or
   assert.match(source.text, /name: "a-4"/);
   assert.match(source.text, /rect\(\(1\.5, -1\.5\), \(3\.5, -0\.5\), name: "a-3"\)/);
   assert.match(source.text, /rect\(\(2, -2\), \(4, -1\), name: "a-4"\)/);
+});
+
+test('3D planes, lines and content copy and paste through the source bridge, select the copies and undo together', async t => {
+  const { planeCode } = require('../src/plane-editor');
+  const initial = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\northo({\n' +
+    planeCode('', 'gui-plane-1', { kind: 'xz', position: [1, 2, 3], angles: [20, 30, 40] }, '\nrect((0,0),(2,1),name: "r")\ncontent("r.center")[Plane]\n') +
+    '\nline((0,0,0),(1,2,3),name: "edge")\ncontent("edge.mid")[Label]\n})\n})';
+  const { source, gui, save, action, until, selectedIndices, getClipboard } = await extensionFixture(t, initial);
+  const openedSource=source.text;
+  const workspace = () => JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  const original = workspace(), plane = original.planes[0], objects = original.objects;
+  save(gui.text.replace('</root>', action('copy', [plane.wrapperIndex, ...objects.map(object => object.index)].join(',')) + action('paste') + '</root>'));
+  await until(() => workspace().planes.length === 2 && selectedIndices().split(',').length === 3);
+  assert.match(getClipboard(), /^\/\/ GUI-CeTZ 3D shapes v1/);
+  assert.ok(source.text.includes('content("edge-2.mid")[Label]'));
+  assert.ok(source.text.includes('content("r-2.center", angle: (rel: (1, 0)))[Plane]'));
+  assert.deepEqual(workspace().planes[1].position, [1.5, 1.5, 3]);
+  assert.deepEqual(workspace().planes[1].angles, [20, 30, 40]);
+  const firstPaste = source.text;
+  save(gui.text.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === openedSource && workspace().planes.length === 1 && !gui.text.includes('cetzAction=undo;'));
+  save(gui.text.replace('</root>', action('redo') + '</root>'));
+  await until(() => source.text === firstPaste && workspace().planes.length === 2 && !gui.text.includes('cetzAction=redo;'));
+  save(gui.text.replace('</root>', action('paste') + action('paste') + '</root>'));
+  await until(() => workspace().planes.length === 4 && selectedIndices().split(',').length === 6);
+  assert.ok(source.text.includes('name: "edge-4"'));
+  assert.ok(source.text.includes('content("edge-4.mid")[Label]'));
+  assert.equal(new Set(workspace().planes.map(plane => plane.key)).size, 4);
+  save(gui.text.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === firstPaste);
+});
+
+test('3D copy across multiple views handles repeated paste without moving objects between projections', async t => {
+  const initial = '#import "@preview/cetz:0.5.2"\n#cetz.canvas({ import cetz.draw: *\n' +
+    'ortho(x:20deg,{line((0,0,0),(1,2,3))})\nperspective(x:40deg,{content((2,2,2))[Other]})\n})';
+  const { source, gui, save, action, until, selectedIndices } = await extensionFixture(t, initial);
+  const workspace = () => JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  const indices = workspace().objects.map(object => object.index).join(',');
+  save(gui.text.replace('</root>', action('copy', indices) + action('paste') + action('paste') + '</root>'));
+  await until(() => workspace().objects.length === 6 && selectedIndices().split(',').length === 4);
+  const objects = workspace().objects;
+  for (const view of workspace().views) assert.equal(objects.filter(object => object.view === view.index).length, 3);
+  save(gui.text.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === initial);
 });
 
 test('move-delete-undo restores the moved shape, including undo before the deletion autosaves', async t => {
@@ -453,6 +585,76 @@ test('a standard 2D drawing converts to a 3D plane and returns to normal 2D edit
   await until(()=>source.text.includes('radius:2')&&gui.text.includes('cetzMode=plane-2d;'));
 });
 
+test('workspace switches reuse the full 3D preview while edits and explicit refresh stay fresh',async t=>{
+  let renders=0;
+  const initial='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({circle((1,2),radius:1)})})\n})';
+  const {source,gui,action,save,until,runCommand}=await extensionFixture(t,initial,{beforeRender(){renders++;}});
+  function mode(mode){
+    const workspace=JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+    const value=encodeURIComponent(JSON.stringify({mode,planeKey:workspace.planes[0].key}));
+    save(gui.text.replace('</root>',action('workspace-mode').replace('cetzAction=workspace-mode;','cetzAction=workspace-mode;cetzValue='+value+';')+'</root>'));
+  }
+  for(let i=0;i<2;i++){
+    mode('2d');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+    mode('3d');await until(()=>gui.text.includes('cetzMode=3d;'));
+  }
+  assert.equal(renders,1,'source-neutral tab switches do not compile the full drawing again');
+  assert.equal(source.text,initial);
+  await runCommand('cetzEditor.syncFromSource');
+  assert.equal(renders,2,'explicit refresh recompiles included files as well');
+  mode('2d');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  const cell=[...readAllCells(gui.text).values()].find(item=>/cetzKind=circle;/.test(item.cell.style||''));
+  const model=JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(cell.cell.style)[1]));
+  const value=encodeURIComponent(JSON.stringify({base:model.base,values:{radius:'2'}})).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));
+  save(gui.text.replace('</root>',action('properties','0').replace('cetzAction=properties;','cetzAction=properties;cetzValue='+value+';')+'</root>'));
+  await until(()=>source.text.includes('radius:2')&&!gui.text.includes('cetzAction=properties;'));
+  mode('3d');await until(()=>gui.text.includes('cetzMode=3d;'));
+  const ids=[...readAllCells(gui.text).keys()];
+  assert.equal(new Set(ids).size,ids.length);
+  mode('2d');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  const updated=[...readAllCells(gui.text).values()].find(item=>/cetzKind=circle;/.test(item.cell.style||''));
+  const properties=JSON.parse(decodeURIComponent(/cetzProperties=([^;]+);/.exec(updated.cell.style)[1]));
+  assert.equal(properties.fields.find(field=>field.key==='radius').value,'2');
+});
+
+test('the first plane text insertion saves a short native angle and preserves a second legacy plane through undo and redo',async t=>{
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({rect((0,0),(2,1))})\non-xz({rect((0,0),(3,2))})})})';
+  const {source,gui,save,action,until}=await extensionFixture(t,initial);
+  const workspace=()=>JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  const value=encodeURIComponent(JSON.stringify({mode:'2d',planeKey:workspace().planes[1].key}));
+  save(gui.text.replace('</root>',action('workspace-mode').replace('cetzAction=workspace-mode;','cetzAction=workspace-mode;cetzValue='+value+';')+'</root>'));
+  await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  const marker='<mxCell id="plane-content" style="cetzTemplate=content;cetzPoints=%5B%5B1%2C1%5D%5D;" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell>';
+  save(gui.text.replace('</root>',marker+'</root>'));
+  await until(()=>source.text.includes('angle: (rel: (1, 0))')&&gui.text.includes('cetzMode=plane-2d;')&&!gui.text.includes('id="plane-content"'));
+  const edited=source.text;
+  assert.doesNotMatch(edited,/__gui-plane|GUI-CeTZ plane content/);
+  assert.equal(workspace().activePlaneKey,workspace().planes[1].key);
+  save(gui.text.replace('</root>',action('undo')+'</root>'));
+  await until(()=>source.text===initial&&!gui.text.includes('cetzAction=undo;'));
+  assert.equal(workspace().activePlaneKey,workspace().planes[1].key);
+  save(gui.text.replace('</root>',action('redo')+'</root>'));
+  await until(()=>source.text===edited&&!gui.text.includes('cetzAction=redo;'));
+  assert.equal(workspace().activePlaneKey,workspace().planes[1].key);
+});
+
+test('an expired selection after a 2D/3D switch cannot block a new XYZ label saved in the same snapshot',async t=>{
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\northo({on-xy({content((1,1))[Plane]})})})';
+  const {source,gui,save,action,until,ownerIds}=await extensionFixture(t,initial);
+  const workspace=()=>JSON.parse(decodeURIComponent(/cetzWorkspace=([^;]+);/.exec(gui.text)[1]));
+  function mode(mode){const value=encodeURIComponent(JSON.stringify({mode,planeKey:workspace().planes[0].key}));save(gui.text.replace('</root>',action('workspace-mode').replace('cetzAction=workspace-mode;','cetzAction=workspace-mode;cetzValue='+value+';')+'</root>'));}
+  mode('2d');await until(()=>gui.text.includes('cetzMode=plane-2d;'));
+  const expiredId=Number(ownerIds()[0].slice('cetz-edit-'.length));
+  mode('3d');await until(()=>gui.text.includes('cetzMode=3d;'));
+  const view=workspace().views[0];
+  const payload=encodeURIComponent(JSON.stringify({space:'xyz',view:view.index,base:view.base,points:[[5,1,1]],text:'XYZ label'})).replace(/[!'()*]/g,c=>'%'+c.charCodeAt(0).toString(16));
+  const selection='<mxCell id="late-select" style="cetzAction=select;cetzTargets='+expiredId+';cetzActionToken=late-select;" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell>';
+  const placement='<mxCell id="xyz-label" style="cetzTemplate=content;cetzPlacement3D='+payload+';" vertex="1" parent="1"><mxGeometry width="1" height="1"/></mxCell>';
+  save(gui.text.replace('</root>',selection+placement+'</root>'));
+  await until(()=>source.text.includes('content((5, 1, 1), "XYZ label")')&&!gui.text.includes('id="xyz-label"'));
+  assert.match(gui.text,/cetzError=;/);
+});
+
 test('3D plane settings and camera position actions remain source-validated and keep selected plane identity',async t=>{
   const initial='#import "@preview/cetz:0.5.2"\n#cetz.canvas({import cetz.draw: *\northo({line((0,0,0),(2,1,1))})\n})';
   const {source,gui,action,save,until}=await extensionFixture(t,initial);
@@ -548,4 +750,21 @@ test('plane manipulation, projection arguments and 3D reorder participate in sou
   await until(()=>source.text.indexOf('gui-plane-1')>source.text.indexOf('content((2,1,3)')&&selectedIndices()===String(workspace().planes[0].wrapperIndex));
   assert.equal(workspace().activePlaneKey,'gui-plane-1');assert.ok(source.text.includes('rotate(x: 0deg, y: 0deg, z: 90deg)'));
   save(gui.text.replace('</root>',action('undo')+'</root>'));await until(()=>source.text===configured&&workspace().activePlaneKey==='gui-plane-1');
+});
+
+for(const mode of ['2d','3d'])test(`compile errors preserve the last ${mode} scene without reloading and recover in place`,async t=>{
+  const body='circle((2,3),radius:1)';
+  const initial='#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\n'+(mode==='3d'?'ortho(x:17deg,y:39deg,{on-xy({'+body+'})})':body)+'\n})';
+  const {gui,editSource,until,executedCommands,source}=await extensionFixture(t,initial);
+  const before=gui.text;
+  const {withDiagramStatus}=require('../src/diagram-status');
+  for(const broken of [initial.replace('radius:1','radius:missing'),initial.replace('radius:1','radius:unknown'),initial.slice(0,-1)]){
+    const previous=gui.text;
+    editSource(broken);await until(()=>gui.text.includes('cetzStatus=')&&gui.text!==previous);
+    assert.equal(withDiagramStatus(gui.text,null),withDiagramStatus(before,null),'an error changes only status, never geometry, camera, IDs or workspace');
+    assert.deepEqual(executedCommands,[],'compile failure never reloads the webview or fits the drawing');
+  }
+  editSource(initial);await until(()=>!gui.text.includes('cetzStatus='));
+  assert.equal(source.text,initial);assert.deepEqual(executedCommands,[]);
+  if(mode==='3d')assert.match(gui.text,/cetzMode=3d;/);
 });

@@ -1,9 +1,10 @@
 'use strict';
 
-const { locateCanvases, closing, skipTrivia, splitArgs } = require('./scanner');
+const { locateCanvases, closing, skipTrivia } = require('./scanner');
 const { locateEditableCalls, coordinateRanges } = require('./advanced');
 const { insertionFor } = require('./templates');
 const { coordinate } = require('./snapping');
+const { argumentsOf } = require('./properties');
 
 const HEADER = '// GUI-CeTZ shapes v1\n';
 const format = coordinate;
@@ -71,6 +72,7 @@ function offsetShapes(source, dx, dy) {
 }
 
 function copyShapes(source, rendered, indices) {
+  if (rendered.mode === '3d') return require('./clipboard-3d').copy3DShapes(source, rendered, indices);
   const selected = new Set(indices.map(index => rendered.calls[index]));
   if (!selected.size || selected.has(undefined)) throw new Error('Select a CeTZ shape to copy.');
   const roots = [...selected].filter(call => {
@@ -86,10 +88,8 @@ function copyShapes(source, rendered, indices) {
 }
 
 function definition(call) {
-  const open = skipTrivia(call.call, call.name.length);
-  const end = closing(call.call, open, '(', ')');
-  const args = splitArgs(call.call, open + 1, end);
-  const arg = call.name === 'anchor' ? args[0] : args.find(arg => /^\s*name\s*:/.test(call.call.slice(arg.start, arg.end)));
+  const args = argumentsOf(call.call).args;
+  const arg = call.name === 'anchor' ? args.find(arg => arg.key === '$0') : args.find(arg => arg.key === 'name');
   if (!arg) return null;
   const raw = call.call.slice(arg.start, arg.end);
   const match = (call.name === 'anchor' ? /^\s*"([^"\\]+)"\s*$/ : /^\s*name\s*:\s*"([^"\\]+)"\s*$/).exec(raw);
@@ -116,7 +116,8 @@ function stringEdits(text, start, end, rename) {
   return edits;
 }
 
-function pasteShapes(source, rendered, clipboard, pasteIndex = 1) {
+function pasteShapes(source, rendered, clipboard, pasteIndex = 1, targets = []) {
+  if (rendered.mode === '3d') return require('./clipboard-3d').paste3DShapes(source, rendered, clipboard, pasteIndex, targets);
   clipboard = clipboard.replace(/\r\n/g, '\n');
   if (!clipboard.startsWith(HEADER)) throw new Error('Copy CeTZ shapes before pasting into the GUI.');
   const code = clipboard.slice(HEADER.length);
@@ -132,9 +133,18 @@ function pasteShapes(source, rendered, clipboard, pasteIndex = 1) {
   }
   if (skipTrivia(wrapped, cursor) !== canvas.bodyEnd) throw new Error('The clipboard contains unsupported CeTZ code.');
 
-  const names = new Set();
+  const renamed = renameCopiedShapes(source, rendered, wrapped, calls);
+  const shifted = offsetShapes(renamed, 0.5 * pasteIndex, -0.5 * pasteIndex);
+  const body = locateCanvases(shifted)[0];
+  const insertion = insertionFor(source, rendered.canvas, shifted.slice(body.bodyStart, body.bodyEnd).trim());
+  return [{ start: insertion.offset, end: insertion.offset, text: insertion.text }];
+}
+
+function renameCopiedShapes(source, rendered, wrapped, calls, spatial = false) {
+  const discover = spatial ? require('./three-dimensional').locate3DCalls : locateEditableCalls;
+  const names = new Set([...source.matchAll(/"(gui-plane-\d+)"/g)].map(match => match[1]));
   for (const canvas of locateCanvases(source)) {
-    for (const call of locateEditableCalls(source, canvas)) {
+    for (const call of discover(source, canvas)) {
       try { const item = definition(call); if (item) names.add(item.name); } catch { /* Existing computed names stay untouched. */ }
     }
   }
@@ -143,13 +153,16 @@ function pasteShapes(source, rendered, clipboard, pasteIndex = 1) {
   }
   const definitions = new Map(calls.map(call => [call, definition(call)]));
   const replacements = new Map();
+  function uniqueName(name) {
+    let next = name, suffix = 2;
+    while (names.has(next)) next = spatial && /^gui-plane-\d+$/.test(name) ? `gui-plane-${suffix++}` : `${name}-${suffix++}`;
+    names.add(next);
+    return next;
+  }
   for (const call of calls) {
     const item = definitions.get(call);
     if (!item) continue;
-    let next = item.name, suffix = 2;
-    while (names.has(next)) next = `${item.name}-${suffix++}`;
-    names.add(next);
-    replacements.set(call, next);
+    replacements.set(call, uniqueName(item.name));
   }
   function mapping(context) {
     const map = new Map();
@@ -157,7 +170,8 @@ function pasteShapes(source, rendered, clipboard, pasteIndex = 1) {
       const item = definitions.get(call);
       if (!item) continue;
       const parents = [];
-      for (let parent = call.group; parent && parent !== context; parent = parent.group) parents.unshift(parent);
+      for (let parent = call.group; parent && parent !== context; parent = parent.group)
+        if (!spatial || parent.name === 'group') parents.unshift(parent);
       if (parents.some(parent => !definitions.get(parent))) continue;
       const old = [...parents.map(parent => definitions.get(parent).name), item.name].join('.');
       const next = [...parents.map(parent => replacements.get(parent)), replacements.get(call)].join('.');
@@ -166,27 +180,33 @@ function pasteShapes(source, rendered, clipboard, pasteIndex = 1) {
     return [...map].sort((a, b) => b[0].length - a[0].length);
   }
   const edits = [];
+  if (spatial) for (const marker of wrapped.matchAll(/\/\/ GUI-CeTZ plane: "(gui-plane-\d+)"/g)) {
+    const start = marker.index + marker[0].indexOf('"');
+    edits.push({ start, end: start + marker[1].length + 2, text: JSON.stringify(uniqueName(marker[1])) });
+  }
   for (const call of calls) {
     const offset = wrapped.indexOf(call.call, call.start);
     const item = definitions.get(call);
     if (item) edits.push({ start: offset + item.start, end: offset + item.end, text: `"${replacements.get(call)}"` });
-    if (call.name === 'group') continue;
+    if (call.name === 'group' || spatial && call.container) continue;
     const names = mapping(call.group);
     const rename = value => {
       const entry = names.find(([name]) => value === name || value.startsWith(name + '.'));
       return entry ? entry[1] + value.slice(entry[0].length) : value;
     };
-    for (const range of coordinateRanges(call)) {
+    for (const range of spatial ? spatialCoordinateRanges(call) : coordinateRanges(call)) {
       edits.push(...stringEdits(call.call, range.start, range.end, rename).map(edit =>
         ({ ...edit, start: offset + edit.start, end: offset + edit.end })));
     }
   }
-  const renamed = edits.sort((a, b) => b.start - a.start).reduce((text, edit) =>
+  return edits.sort((a, b) => b.start - a.start).reduce((text, edit) =>
     text.slice(0, edit.start) + edit.text + text.slice(edit.end), wrapped);
-  const shifted = offsetShapes(renamed, 0.5 * pasteIndex, -0.5 * pasteIndex);
-  const body = locateCanvases(shifted)[0];
-  const insertion = insertionFor(source, rendered.canvas, shifted.slice(body.bodyStart, body.bodyEnd).trim());
-  return [{ start: insertion.offset, end: insertion.offset, text: insertion.text }];
 }
 
-module.exports = { copyShapes, pasteShapes };
+function spatialCoordinateRanges(call) {
+  const prefix = call.call.startsWith('cetz.draw.') ? 'cetz.draw.'.length : 0;
+  return coordinateRanges({ ...call, call: call.call.slice(prefix) }).map(range =>
+    ({ start: range.start + prefix, end: range.end + prefix }));
+}
+
+module.exports = { copyShapes, pasteShapes, renameCopiedShapes, spatialCoordinateRanges };

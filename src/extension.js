@@ -21,6 +21,22 @@ const { SCHEME, diagramUri: virtualDiagramUri, sourceForDiagramUri, DiagramFiles
 const sessions = new Map();
 function key(uri) { return uri.toString(); }
 function documentForSession(session) { return vscode.workspace.openTextDocument(session.sourceUri); }
+function closeSession(session, dispose = false) {
+  session.closed = true;
+  session.syncGeneration = (session.syncGeneration || 0) + 1;
+  clearTimeout(session.timer);
+  session.timer = null;
+  session.preparedRender = null;
+  session.full3DRender = null;
+  // Preserve a last debounced GUI edit without writing to the closed editor.
+  const flush = session.flushGui;
+  session.flushGui = null;
+  if (!dispose) flush?.();
+}
+function diagramIsOpen(uri) {
+  return vscode.window.tabGroups.all.some(group => group.tabs.some(tab =>
+    tab.input?.uri && key(tab.input.uri) === key(uri)));
+}
 function diagramUri(sourceUri, index) {
   return virtualDiagramUri(vscode, sourceUri, index);
 }
@@ -48,8 +64,11 @@ function usableDiagram(text, index) {
   return diagram;
 }
 async function updateDiagramDocument(session, xml, diagramFiles) {
+  if (session.closed) return;
+  const generation = session.syncGeneration;
   diagramFiles.initialize(session.diagramUri, Buffer.from(xml, 'utf8'));
   const doc = await vscode.workspace.openTextDocument(session.diagramUri);
+  if (session.closed || generation !== session.syncGeneration) return;
   if (doc.getText() === xml) { session.lastXml = xml; return; }
   session.writingDiagram = true;
   try {
@@ -60,6 +79,9 @@ async function updateDiagramDocument(session, xml, diagramFiles) {
   } finally { session.writingDiagram = false; }
 }
 async function refreshGuiView(session, force = false) {
+  if (session.closed) return;
+  const activeUri = vscode.window.tabGroups.activeTabGroup.activeTab?.input?.uri;
+  if (!activeUri || key(activeUri) !== key(session.diagramUri)) return;
   // Editable previews replace the SVG cell during Draw.io's live document merge.
   // Keep the full reload for locked previews, which have no editable image cell.
   if (force || !session.editable)
@@ -71,6 +93,7 @@ function sourceWithPatches(text, patches) {
 }
 function planeScopedDiagram(text,session) {
   const diagram=usableDiagram(text,session.index);
+  if(session.editable?.mode==='3d')return {...diagram,mode:'3d'};
   if(session.workspaceMode==='2d'&&session.activePlaneKey){
     const plane=require('./plane-editor').resolvePlane(text,diagram.canvas,session.activePlaneKey);
     if(plane)return {...diagram,canvas:{...diagram.canvas,bodyStart:plane.bodyStart,bodyEnd:plane.bodyEnd},planeContext:{key:plane.key}};
@@ -84,10 +107,18 @@ function decorateWorkspace(editable,state) {
   editable.workspace.activePlaneKey=active;state.activePlaneKey=active;
   editable.xml=editable.xml.replace(/cetzWorkspace=[^;]*;/,`cetzWorkspace=${encodeURIComponent(JSON.stringify(editable.workspace))};`);
 }
-async function sessionRender(session,text,strict=false,requestedKey=session.activePlaneKey) {
+function retain3DRender(session,text,rendered) {
+  session.full3DRender=rendered.editable?.mode==='3d'?{text,rendered}:null;
+  // Scene binding and plane selection mutate the model. Keep the reusable full
+  // render in its original coordinate/ID space, including after plane edits.
+  return rendered.editable?.mode==='3d'?{...rendered,editable:{...rendered.editable,
+    workspace:{...rendered.editable.workspace}}}:rendered;
+}
+async function sessionRender(session,text,strict=false,requestedKey=session.activePlaneKey,reuseFull=false) {
   const canvas=usableDiagram(text,session.index).canvas;
-  const full=strict?{editable:await renderEditable(text,canvas,session.sourceUri.fsPath)}:
-    await renderDiagram(text,canvas,session.sourceUri.fsPath);
+  const cached=reuseFull&&session.full3DRender?.text===text?session.full3DRender.rendered:null;
+  const full=retain3DRender(session,text,cached||(strict?{editable:await renderEditable(text,canvas,session.sourceUri.fsPath)}:
+    await renderDiagram(text,canvas,session.sourceUri.fsPath)));
   const state={workspaceMode:session.workspaceMode,activePlaneKey:requestedKey};
   decorateWorkspace(full.editable,state);
   if(state.workspaceMode==='2d'&&full.editable?.mode==='3d'){
@@ -109,8 +140,10 @@ async function applySourcePatches(session, source, patches, deferInvalid = false
     throw new Error('Typst changed while the GUI was being edited.');
   if(session.editable?.planeContext && patches.some(patch=>patch.start<session.editable.planeContext.bodyStart||patch.end>session.editable.planeContext.bodyEnd))
     throw new Error('This edit would affect another drawing plane. Edit it in the 3D view.');
-  const expected = sourceWithPatches(before, patches);
-  const nextKey=Object.hasOwn(patches,'activePlaneKey')?patches.activePlaneKey:require('./plane-editor').rebasePlaneKey(session.activePlaneKey,before,expected);
+  const edited = sourceWithPatches(before, patches);
+  const orientation=require('./plane-content').prepare(edited,session.index),expected=orientation.text;
+  const oldKey=Object.hasOwn(patches,'activePlaneKey')?patches.activePlaneKey:require('./plane-editor').rebasePlaneKey(session.activePlaneKey,before,edited);
+  const nextKey=require('./plane-content').rebaseKey(oldKey,orientation.patches);
   // A GUI edit must preserve an editable preview. Otherwise renderDiagram's
   // fallback would replace all handles with a locked image after the write.
   let prepared;
@@ -126,7 +159,7 @@ async function applySourcePatches(session, source, patches, deferInvalid = false
     throw new Error('Typst changed while the GUI was being edited.');
   session.expectedSourceText = expected;
   const edit = new vscode.WorkspaceEdit();
-  for (const patch of patches) edit.replace(session.sourceUri,
+  for (const patch of orientation.patches.length?[{start:0,end:before.length,text:expected}]:patches) edit.replace(session.sourceUri,
     new vscode.Range(source.positionAt(patch.start), source.positionAt(patch.end)), patch.text);
   session.writingSource = true;
   let applied = false;
@@ -166,7 +199,8 @@ async function applyHistoryAction(session, action) {
   await syncFromSource(session);
   await refreshGuiView(session);
 }
-async function syncFromSource(session) {
+async function syncFromSource(session,reuseFull=false) {
+  if (session.closed) return;
   const generation = session.syncGeneration = (session.syncGeneration || 0) + 1;
   const doc = await documentForSession(session);
   const sourceVersion = doc.version;
@@ -175,13 +209,14 @@ async function syncFromSource(session) {
   const prepared = session.preparedRender;
   session.preparedRender = null;
   const requestedKey=require('./plane-editor').rebasePlaneKey(session.activePlaneKey,session.sceneSource||text,text);
-  const result=prepared&&prepared.text===text?prepared:await sessionRender(session,text,false,requestedKey);
+  const result=prepared&&prepared.text===text?prepared:await sessionRender(session,text,false,requestedKey,reuseFull);
   const {xml:renderedXml,editable}=result;
   if (generation !== session.syncGeneration || (await documentForSession(session)).version !== sourceVersion) return;
   const scene = Object.fromEntries(['sceneBase', 'sceneSpan', 'sceneSignature', 'sceneRevision', 'sceneSource']
     .map(name => [name, session[name]]));
   const xml = bindScene(scene, text, renderedXml, editable);
   await updateDiagramDocument(session, xml, session.diagramFiles);
+  if (generation !== session.syncGeneration) return;
   Object.assign(session, scene);
   Object.assign(session,result.state);
   session.sourceVersion = sourceVersion;
@@ -193,10 +228,12 @@ async function acceptDiagramSnapshot(session, xml) {
   if (clean !== xml) await updateDiagramDocument(session, clean, session.diagramFiles);
   else session.lastXml = xml;
 }
-async function syncToSource(session) {
+async function syncToSource(session, xml) {
   if (session.writingDiagram || session.writingSource) return;
-  const gui = await vscode.workspace.openTextDocument(session.diagramUri);
-  const xml = gui.getText();
+  if (xml === undefined) {
+    if (session.closed) return;
+    xml = (await vscode.workspace.openTextDocument(session.diagramUri)).getText();
+  }
   if (xml === session.lastXml) return;
   const stale = session.sceneRevision !== undefined && sceneRevision(xml) !== session.sceneRevision;
   const command = historyAction(readAllCells(xml), readAllCells(session.lastXml), session.handledHistoryActions);
@@ -225,6 +262,11 @@ async function syncToSource(session) {
   const sourceCommand = sourceAction(readAllCells(xml), readAllCells(session.lastXml), session.handledHistoryActions);
   if (sourceCommand) {
     session.handledHistoryActions.add(sourceCommand.key);
+    // Draw.io can retain an older selection notification while merging a new
+    // scene. Ignore its expired targets, but still process any new geometry
+    // saved with it. Actual editing commands keep strict target validation.
+    if(sourceCommand.action==='select'&&session.editable?.cellIds)
+      sourceCommand.indices=sourceCommand.indices.filter(id=>session.editable.cellIds.includes(id));
     sourceCommand.indices = sourceIndices(session.editable, sourceCommand.indices);
     const source = await documentForSession(session);
     if (source.version !== session.sourceVersion) {
@@ -256,13 +298,13 @@ async function syncToSource(session) {
           session.workspaceMode='2d';session.activePlaneKey=plane.key;
         }else{session.workspaceMode=request.mode;if(request.mode==='2d')session.activePlaneKey=null;}
         session.preparedRender=null;
-        await syncFromSource(session);await refreshGuiView(session);
+        await syncFromSource(session,true);await refreshGuiView(session);
       }catch(error){Object.assign(session,oldState);session.preparedRender=null;await syncFromSource(session);await refreshGuiView(session);throw error;}
       return;
     }
     if (!session.editable) throw new Error('This canvas has no editable CeTZ shapes.');
     try {
-      if (session.editable.mode === '3d' && !['properties', 'focus', 'select', 'export', 'create-view', 'plane-create', 'plane-settings', 'plane-delete', 'camera-position', 'projection-kind', 'spatial-edit', 'move-before', 'move-after'].includes(sourceCommand.action))
+      if (session.editable.mode === '3d' && !['copy', 'paste', 'properties', 'focus', 'select', 'export', 'create-view', 'plane-create', 'plane-settings', 'plane-delete', 'camera-position', 'projection-kind', 'spatial-edit', 'move-before', 'move-after'].includes(sourceCommand.action))
         throw new Error(require('./three-dimensional').MESSAGE);
       if (sourceCommand.action === 'copy') {
         await vscode.env.clipboard.writeText(copyShapes(source.getText(), session.editable, sourceCommand.indices));
@@ -270,12 +312,12 @@ async function syncToSource(session) {
         session.pasteCount = 0;
         // Copy and paste can arrive within a single debounced Draw.io save.
         // Consume copy first so a following paste reads the captured snapshot.
-        return syncToSource(session);
+        return syncToSource(session, xml);
       }
       if (sourceCommand.action === 'paste') {
         const clipboard = await vscode.env.clipboard.readText();
         let pasteCount = session.pasteClipboard === clipboard ? session.pasteCount || 0 : 0;
-        const patches = pasteShapes(source.getText(), session.editable, clipboard, ++pasteCount);
+        let patches = pasteShapes(source.getText(), session.editable, clipboard, ++pasteCount, sourceCommand.indices);
         // Several paste shortcuts can be saved together by Draw.io. Keep each
         // requested paste, allocating names against the preceding copies.
         for (;;) {
@@ -284,7 +326,16 @@ async function syncToSource(session) {
           session.handledHistoryActions.add(next.key);
           const pending = sourceWithPatches(source.getText(), patches);
           const extra = pasteShapes(pending, planeScopedDiagram(pending, session), clipboard, ++pasteCount);
-          patches[0].text += extra[0].text;
+          if (session.editable.mode === '3d') {
+            const selectStarts = (patches.selectStarts || []).map(start => start + extra.filter(patch => patch.start <= start).reduce((sum, patch) => sum + patch.text.length, 0))
+              .concat(extra.selectStarts || []);
+            const after = sourceWithPatches(pending, extra), before = source.getText();
+            let start = 0, end = before.length, afterEnd = after.length;
+            while (start < end && before[start] === after[start]) start++;
+            while (end > start && afterEnd > start && before[end - 1] === after[afterEnd - 1]) { end--; afterEnd--; }
+            patches = [{ start, end, text: after.slice(start, afterEnd) }];
+            patches.selectStarts = selectStarts;
+          } else patches[0].text += extra[0].text;
         }
         await applySourcePatches(session, source, patches);
         session.pasteClipboard = clipboard;
@@ -292,7 +343,7 @@ async function syncToSource(session) {
         await syncFromSource(session);
         const insertion = patches[0];
         const indices = session.editable.calls.flatMap((call, index) =>
-          !call.group && call.start >= insertion.start && call.start < insertion.start + insertion.text.length
+          (patches.selectStarts ? patches.selectStarts.includes(call.start) : !call.group && call.start >= insertion.start && call.start < insertion.start + insertion.text.length)
             ? [session.editable.cellIds?.[index] ?? index] : []);
         if (indices.length) {
           session.selectionSerial = (session.selectionSerial || 0) + 1;
@@ -388,7 +439,9 @@ async function openGui(sourceUri, canvasIndex, extensionPath, diagramFiles) {
   await ensureDrawioPlugin(vscode, extensionPath, doc.uri);
   const uri = diagramUri(doc.uri, index);
   const session = sessionFor(doc.uri, uri, index, diagramFiles);
+  session.closed = false;
   await syncFromSource(session);
+  if (session.closed) return;
   await vscode.commands.executeCommand('vscode.openWith', uri, 'hediet.vscode-drawio-text', vscode.ViewColumn.Beside);
   if (!session.editable || !session.editable.calls.length)
     vscode.window.showInformationMessage('CeTZ: This canvas has no directly editable literal shapes. The Typst preview is available; add shapes from the CeTZ palette or edit the source.');
@@ -432,23 +485,29 @@ async function insertShape() {
 }
 function report(error) { vscode.window.showErrorMessage('CeTZ: ' + (error instanceof Error ? error.message : String(error))); }
 async function showSyncError(session, error) {
+  if (session.closed) return;
   if (!session.lastXml) return report(error);
   const message = error instanceof Error ? error.message : String(error);
   await updateDiagramDocument(session, withDiagramStatus(session.lastXml, message), session.diagramFiles);
-  await refreshGuiView(session, true);
+  // The scene's status cell updates the error banner through the live merge.
+  // Reloading the webview would discard its zoom, scroll and pending viewport
+  // state, and fileLoaded would fit the last valid artwork all over again.
 }
 function activate(context) {
   const diagramFiles = new DiagramFiles(vscode, async uri => {
     const source = sourceForDiagramUri(vscode, uri);
     if (!source) throw vscode.FileSystemError.FileNotFound(uri);
+    const session = sessionFor(source.sourceUri, uri, source.index, diagramFiles);
     await ensureDrawioPlugin(vscode, context.extensionPath, source.sourceUri);
+    session.writingSource=true;
+    try{await require('./plane-content').installInDocument(vscode,await documentForSession(session),source.index);}
+    finally{session.writingSource=false;}
     for (let attempt = 0; attempt < 3; attempt++) {
       const doc = await vscode.workspace.openTextDocument(source.sourceUri);
       const version = doc.version, text = doc.getText();
       const diagram = usableDiagram(text, source.index);
-      const { xml, editable } = await renderDiagram(text, diagram.canvas, doc.uri.fsPath);
+      const { xml, editable } = retain3DRender(session,text,await renderDiagram(text, diagram.canvas, doc.uri.fsPath));
       if ((await vscode.workspace.openTextDocument(source.sourceUri)).version !== version) continue;
-      const session = sessionFor(doc.uri, uri, source.index, diagramFiles);
       session.lastXml = bindScene(session, text, xml, editable);
       session.sourceVersion = version;
       session.diagram = diagram;
@@ -458,6 +517,21 @@ function activate(context) {
     throw new Error('Typst changed while the GUI was opening. Open the GUI again after editing.');
   });
   context.subscriptions.push(vscode.workspace.registerFileSystemProvider(SCHEME, diagramFiles), diagramFiles);
+  context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(event => {
+    for (const tab of event.closed) {
+      const uri = tab.input?.uri;
+      const session = uri && sessions.get(key(uri));
+      // The same diagram may still be open in another editor group.
+      if (session && !diagramIsOpen(uri)) closeSession(session);
+    }
+    for (const tab of event.opened) {
+      const session = tab.input?.uri && sessions.get(key(tab.input.uri));
+      if (session?.closed) {
+        session.closed = false;
+        syncFromSource(session).catch(error => showSyncError(session, error).catch(report));
+      }
+    }
+  }));
   context.subscriptions.push(vscode.commands.registerCommand('cetzEditor.open', (uri, index) =>
     openGui(uri, index, context.extensionPath, diagramFiles).catch(report)));
   context.subscriptions.push(vscode.languages.registerCodeLensProvider(
@@ -474,6 +548,7 @@ function activate(context) {
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
     for (const session of sessions.values()) {
+      if (session.closed) continue;
       if (key(event.document.uri) === key(session.sourceUri) && !session.writingSource) {
         if (event.document.getText() === session.expectedSourceText) {
           session.expectedSourceText = null;
@@ -482,6 +557,7 @@ function activate(context) {
         session.expectedSourceText = null;
         session.history.clear();
         if (session.timer) clearTimeout(session.timer);
+        session.flushGui = null;
         const version = event.document.version;
         session.timer = setTimeout(async () => {
           try { await syncFromSource(session); await refreshGuiView(session); }
@@ -492,16 +568,19 @@ function activate(context) {
         }, 180);
       } else if (key(event.document.uri) === key(session.diagramUri) && !session.writingDiagram) {
         if (session.timer) clearTimeout(session.timer);
-        session.timer = setTimeout(() => {
+        const xml = event.document.getText();
+        const flush = session.flushGui = () => {
+          session.flushGui = null;
           // Draw.io may save again while Typst is rendering. Process each
           // snapshot in order so a later edit never races an earlier reset.
           session.guiQueue = (session.guiQueue || Promise.resolve()).catch(() => {})
-            .then(() => syncToSource(session))
+            .then(() => syncToSource(session, xml))
             .catch(async error => {
               await syncFromSource(session).catch(() => {});
               await showSyncError(session, error).catch(report);
             });
-        }, 180);
+        };
+        session.timer = setTimeout(flush, 180);
       }
     }
   }));
@@ -511,6 +590,7 @@ function activate(context) {
     const offset = editor.document.offsetAt(editor.selection.active);
     let session, index = -1;
     for (const item of sessions.values()) {
+      if (item.closed) continue;
       if (key(item.sourceUri) !== key(editor.document.uri)) continue;
       if (item.sourceVersion !== editor.document.version) await syncFromSource(item);
       index = item.editable?.calls.findIndex(call => offset >= call.start && offset <= call.end) ?? -1;
@@ -523,7 +603,7 @@ function activate(context) {
       session.diagramFiles);
   }));
   context.subscriptions.push({ dispose: () => { for (const s of sessions.values()) {
-    if (s.timer) clearTimeout(s.timer);
+    closeSession(s, true);
   } sessions.clear(); } });
 }
 module.exports = { activate, deactivate() {}, pickCanvas, diagramUri };

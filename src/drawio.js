@@ -5,6 +5,8 @@ const { color, stroke: parseStroke, typstColor, typstStroke, dashStyle, fromDraw
 const { templateInsertions } = require('./templates');
 
 const SCALE = 80, ORIGIN_X = 160, ORIGIN_Y = 400;
+// Exact Typst previews include embedded images and independently movable SVGs.
+const MAX_XML_BYTES = 64 * 1024 * 1024;
 const px = x => ORIGIN_X + x * SCALE;
 const py = y => ORIGIN_Y - y * SCALE;
 const cx = x => (x - ORIGIN_X) / SCALE;
@@ -95,14 +97,19 @@ function xmlForDiagram(source, diagram) {
 }
 
 function readAllCells(xml) {
-  if (xml.length > 5_000_000) throw new Error('Draw.io XML is too large');
+  function checkSize(value) {
+    if (Buffer.byteLength(value, 'utf8') > MAX_XML_BYTES) throw new Error('Draw.io XML is too large');
+  }
+  checkSize(xml);
   if (!xml.includes('<mxGraphModel')) {
     const compressed = /<diagram\b[^>]*>([^<]+)<\/diagram>/.exec(xml);
     if (!compressed) throw new Error('Unsupported Draw.io document format');
     try {
       xml = decodeURIComponent(zlib.inflateRawSync(Buffer.from(compressed[1].trim(), 'base64'),
-        { maxOutputLength: 5_000_000 }).toString('utf8'));
+        // Draw.io URI-encodes the XML before compression (up to 3x its size).
+        { maxOutputLength: MAX_XML_BYTES * 3 }).toString('utf8'));
     } catch { throw new Error('Could not decode the Draw.io diagram'); }
+    checkSize(xml);
   }
   const cells = new Map();
   // Draw.io writes mxCell elements without a namespace in its uncompressed XML.
