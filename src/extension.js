@@ -254,7 +254,13 @@ async function syncToSource(session, xml) {
       else if (pending.length) {
         await syncFromSource(session);
         await refreshGuiView(session);
-      } else session.lastXml = xml;
+      } else {
+        // An exhausted undo/redo can arrive from an older scene. Adopting
+        // that XML as lastXml leaves it behind sceneRevision, so every later
+        // drag is rejected and restored to the same obsolete snapshot.
+        // Acknowledge the no-op by restoring the current scene instead.
+        await updateDiagramDocument(session, session.lastXml, session.diagramFiles);
+      }
     }
     catch (error) { await syncFromSource(session); await refreshGuiView(session); throw error; }
     return;
@@ -547,6 +553,9 @@ function activate(context) {
     for (const session of candidates) await syncFromSource(session).catch(report);
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
+    // VS Code also emits dirty/save notifications without text changes.
+    // They must not cancel pending GUI edits, clear history or re-render.
+    if (event.contentChanges?.length === 0) return;
     for (const session of sessions.values()) {
       if (session.closed) continue;
       if (key(event.document.uri) === key(session.sourceUri) && !session.writingSource) {

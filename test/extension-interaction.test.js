@@ -153,8 +153,57 @@ async function extensionFixture(t, initialText, options = {}) {
     closeGui() { group.tabs = []; group.activeTab = null; tabsChanged({ closed: [tab], opened: [] }); },
     reopenGui() { group.tabs = [tab]; group.activeTab = tab; tabsChanged({ closed: [], opened: [tab] }); },
     activateOtherTab() { group.activeTab = { input: { uri: source.uri } }; },
+    notifySaved(doc) { changed({ document: doc, contentChanges: [] }); },
     editSource(text) { source.text = text; source.version++; changed({ document: source }); }, getClipboard: () => clipboard };
 }
+
+for (const command of ['undo', 'redo']) test(`a delayed ${command} with exhausted history cannot poison the scene for subsequent drags`, async t => {
+  const initial = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({import cetz.draw: *\ncircle((0, 0), radius: 1)\n})';
+  const { source, gui, save, action, until, executedCommands } = await extensionFixture(t, initial);
+  const move = xml => xml.replace(/(<mxCell id="cetz-edit-0"[\s\S]*?<mxGeometry x=")([\d.-]+)/,
+    (_, prefix, x) => prefix + (+x + Number(/cetzUnitX=([^;]+)/.exec(xml)[1])));
+  const moved = move(gui.text);
+  save(moved);
+  await until(() => source.text.includes('circle((1, 0)') && gui.text !== moved);
+  let delayed = gui.text;
+  save(gui.text.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === initial && !gui.text.includes('cetzAction=undo;'));
+  if (command === 'redo') {
+    delayed = gui.text;
+    save(gui.text.replace('</root>', action('redo') + '</root>'));
+    await until(() => source.text.includes('circle((1, 0)') && !gui.text.includes('cetzAction=redo;'));
+  }
+  const current = gui.text, currentSource = source.text;
+  // A second shortcut can be autosaved before the first one's reply arrives.
+  save(delayed.replace('</root>', action(command) + '</root>'));
+  await until(() => gui.text === current);
+  assert.equal(source.text, currentSource, 'an exhausted history request cannot restore old geometry');
+  for (let step = 1; step <= 2; step++) {
+    const edited = move(gui.text), x = step + (command === 'redo' ? 1 : 0);
+    save(edited);
+    await until(() => source.text.includes(`circle((${x}, 0)`) && gui.text !== edited);
+  }
+  save(gui.text.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text.includes(`circle((${command === 'redo' ? 2 : 1}, 0)`) && !gui.text.includes('cetzAction=undo;'));
+  assert.deepEqual(executedCommands, [], 'recovery does not reload the webview');
+});
+
+test('save notifications without content changes preserve pending GUI edits and undo history', async t => {
+  const { source, gui, save, action, until, notifySaved } = await extensionFixture(t);
+  const original = source.text;
+  const edited = gui.text.replace('cetzText=Text;', 'cetzText=Saved;');
+  save(edited);
+  notifySaved(source);
+  notifySaved(gui);
+  await until(() => source.text.includes('[Saved]') && gui.text !== edited);
+  const current = gui.text;
+  notifySaved(source);
+  notifySaved(source);
+  await new Promise(resolve => setTimeout(resolve, 240));
+  assert.equal(gui.text, current, 'saving does not generate another scene revision');
+  save(gui.text.replace('</root>', action('undo') + '</root>'));
+  await until(() => source.text === original && !gui.text.includes('cetzAction=undo;'));
+});
 
 test('closing a Draw.io tab cancels pending sync and source edits stay quiet until it is reopened', async t => {
   const fixture = await extensionFixture(t);
