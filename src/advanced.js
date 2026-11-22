@@ -7,11 +7,12 @@ const { color: parseColor, stroke: parseStroke, typstColor, typstStroke } = requ
 const { sideValues, sideEdits } = require('./marks');
 const { layerInstrumentation, splitSvgLayers } = require('./svg-layers');
 const { coordinate, readSnapStep, snapCoordinate, normalizeCoordinate } = require('./snapping');
-const { propertyModel, plainContentText } = require('./properties');
+const { propertyModel, plainContentText, argumentsOf } = require('./properties');
 
 const EDITABLE = new Set(['circle-through', 'arc-through', 'bezier-through', 'boolean', 'arc', 'mark', 'n-star', 'grid', 'rect-around', 'bezier', 'hobby',
   'catmull', 'merge-path', 'compound-path', 'rect', 'circle', 'content', 'line', 'polygon', 'anchor']);
 const NUMBER = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)';
+const RADIAL_SHAPES = new Set(['arc', 'n-star', 'circle', 'polygon']);
 const TARGET_ORIGIN = 500;
 const GRID_FRACTIONS = 4;
 const POINT = new RegExp(`\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)`, 'g');
@@ -369,6 +370,14 @@ function coordinateRanges(call) {
   return count == null ? positional : positional.slice(0, count);
 }
 
+function literalRadii(value) {
+  if (value == null) return { rx: 1, ry: 1, tuple: false };
+  const tuple = new RegExp(`^\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)$`).exec(value);
+  if (tuple) return { rx: +tuple[1], ry: +tuple[2], tuple: true };
+  if (new RegExp(`^${NUMBER}$`).test(value)) return { rx: +value, ry: +value, tuple: false };
+  return null;
+}
+
 function boundsFor(call, resolvedPoints) {
   if (call.name === 'anchor') {
     const range = coordinateRanges(call)[0];
@@ -400,14 +409,11 @@ function boundsFor(call, resolvedPoints) {
   if ((call.name === 'rect' || call.name === 'line') && points.length < 2) return null;
   let minX = Math.min(...points.map(p => p[0])), maxX = Math.max(...points.map(p => p[0]));
   let minY = Math.min(...points.map(p => p[1])), maxY = Math.max(...points.map(p => p[1]));
-  const radiusTuple = new RegExp(`(?:^|[,\\s])radius:\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)`).exec(call.call);
-  const radiusScalar = new RegExp(`(?:^|[,\\s])radius:\\s*(${NUMBER})(?![\\w.])`).exec(call.call);
-  const r = radiusScalar ? +radiusScalar[1] : ['arc', 'n-star', 'circle', 'polygon'].includes(call.name) ? 1 : 0;
-  if (['arc', 'n-star', 'circle', 'polygon'].includes(call.name)) {
-    if (/(?:^|[,\s])radius\s*:/.test(call.call) && !radiusTuple && !radiusScalar) return null;
-    const rx = radiusTuple ? +radiusTuple[1] : r;
-    const ry = radiusTuple ? +radiusTuple[2] : r;
-    if (rx <= 0 || ry <= 0) return null;
+  if (RADIAL_SHAPES.has(call.name)) {
+    const radius = argumentsOf(call.call).args.find(arg => arg.key === 'radius');
+    const radii = literalRadii(radius?.value);
+    if (!radii || radii.rx <= 0 || radii.ry <= 0) return null;
+    const { rx, ry } = radii;
     let cx = points[0][0], cy = points[0][1];
     if (call.name === 'arc') {
       const arc = arcArguments(call.call);
@@ -420,8 +426,12 @@ function boundsFor(call, resolvedPoints) {
   } else if (call.name === 'mark') {
     [minX, maxX] = [points[0][0] - 0.2, points[0][0] + 0.2];
     [minY, maxY] = [points[0][1] - 0.2, points[0][1] + 0.2];
-  } else if (['merge-path', 'compound-path'].includes(call.name) && r > 0) {
-    minX -= r; maxX += r; minY -= r; maxY += r;
+  } else if (['merge-path', 'compound-path'].includes(call.name)) {
+    const radius = new RegExp(`(?:^|[,\\s])radius:\\s*(${NUMBER})(?![\\w.])`).exec(call.call);
+    if (radius && +radius[1] > 0) {
+      const r = +radius[1];
+      minX -= r; maxX += r; minY -= r; maxY += r;
+    }
   } else if (call.name === 'content') {
     const label = /\[([^\]]*)\]/.exec(call.call)?.[1] || '';
     minX -= Math.max(0.5, label.length * 0.15);
@@ -475,33 +485,23 @@ function referencePoint(call) {
 }
 
 function arcArguments(text) {
-  const open = skipTrivia(text, 3);
-  const end = closing(text, open, '(', ')');
-  if (end < 0) return null;
-  const args = splitArgs(text, open + 1, end);
-  const center = args[0];
-  const point = new RegExp(`^\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*$`)
-    .exec(text.slice(center.start, center.end));
-  if (!point) return null;
-  function named(key) {
-    const arg = args.find(item => new RegExp(`^\\s*${key}\\s*:`).test(text.slice(item.start, item.end)));
-    if (!arg) return null;
-    const prefix = new RegExp(`^\\s*${key}\\s*:\\s*`).exec(text.slice(arg.start, arg.end))[0];
-    return { start: arg.start + prefix.length, end: arg.end, value: text.slice(arg.start + prefix.length, arg.end).trim() };
+  const { args, end } = argumentsOf(text);
+  function argument(key) {
+    const arg = args.find(item => item.key === key);
+    return arg && { start: arg.valueStart, end: arg.valueEnd, value: arg.value };
   }
-  const start = named('start'), stop = named('stop'), radius = named('radius');
-  const anchor = named('anchor')?.value || '"arc-start"';
+  const center = argument('$0');
+  const point = new RegExp(`^\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)$`).exec(center?.value || '');
+  if (!point) return null;
+  const start = argument('start'), stop = argument('stop'), radius = argument('radius');
+  const anchor = argument('anchor')?.value || '"arc-start"';
   if (anchor !== '"arc-start"' && anchor !== '"origin"') return null;
   const angle = new RegExp(`^(${NUMBER})deg$`);
   if (!start || !stop || !angle.test(start.value) || !angle.test(stop.value)) return null;
-  const tuple = radius && new RegExp(`^\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)$`).exec(radius.value);
-  const scalar = radius && new RegExp(`^${NUMBER}$`).test(radius.value) ? +radius.value : null;
-  if (radius && !tuple && scalar == null) return null;
-  const rx = tuple ? +tuple[1] : scalar == null ? 1 : scalar;
-  const ry = tuple ? +tuple[2] : rx;
-  if (rx <= 0 || ry <= 0) return null;
-  return { center, px: +point[1], py: +point[2], start, stop, radius, rx, ry,
-    anchor: anchor.slice(1, -1), tuple: !!tuple, end };
+  const radii = literalRadii(radius?.value);
+  if (!radii || radii.rx <= 0 || radii.ry <= 0) return null;
+  return { center, px: +point[1], py: +point[2], start, stop, radius, ...radii,
+    anchor: anchor.slice(1, -1), end };
 }
 
 function arcOrigin(arc) {
@@ -625,7 +625,7 @@ async function renderEditable(source, canvas, filePath) {
         insertions.push({ offset: innerEnd, text: `; scope({ ${markers.join('; ')} })` });
       }
     }
-    if (!['rect', 'circle', 'content', 'line', 'polygon', 'circle-through', 'arc-through', 'bezier-through'].includes(call.name)) continue;
+    if (!RADIAL_SHAPES.has(call.name) && !['rect', 'content', 'line', 'circle-through', 'arc-through', 'bezier-through'].includes(call.name)) continue;
     const ranges = coordinateRanges(call);
     if (!ranges.length || call.name === 'line' && ranges.length < 2) continue;
     const literal = new RegExp(`^\\s*\\(\\s*${NUMBER}\\s*,\\s*${NUMBER}\\s*\\)\\s*$`);
@@ -731,7 +731,9 @@ async function renderEditable(source, canvas, filePath) {
     const points = call.resolvedPoints?.length && call.resolvedPoints.every(Boolean)
       ? call.resolvedPoints : null;
     let b = call.requiresProbe && !points ? null : boundsFor(call, points);
-    if (['circle-through', 'arc-through', 'bezier-through', 'boolean', 'rect-around', 'merge-path', 'compound-path'].includes(call.name)) {
+    // Typst can draw a computed radius even when its value is unavailable in the source.
+    const measuredRadial = !b && RADIAL_SHAPES.has(call.name);
+    if (measuredRadial || ['circle-through', 'arc-through', 'bezier-through', 'boolean', 'rect-around', 'merge-path', 'compound-path'].includes(call.name)) {
       const bounds = layered.layers.filter(layer => layer.owner === i && layer.bounds).map(layer => layer.bounds);
       if (bounds.length) {
         const left = Math.min(...bounds.map(box => box[0])), top = Math.min(...bounds.map(box => box[1]));
@@ -788,9 +790,10 @@ async function renderEditable(source, canvas, filePath) {
       .map(([key, value]) => `${key}=${value};`).join('');
     const boundFrame = call.name === 'rect-around' && coordinateRanges(call).some(range =>
       !new RegExp(`^\\s*\\(\\s*(${NUMBER})\\s*,\\s*(${NUMBER})\\s*\\)\\s*$`).test(call.call.slice(range.start, range.end)));
-    const fixed = ['anchor', 'group'].includes(call.name) || boundFrame;
+    const fixed = ['anchor', 'group'].includes(call.name) || boundFrame || (measuredRadial && call.requiresProbe && !points);
     const referencedRect = call.name === 'rect' && call.resolvedPoints?.length === 2 && !call.rotation;
-    return `<mxCell id="cetz-edit-${i}" value="" style="rounded=0;fillColor=#ffffff;fillOpacity=0;strokeColor=none;dashed=0;recursiveResize=0;expand=0;dropTarget=0;connectable=0;deletable=0;rotatable=0;${['polygon', 'circle-through', 'arc-through'].includes(call.name) ? 'aspect=fixed;' : ''}${fixed ? 'movable=0;resizable=0;' : call.name === 'content' || call.resolvedPoints?.length && !referencedRect ? 'resizable=0;' : ''}${call.name === 'group' ? 'pointerEvents=0;' : ''}${settings}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x)}" y="${pixel(y)}" width="${pixel(w)}" height="${pixel(h)}" as="geometry"/></mxCell>`;
+    const resizeLocked = measuredRadial || call.name === 'content' || (call.resolvedPoints?.length && !referencedRect);
+    return `<mxCell id="cetz-edit-${i}" value="" style="rounded=0;fillColor=#ffffff;fillOpacity=0;strokeColor=none;dashed=0;recursiveResize=0;expand=0;dropTarget=0;connectable=0;deletable=0;rotatable=0;${['polygon', 'circle-through', 'arc-through'].includes(call.name) ? 'aspect=fixed;' : ''}${fixed ? 'movable=0;resizable=0;' : resizeLocked ? 'resizable=0;' : ''}${call.name === 'group' ? 'pointerEvents=0;' : ''}${settings}" vertex="1" parent="1" connectable="0"><mxGeometry x="${pixel(x)}" y="${pixel(y)}" width="${pixel(w)}" height="${pixel(h)}" as="geometry"/></mxCell>`;
   });
   const emitted = new Set();
   const layers = layered.layers.map((layer, index) => {

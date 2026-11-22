@@ -119,6 +119,43 @@ test('moving the owner writes coordinates while its rendered children stay local
   assert.ok(patchesFromEditable(source, rendered, removed, readAllCells).some(patch => patch.text === ''));
 });
 
+test('let-based radii use the rendered artwork for selection and survive a move', async () => {
+  const file = path.resolve('examples/basic.typ');
+  const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\n' +
+    'let r = 2\nlet center = (26, 4)\n' +
+    'circle((3, 4), radius: r)\n' +
+    'circle((10, 4), /* ellipse */ radius: (1 + r, r))\n' +
+    'polygon((18, 4), 5, radius: r)\n' +
+    'arc((22, 4), start: 0deg, stop: 90deg, radius: 1 + r)\n' +
+    'n-star(center, 5, radius: 1 + r)\n' +
+    'rect((30, 4), (31, 5))\n})';
+  const rendered = await renderEditable(source, parseCanvas(source).canvas, file);
+  const cells = readAllCells(rendered.xml);
+  assert.deepEqual(rendered.calls.map(call => call.name), ['circle', 'circle', 'polygon', 'arc', 'n-star', 'rect']);
+  for (const [index, call] of rendered.calls.entries()) {
+    const owner = cells.get(`cetz-edit-${index}`);
+    assert.ok(owner, call.call);
+    const layer = [...cells.values()].find(item => item.cell.parent === owner.cell.id);
+    assert.ok(layer, call.call);
+    if (call.name === 'rect') continue;
+    assert.match(owner.cell.style, /resizable=0;/);
+    assert.doesNotMatch(owner.cell.style, /movable=0;|selectable=0;/);
+    assert.deepEqual([+layer.geometry.x, +layer.geometry.y], [0, 0]);
+    assert.equal(layer.geometry.width, owner.geometry.width);
+    assert.equal(layer.geometry.height, owner.geometry.height);
+  }
+  assert.deepEqual(patchesFromEditable(source, rendered, rendered.xml, readAllCells), []);
+  const unit = rendered.calibration.unitX * 2.5;
+  const moved = rendered.xml.replace(/(<mxCell id="cetz-edit-(?:0|4)"[\s\S]*?<mxGeometry x=")([\d.]+)/g,
+    (_, prefix, x) => prefix + (+x + unit));
+  const circle = rendered.calls[0];
+  const star = rendered.calls[4];
+  assert.deepEqual(patchesFromEditable(source, rendered, moved, readAllCells), [
+    { start: circle.start, end: circle.end, text: 'circle((4, 4), radius: r)' },
+    { start: star.start, end: star.end, text: 'n-star((rel: (1, 0), to: center), 5, radius: 1 + r)' }
+  ]);
+});
+
 test('CeTZ 0.4.2 also renders moving SVG children with measured content bounds', async () => {
   const source = '#import "@preview/cetz:0.4.2"\n#cetz.canvas({ import cetz.draw: *; ' +
     'rect((0, 0), (2, 1), fill: red); content((1, 2), [Text]); line((0, 3), (2, 3)) })';

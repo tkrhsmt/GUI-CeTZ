@@ -268,6 +268,22 @@ async function compareWithTypst(f, drag, pointId) {
   assert.doesNotMatch(shape.node.outerHTML, /NaN|Infinity/);
 }
 
+test('clicking artwork after a let binding selects each shape in Draw.io', { skip }, async t => {
+  const source = '#import "@preview/cetz:0.5.3"\n#cetz.canvas({ import cetz.draw: *\n' +
+    'let r = 1\ncircle((2, 0), radius: r, fill: blue)\nrect((5, 0), (7, 1), fill: red)\n})';
+  const f = await fixture(t, source, { loadedLayers: true });
+  for (const id of ['cetz-edit-0', 'cetz-edit-1']) {
+    const cell = f.graph.model.getCell(id);
+    assert.ok(cell, id);
+    const state = f.graph.view.getState(cell);
+    const layer = cell.children.find(child => /^cetz-render-/.test(child.id));
+    const target = f.graph.view.getState(layer).shape.node.firstChild;
+    f.send(target, 'down', state.getCenterX(), state.getCenterY());
+    f.send(target, 'up', state.getCenterX(), state.getCenterY());
+    assert.equal(f.graph.getSelectionCell(), cell);
+  }
+});
+
 test('shape bodies can translate repeatedly after selection and control point editing', { skip }, async t => {
   const f = await fixture(t, undefined, { loadedLayers: true });
   for (const index of [0, 1, 2, 3]) {
